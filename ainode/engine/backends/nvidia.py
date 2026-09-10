@@ -44,6 +44,7 @@ from ainode.cluster.hca_discovery import (
     build_nccl_ib_hca_whitelist,
     detect_fabric_ip,
 )
+from ainode.cluster.topology import TopologyInfo, topology_for_config
 from ainode.core.config import LOGS_DIR, NodeConfig
 from ainode.engine.backends.base import EngineBackend
 
@@ -127,6 +128,8 @@ class NvidiaBackend(EngineBackend):
         # monotonically as _stream_logs sees the engine's startup markers.
         self._load_phase = "idle"
         self._log_thread: Optional[threading.Thread] = None
+        # Fabric wiring, resolved lazily on first use — see _topology().
+        self._topology_cache: Optional[TopologyInfo] = None
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         self._log_file: Path = LOGS_DIR / "nvidia-vllm.log"
         self._distributed_log: Path = LOGS_DIR / "nvidia-distributed.log"
@@ -297,8 +300,9 @@ class NvidiaBackend(EngineBackend):
         fabric_ip = self._head_fabric_ip()
         if fabric_ip is None:
             raise NvidiaBackendError(
-                f"Could not detect fabric IP on interface "
-                f"{self.config.cluster_interface!r}. Is the NIC up?"
+                f"Could not detect a coordination IP on interface "
+                f"{self._topology().coord_interface!r} "
+                f"(fabric: {self._topology().fabric.value}). Is the NIC up?"
             )
 
         hf_cache = self._head_hf_cache()
@@ -526,10 +530,20 @@ class NvidiaBackend(EngineBackend):
         * ``NCCL_IB_GID_INDEX=3`` — per Phase 1. Hardcoded because
           every DGX Spark + GX10 we've tested uses the same slot.
         * ``HF_HUB_ENABLE_HF_TRANSFER=1`` — always on, per install-UX spec.
+
+        The socket interface and the fabric IPs come from
+        :meth:`_topology`, not straight from ``cluster_interface``: on a
+        switchless mesh coordination has to move to the shared Ethernet,
+        because no CX7 subnet reaches all three nodes. Off the mesh the
+        topology resolves back to ``cluster_interface`` and every value
+        here is byte-for-byte what it was before.
         """
-        iface = self.config.cluster_interface or ""
+        topo = self._topology()
+        iface = topo.coord_interface or ""
         local_fabric_ip = detect_fabric_ip(iface) or "127.0.0.1"
-        hca = build_nccl_ib_hca_whitelist()
+        # On a mesh NCCL needs every RoCE device, since each one reaches a
+        # different neighbour; elsewhere the GID-filtered local view stands.
+        hca = ",".join(topo.rdma_hcas) if topo.rdma_hcas else build_nccl_ib_hca_whitelist()
 
         # For the head, VLLM_HOST_IP is this node's fabric IP. For a worker,
         # it must be THE WORKER's fabric IP (we pass `peer_fabric_ip` when
@@ -579,6 +593,11 @@ class NvidiaBackend(EngineBackend):
             ),
         }
         env.update(self._nvfp4_serve_env())
+        # Mesh-only NCCL settings (NET_PLUGIN=none, IB_MERGE_NICS=0,
+        # IB_SUBNET_AWARE_ROUTING=1). Empty dict off the mesh, so this is a
+        # no-op for the existing setups — note SUBNET_AWARE_ROUTING is already
+        # set unconditionally above and the mesh value agrees with it.
+        env.update(topo.nccl_env())
         if hca:
             env["NCCL_IB_HCA"] = hca
         return env
@@ -1421,8 +1440,32 @@ class NvidiaBackend(EngineBackend):
         """Total TP = 1 local GPU + N peer GPUs. One GPU per GB10 node."""
         return 1 + len(self.config.peer_ips)
 
+    def _topology(self) -> TopologyInfo:
+        """This node's fabric wiring, detected once per backend instance.
+
+        Cached because ``_build_nccl_env`` runs once per peer during a
+        distributed launch and detection shells out to ``ip`` a handful of
+        times. Cabling does not change mid-launch.
+        """
+        if self._topology_cache is None:
+            self._topology_cache = topology_for_config(self.config)
+            logger.info(
+                "Fabric topology: %s (coordination on %s, NCCL_IB_HCA=%s)",
+                self._topology_cache.fabric.value,
+                self._topology_cache.coord_interface or "<unset>",
+                ",".join(self._topology_cache.rdma_hcas) or "<autodetect>",
+            )
+        return self._topology_cache
+
     def _head_fabric_ip(self) -> Optional[str]:
-        return detect_fabric_ip(self.config.cluster_interface or "")
+        """The head's address for Ray, SSH and the torch rendezvous.
+
+        Uses the coordination interface: on a mesh, this node's
+        ``cluster_interface`` address reaches exactly one neighbour, so it
+        cannot serve as a cluster-wide rendezvous address. Off the mesh the
+        two interfaces are the same and this is unchanged.
+        """
+        return detect_fabric_ip(self._topology().coord_interface or "")
 
     def _head_hf_cache(self) -> str:
         """Path mounted into the container at /root/.cache/huggingface.

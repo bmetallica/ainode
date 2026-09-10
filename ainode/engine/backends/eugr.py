@@ -34,6 +34,8 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from ainode.cluster import hca_discovery
+from ainode.cluster.topology import TopologyInfo, topology_for_config
 from ainode.core.config import LOGS_DIR, NodeConfig
 from ainode.core.gpu import detect_gpu
 from ainode.engine.backends.base import EngineBackend
@@ -82,6 +84,8 @@ class EugrBackend(EngineBackend):
         self._process: Optional[subprocess.Popen] = None
         self._ready = False
         self._log_thread: Optional[threading.Thread] = None
+        # Fabric wiring, resolved lazily on first use — see _topology().
+        self._topology_cache: Optional[TopologyInfo] = None
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         self._log_file: Path = LOGS_DIR / "vllm.log"
         self._distributed_log: Path = LOGS_DIR / "distributed.log"
@@ -384,27 +388,71 @@ class EugrBackend(EngineBackend):
             env["HUGGING_FACE_HUB_TOKEN"] = self.config.hf_token
             env["HF_TOKEN"] = self.config.hf_token
 
-        iface = self.config.cluster_interface
+        # Socket interface = the COORDINATION path. On a mesh that is the
+        # shared Ethernet, because this node's cluster_interface address
+        # reaches only one of its two neighbours. Off the mesh the topology
+        # hands back cluster_interface and this is unchanged.
+        iface = self._coord_interface()
         if iface:
             env["NCCL_SOCKET_IFNAME"] = iface
             env["GLOO_SOCKET_IFNAME"] = iface
             env["UCX_NET_DEVICES"] = iface
 
-        # Bugs 1/2/4 fix: accept both MOFED (mlx5_*) and stock rdma-core
-        # (rocep*/roceP*) naming, filter by (Up) state, filter by cluster
-        # subnet so direct-connect HCAs on dual-homed nodes are excluded.
-        # If detection returns nothing, leave NCCL_IB_HCA unset — better for
-        # NCCL to auto-detect locally than to pin to a hardcoded name that
-        # may not exist on this host (the removed "mlx5_0" fallback).
-        ib_hca = self._detect_ib_hca(subnet_cidr=self._cluster_subnet())
+        ib_hca = self._nccl_ib_hca()
         if ib_hca:
             env.setdefault("NCCL_IB_HCA", ib_hca)
         env.setdefault("NCCL_IB_DISABLE", "0")
         env.setdefault("NCCL_P2P_DISABLE", "0")
         env.setdefault("NCCL_NET_GDR_LEVEL", "5")
         env.setdefault("NCCL_IGNORE_CPU_AFFINITY", "1")
+        for key, value in self._topology().nccl_env().items():
+            env.setdefault(key, value)
 
         return env
+
+    # ------------------------------------------------------------------
+    # Fabric topology
+    # ------------------------------------------------------------------
+
+    def _topology(self) -> TopologyInfo:
+        """This node's fabric wiring, detected once per backend instance."""
+        if self._topology_cache is None:
+            self._topology_cache = topology_for_config(self.config)
+            logger.info(
+                "Fabric topology: %s (coordination on %s, NCCL_IB_HCA=%s)",
+                self._topology_cache.fabric.value,
+                self._topology_cache.coord_interface or "<unset>",
+                ",".join(self._topology_cache.rdma_hcas) or "<autodetect>",
+            )
+        return self._topology_cache
+
+    def _coord_interface(self) -> str:
+        """Interface carrying Ray, the launcher's SSH and the socket env."""
+        return self._topology().coord_interface or ""
+
+    def _nccl_ib_hca(self) -> Optional[str]:
+        """Comma-joined RoCE devices for ``NCCL_IB_HCA``, or None.
+
+        Two paths:
+
+        * **Mesh** — every active device, straight from topology detection.
+          A subnet filter would be actively wrong here: each device sits on a
+          *different* subnet by design, so filtering to the coordination
+          subnet would leave NCCL nothing (the 10G port is not RoCE) and
+          filtering to any one CX7 subnet would leave it a single cable to a
+          single neighbour.
+        * **Everything else** — the existing subnet-filtered detection,
+          unchanged. Bugs 1/2/4 fix: accept both MOFED (mlx5_*) and stock
+          rdma-core (rocep*/roceP*) naming, filter by (Up) state, filter by
+          cluster subnet so direct-connect HCAs on dual-homed nodes are
+          excluded. If detection returns nothing, leave NCCL_IB_HCA unset —
+          better for NCCL to auto-detect locally than to pin to a hardcoded
+          name that may not exist on this host.
+        """
+        topo = self._topology()
+        if topo.rdma_hcas:
+            return ",".join(topo.rdma_hcas)
+        return self._detect_ib_hca(subnet_cidr=self._cluster_subnet())
 
     def _cluster_subnet(self) -> Optional[str]:
         """Return the CIDR of the ``cluster_interface`` netdev (e.g. '192.168.0.0/24').
@@ -468,7 +516,10 @@ class EugrBackend(EngineBackend):
         fails with the same "ibdev2netdev not found" error. Upstream a
         /sys-based autodiscover to eugr, or wrap it.
         """
-        ib_base = Path("/sys/class/infiniband")
+        # Same sysfs root as hca_discovery / topology, referenced through the
+        # module so all three walkers see one tree (and one test fixture can
+        # re-point them together) instead of three hardcoded copies.
+        ib_base = hca_discovery.SYS_INFINIBAND
         if not ib_base.is_dir():
             return None
 
@@ -589,8 +640,22 @@ class EugrBackend(EngineBackend):
             return None
 
     def _write_eugr_env(self) -> None:
-        """Populate ``/opt/spark-vllm-docker/.env`` for the launcher."""
-        iface = self.config.cluster_interface
+        """Populate ``/opt/spark-vllm-docker/.env`` for the launcher.
+
+        ``ETH_IF`` is the coordination interface, matching what upstream's
+        ``autodiscover.sh`` puts there: the launcher hands it to every node as
+        NCCL_SOCKET_IFNAME/GLOO/UCX and derives the Ray addresses from it.
+
+        Writing both ``ETH_IF`` and ``IB_IF`` makes the launcher's own
+        ``detect_interfaces()`` return early, so its mesh branch never runs and
+        cannot set the mesh NCCL vars for us — we emit them ourselves as
+        ``CONTAINER_*`` below. Leaving either one *empty* is worse than wrong:
+        it drops the launcher into autodiscovery, which needs ``ibdev2netdev``,
+        which the AINode image does not ship — a hard failure with a confusing
+        message. So both are asserted non-empty before the file is written.
+        """
+        topo = self._topology()
+        iface = self._coord_interface()
         head_ip = _local_ip_for_interface(iface)
         cluster_nodes = ",".join([head_ip] + self.config.peer_ips)
         subnet = self._cluster_subnet()
@@ -599,7 +664,17 @@ class EugrBackend(EngineBackend):
         # NCCL_IB_HCA at launch-cluster.sh:810). Prior code wrote the netdev
         # name here — ``IB_IF=enP2p1s0f1np1`` — which produced a garbage
         # ``NCCL_IB_HCA=enP2p1s0f1np1`` (a netdev is not an HCA device).
-        ib_hca = self._detect_ib_hca(subnet_cidr=subnet) or ""
+        ib_hca = self._nccl_ib_hca() or ""
+
+        if not iface or not ib_hca:
+            raise EugrBackendError(
+                "Refusing to write an incomplete launcher .env "
+                f"(ETH_IF={iface!r}, IB_IF={ib_hca!r}). An empty value makes "
+                "launch-cluster.sh fall back to its own autodiscovery, which "
+                "requires ibdev2netdev — not present in the AINode image. "
+                f"Detected fabric: {topo.fabric.value}. Set cluster_interface / "
+                "coord_interface / rdma_hcas explicitly for this node."
+            )
 
         lines = [
             f"CLUSTER_NODES={cluster_nodes}",
@@ -619,9 +694,19 @@ class EugrBackend(EngineBackend):
             "CONTAINER_NCCL_IGNORE_CPU_AFFINITY=1",
             "CONTAINER_NCCL_NET_GDR_LEVEL=5",
             f"CONTAINER_UCX_NET_DEVICES={iface}",
-            # Consumed by the per-node shim to filter HCAs by subnet.
-            f"CONTAINER_AINODE_CLUSTER_SUBNET={subnet or ''}",
+            # Consumed by the per-node shim to filter HCAs by subnet. Empty on
+            # a mesh: there the shim must NOT filter, because each device is on
+            # its own subnet and any filter would strip the ring down to one
+            # cable. _nccl_ib_hca() explains the same reasoning.
+            f"CONTAINER_AINODE_CLUSTER_SUBNET={'' if topo.is_mesh else (subnet or '')}",
         ]
+
+        # Mesh NCCL settings. Upstream's autodiscover.sh exports these from its
+        # own mesh branch; because we hand the launcher a complete ETH_IF/IB_IF
+        # that branch never runs, so we emit the same three values directly.
+        for key, value in topo.nccl_env().items():
+            lines.append(f"CONTAINER_{key}={value}")
+
         EUGR_ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
         EUGR_ENV_FILE.write_text("\n".join(lines) + "\n")
 

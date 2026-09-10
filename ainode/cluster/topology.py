@@ -243,6 +243,19 @@ def coordination_interface(
     return configured_interface
 
 
+def topology_for_config(config) -> TopologyInfo:
+    """:func:`detect_topology` driven by a :class:`~ainode.core.config.NodeConfig`.
+
+    Duck-typed on purpose so this module stays free of a config import and
+    remains callable with any object carrying the three attributes.
+    """
+    return detect_topology(
+        configured_interface=getattr(config, "cluster_interface", "") or "",
+        coord_override=getattr(config, "coord_interface", "") or "",
+        hca_override=list(getattr(config, "rdma_hcas", None) or []),
+    )
+
+
 def detect_topology(
     configured_interface: str = "",
     coord_override: str = "",
@@ -353,4 +366,5 @@ __all__ = [
     "coordination_interface",
     "detect_cx7_links",
     "detect_topology",
+    "topology_for_config",
 ]

@@ -229,12 +229,19 @@ def _build_announcement(config: NodeConfig, engine=None) -> NodeAnnouncement:
     gpu_memory_gb = round(gpu.memory_total_mb / 1024, 1) if gpu else 0.0
     unified_memory = gpu.unified_memory if gpu else False
 
-    # This node's fabric IP, so a head can launch us over the cluster fabric
+    # This node's address for a head to reach us on: SSH, Ray, model transfer
     # (BUG D fix — not the mgmt-LAN UDP source address).
+    #
+    # Taken from the COORDINATION interface, which off a mesh is
+    # cluster_interface, i.e. unchanged. On a switchless mesh it has to be the
+    # shared Ethernet: a node's CX7 addresses each reach exactly one neighbour,
+    # so announcing one would leave the third node unable to reach us at all.
+    # Part B adds the per-link IB addresses alongside this, for bulk transfer.
     fabric_ip = ""
     try:
         from ainode.cluster.hca_discovery import detect_fabric_ip
-        fabric_ip = detect_fabric_ip(getattr(config, "cluster_interface", "") or "") or ""
+        from ainode.cluster.topology import topology_for_config
+        fabric_ip = detect_fabric_ip(topology_for_config(config).coord_interface) or ""
     except Exception:
         pass
 
