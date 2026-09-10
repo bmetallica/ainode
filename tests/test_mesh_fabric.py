@@ -374,3 +374,182 @@ class TestDoctorFabricReport:
         verdict, _rows, warnings = self._report(sysfs, config, monkeypatch)
         assert verdict == "warn"
         assert any("cannot join a cluster" in w for w in warnings)
+
+
+# ---------------------------------------------------------------------------
+# Part B — second address list for bulk transfer
+# ---------------------------------------------------------------------------
+
+# The mesh from eugr's docs/NETWORKING.md, seen from spark1 (.11):
+#   spark1 <-> spark2 on 192.168.177/178
+#   spark1 <-> spark3 on 192.168.187/188
+#   spark2 <-> spark3 on 192.168.197/198  (no cable to us)
+SPARK2_IB = ["192.168.177.12", "192.168.178.12", "192.168.197.12", "192.168.198.12"]
+SPARK3_IB = ["192.168.187.13", "192.168.188.13", "192.168.197.13", "192.168.198.13"]
+SPARK4_IB = ["192.168.207.14", "192.168.208.14"]  # a node we have no cable to
+
+
+class TestTransferAddress:
+    def _links(self, sysfs):
+        _wire_mesh(sysfs)
+        with mock.patch("subprocess.run", side_effect=_fake_ip):
+            return topology.detect_cx7_links()
+
+    def test_picks_the_peer_address_on_our_own_subnet(self, sysfs):
+        links = self._links(sysfs)
+        assert topology.transfer_address(SPARK2_IB, "10.0.0.12", links) == "192.168.177.12"
+        assert topology.transfer_address(SPARK3_IB, "10.0.0.13", links) == "192.168.187.13"
+
+    def test_falls_back_when_no_cable_to_the_peer(self, sysfs):
+        """Only a fully connected mesh has a link between every pair. Three
+        nodes in a ring do; a fourth would not."""
+        links = self._links(sysfs)
+        assert topology.transfer_address(SPARK4_IB, "10.0.0.14", links) == "10.0.0.14"
+
+    def test_peer_without_roce_addresses_uses_coordination_path(self, sysfs):
+        """An older peer announces no ib_ips — it must keep working."""
+        links = self._links(sysfs)
+        assert topology.transfer_address([], "10.0.0.12", links) == "10.0.0.12"
+        assert topology.transfer_address(None, "10.0.0.12", links) == "10.0.0.12"
+
+    def test_no_local_links_uses_coordination_path(self):
+        assert topology.transfer_address(SPARK2_IB, "10.0.0.12", []) == "10.0.0.12"
+
+    def test_malformed_addresses_are_skipped_not_fatal(self, sysfs):
+        links = self._links(sysfs)
+        got = topology.transfer_address(
+            ["not-an-ip", "192.168.177.12"], "10.0.0.12", links
+        )
+        assert got == "192.168.177.12"
+
+    def test_selection_is_deterministic(self, sysfs):
+        """Two of our subnets can match (177 and 178 both reach spark2);
+        the same one must win every time or a re-launch churns the cache."""
+        links = self._links(sysfs)
+        first = topology.transfer_address(SPARK2_IB, "10.0.0.12", links)
+        assert all(
+            topology.transfer_address(list(reversed(SPARK2_IB)), "10.0.0.12", links)
+            == first
+            for _ in range(3)
+        )
+
+    def test_direct_attach_peer_matches_on_the_shared_subnet(self, sysfs):
+        """Off a mesh this is not a no-op: a 2-node pair shares the CX7 subnet,
+        so the peer's RoCE address is already the direct one."""
+        _wire_direct(sysfs)
+        with mock.patch("subprocess.run", side_effect=_fake_ip):
+            links = topology.detect_cx7_links()
+        got = topology.transfer_address(["192.168.188.12"], "192.168.188.12", links)
+        assert got == "192.168.188.12"
+
+
+class TestLocalIbIps:
+    def test_reports_addressed_links_only(self, sysfs):
+        _wire_mesh(sysfs)
+        with mock.patch("subprocess.run", side_effect=_fake_ip):
+            got = topology.local_ib_ips()
+        assert sorted(got) == [
+            "192.168.177.11", "192.168.178.11", "192.168.187.11", "192.168.188.11",
+        ]
+
+    def test_unaddressed_link_is_not_a_transfer_target(self, sysfs):
+        _hca(sysfs, "mlx5_0", "eth-no-addr")
+        _hca(sysfs, "mlx5_1", CLUSTER_IF)
+        with mock.patch("subprocess.run", side_effect=_fake_ip):
+            assert topology.local_ib_ips() == ["192.168.188.11"]
+
+
+class TestAnnouncedIbIps:
+    def _announce(self, config):
+        from ainode.api.server import _build_announcement
+
+        with mock.patch("subprocess.run", side_effect=_fake_ip), mock.patch(
+            "ainode.api.server.detect_gpu", return_value=None
+        ):
+            return _build_announcement(config)
+
+    def test_mesh_node_announces_all_four_link_addresses(self, sysfs):
+        _wire_mesh(sysfs)
+        ann = self._announce(_config())
+        assert sorted(ann.ib_ips) == [
+            "192.168.177.11", "192.168.178.11", "192.168.187.11", "192.168.188.11",
+        ]
+        # Coordination address stays separate and is NOT one of them.
+        assert ann.fabric_ip == "10.0.0.11"
+        assert ann.fabric_ip not in ann.ib_ips
+
+    def test_survives_a_round_trip_through_the_wire(self, sysfs):
+        from ainode.discovery.broadcast import NodeAnnouncement
+
+        _wire_mesh(sysfs)
+        ann = self._announce(_config())
+        back = NodeAnnouncement.from_json(ann.to_json())
+        assert back.ib_ips == ann.ib_ips
+
+    def test_older_peer_without_the_field_still_parses(self):
+        """from_json drops unknown keys and defaults missing ones — a node
+        running the previous build must not break discovery."""
+        import json
+
+        from ainode.discovery.broadcast import NodeAnnouncement
+
+        payload = json.loads(
+            NodeAnnouncement(
+                node_id="n1", node_name="spark1", gpu_name="GB10",
+                gpu_memory_gb=128.0, unified_memory=True, model="", status="online",
+                api_port=8000, web_port=3000,
+            ).to_json()
+        )
+        payload.pop("ib_ips")
+        back = NodeAnnouncement.from_json(json.dumps(payload))
+        assert back.ib_ips == []
+
+    def test_cluster_node_carries_it_through(self, sysfs):
+        from ainode.discovery.broadcast import NodeStatus
+        from ainode.discovery.cluster import ClusterNode
+
+        _wire_mesh(sysfs)
+        ann = self._announce(_config())
+        node = ClusterNode.from_announcement(ann, NodeStatus.ONLINE)
+        assert sorted(node.ib_ips) == sorted(ann.ib_ips)
+
+
+class TestBackendTransferIp:
+    def test_uses_the_direct_address_when_the_launch_found_one(self):
+        config = _config(peer_transfer_ips={"10.0.0.12": "192.168.177.12"})
+        backend = NvidiaBackend(config)
+        assert backend._transfer_ip("10.0.0.12") == "192.168.177.12"
+
+    def test_falls_back_to_the_coordination_address(self):
+        backend = NvidiaBackend(_config())
+        assert backend._transfer_ip("10.0.0.13") == "10.0.0.13"
+
+    def test_peer_not_in_the_map_falls_back(self):
+        config = _config(peer_transfer_ips={"10.0.0.12": "192.168.177.12"})
+        backend = NvidiaBackend(config)
+        assert backend._transfer_ip("10.0.0.13") == "10.0.0.13"
+
+    def test_ray_and_ssh_still_use_the_coordination_address(self, sysfs):
+        """Only bulk transfer moves. Coordination must not follow it, or the
+        third mesh node becomes unreachable."""
+        _wire_mesh(sysfs)
+        config = _config(peer_transfer_ips={"10.0.0.12": "192.168.177.12"})
+        backend = NvidiaBackend(config)
+        with mock.patch("subprocess.run", side_effect=_fake_ip), mock.patch(
+            "ainode.engine.backends.nvidia.build_nccl_ib_hca_whitelist",
+            return_value="",
+        ):
+            cmd = backend._build_ray_docker_cmd(
+                container_name="ainode-vllm-worker-x", role="worker",
+                head_ip="10.0.0.11", node_ip="10.0.0.12", hf_cache_dir="/tmp/c",
+            )
+        joined = " ".join(cmd)
+        assert "--address=10.0.0.11:6379" in joined
+        assert "192.168.177.12" not in joined
+
+    def test_link_cidr_with_host_bits_still_matches(self, sysfs):
+        """A CX7Link built by hand may carry "10.0.0.11/24" rather than the
+        normalised network; that must read as a cable, not as malformed."""
+        link = topology.CX7Link(hca="rocep1s0f1", netdev="enp1s0f1np1",
+                                ipv4="192.168.177.11", cidr="192.168.177.11/24")
+        assert topology.transfer_address(SPARK2_IB, "10.0.0.12", [link]) == "192.168.177.12"

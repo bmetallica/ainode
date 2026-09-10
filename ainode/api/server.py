@@ -238,10 +238,18 @@ def _build_announcement(config: NodeConfig, engine=None) -> NodeAnnouncement:
     # so announcing one would leave the third node unable to reach us at all.
     # Part B adds the per-link IB addresses alongside this, for bulk transfer.
     fabric_ip = ""
+    ib_ips: list = []
     try:
         from ainode.cluster.hca_discovery import detect_fabric_ip
-        from ainode.cluster.topology import topology_for_config
+        from ainode.cluster.topology import (
+            detect_cx7_links,
+            local_ib_ips,
+            topology_for_config,
+        )
         fabric_ip = detect_fabric_ip(topology_for_config(config).coord_interface) or ""
+        # The RoCE link addresses, so a head with a cable to us can push model
+        # weights over it instead of the shared Ethernet (see transfer_address).
+        ib_ips = local_ib_ips(detect_cx7_links())
     except Exception:
         pass
 
@@ -288,6 +296,7 @@ def _build_announcement(config: NodeConfig, engine=None) -> NodeAnnouncement:
         distributed_instance_id=distributed_instance_id,
         distributed_peers=distributed_peers,
         fabric_ip=fabric_ip,
+        ib_ips=ib_ips,
         instances=(_head_instances(config) if (distributed_mode == "head" and engine_ready) else []),
     )
 
@@ -1089,6 +1098,9 @@ async def handle_cluster_resources(request: web.Request) -> web.Response:
             "node_id": n.node_id,
             "hostname": n.node_name,
             "fabric_ip": getattr(n, "fabric_ip", "") or "",
+            # RoCE link addresses, so an operator can see which peers the head
+            # has a direct cable to (bulk transfer path — see topology.py).
+            "ib_ips": list(getattr(n, "ib_ips", []) or []),
             "vram_gb": round(float(n.gpu_memory_gb or 0), 1),
             "gpus": 1,
             "gpu_name": n.gpu_name,

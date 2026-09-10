@@ -243,6 +243,74 @@ def coordination_interface(
     return configured_interface
 
 
+def transfer_address(
+    peer_ib_ips: Optional[List[str]],
+    peer_coord_ip: str,
+    local_links: Optional[List[CX7Link]] = None,
+) -> str:
+    """Pick the address to push bulk data (model weights, images) to a peer.
+
+    Prefers a peer RoCE address that sits on a subnet **this** node also has a
+    link on — that is a direct cable, so the transfer runs at CX7 speed instead
+    of over the shared 10G Ethernet. Falls back to ``peer_coord_ip`` when no
+    such address exists.
+
+    The fallback is not an edge case on a large mesh: only a *fully connected*
+    mesh has a direct link between every pair. Three nodes in a ring happen to
+    be fully connected, so every pair there gets a direct address; a fourth
+    node would not, and those pairs correctly fall back to the Ethernet.
+
+    Matching is a local subnet comparison, not a probe — no ping, no SSH, no
+    timeout to wait out on a down peer. It answers "is there a cable between
+    us", which is what routing needs; whether the peer is *up* is discovery's
+    job and is already known by the time this is called.
+
+    This is the split upstream's ``autodiscover.sh`` gets from scanning the
+    direct-attach subnets for GB10 peers and writing ``COPY_HOSTS`` separately
+    from ``CLUSTER_NODES`` (MIT). We reach the same separation from the
+    announcement data we already have, without the SSH sweep.
+    """
+    if not peer_ib_ips:
+        return peer_coord_ip
+    if local_links is None:
+        local_links = detect_cx7_links()
+
+    local_networks = []
+    for link in local_links:
+        if not link.cidr:
+            continue
+        try:
+            # strict=False: detect_cx7_links already normalises to a network
+            # address, but a CX7Link built by hand may carry "10.0.0.11/24"
+            # with host bits set, and silently dropping that link would look
+            # like "no cable" rather than a malformed value.
+            local_networks.append(ipaddress.ip_network(link.cidr, strict=False))
+        except ValueError:
+            continue
+    if not local_networks:
+        return peer_coord_ip
+
+    for candidate in sorted(peer_ib_ips):
+        try:
+            address = ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        if any(address in network for network in local_networks):
+            return candidate
+    return peer_coord_ip
+
+
+def local_ib_ips(links: Optional[List[CX7Link]] = None) -> List[str]:
+    """This node's RoCE link addresses, for the discovery announcement.
+
+    Only addressed links appear — an unaddressed twin is real for the link
+    count but useless as a transfer target.
+    """
+    if links is None:
+        links = detect_cx7_links()
+    return [link.ipv4 for link in links if link.has_ipv4]
+
+
 def topology_for_config(config) -> TopologyInfo:
     """:func:`detect_topology` driven by a :class:`~ainode.core.config.NodeConfig`.
 
@@ -366,5 +434,7 @@ __all__ = [
     "coordination_interface",
     "detect_cx7_links",
     "detect_topology",
+    "local_ib_ips",
     "topology_for_config",
+    "transfer_address",
 ]

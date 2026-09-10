@@ -19,12 +19,13 @@ from ainode.engine.sharding_routes import handle_sharding_launch
 import ainode.engine.backends as backends
 
 
-def _member(node_id, fabric_ip, peer_ip="192.168.0.99"):
+def _member(node_id, fabric_ip, peer_ip="192.168.0.99", ib_ips=None):
     return ClusterNode(
         node_id=node_id, node_name=f"host-{node_id}", gpu_name="NVIDIA GB10",
         gpu_memory_gb=128.0, unified_memory=True, model="", status=NodeStatus.ONLINE,
         api_port=8000, web_port=3000, last_seen=0.0,
         distributed_mode="member", peer_ip=peer_ip, fabric_ip=fabric_ip,
+        ib_ips=list(ib_ips or []),
     )
 
 
@@ -201,3 +202,67 @@ def test_distributed_instance_resolves_peers_and_model():
     assert "memberid" in di["peer_node_ids"]                      # fabric IP → node_id
     assert di["tensor_parallel_size"] == 2
     assert "Spark-1-DGX" in di["member_names"] and "host-memberid" in di["member_names"]
+
+
+# ---------------------------------------------------------------------------
+# Part B — a direct RoCE cable is used for weights, never for coordination
+# ---------------------------------------------------------------------------
+
+
+def _cx7_link(cidr):
+    from ainode.cluster.topology import CX7Link
+
+    return CX7Link(hca="rocep1s0f1", netdev="enp1s0f1np1",
+                   ipv4=cidr.split("/")[0], cidr=cidr)
+
+
+def test_direct_link_peer_gets_a_transfer_address():
+    """Head sits on 192.168.177.0/24; the peer announces an address there, so
+    weights go over the cable while Ray stays on the coordination IP."""
+    with patch("ainode.cluster.topology.detect_cx7_links",
+               return_value=[_cx7_link("192.168.177.11/24")]):
+        config, resp = _run(
+            {"model": "m", "node_ids": ["head", "m1"]},
+            [_member("m1", fabric_ip="10.0.0.12",
+                     ib_ips=["192.168.177.12", "192.168.197.12"])],
+        )
+    assert resp.status == 200
+    assert config.peer_ips == ["10.0.0.12"]  # coordination unchanged
+    launched = _FakeBackend.last["config"]
+    assert launched.peer_transfer_ips == {"10.0.0.12": "192.168.177.12"}
+
+
+def test_peer_without_a_shared_subnet_gets_no_transfer_address():
+    with patch("ainode.cluster.topology.detect_cx7_links",
+               return_value=[_cx7_link("192.168.177.11/24")]):
+        config, resp = _run(
+            {"model": "m", "node_ids": ["head", "m1"]},
+            [_member("m1", fabric_ip="10.0.0.13", ib_ips=["192.168.197.13"])],
+        )
+    assert resp.status == 200
+    assert _FakeBackend.last["config"].peer_transfer_ips == {}
+
+
+def test_peer_from_an_older_build_gets_no_transfer_address():
+    with patch("ainode.cluster.topology.detect_cx7_links",
+               return_value=[_cx7_link("192.168.177.11/24")]):
+        config, resp = _run(
+            {"model": "m", "node_ids": ["head", "m1"]},
+            [_member("m1", fabric_ip="10.0.0.12")],  # announces no ib_ips
+        )
+    assert resp.status == 200
+    assert _FakeBackend.last["config"].peer_transfer_ips == {}
+
+
+def test_transfer_resolution_failure_does_not_block_the_launch():
+    """Address selection is an optimisation. If it raises, the launch must
+    still proceed over the coordination path."""
+    with patch("ainode.cluster.topology.detect_cx7_links",
+               side_effect=OSError("sysfs exploded")):
+        config, resp = _run(
+            {"model": "m", "node_ids": ["head", "m1"]},
+            [_member("m1", fabric_ip="10.0.0.12", ib_ips=["192.168.177.12"])],
+        )
+    assert resp.status == 200
+    assert _FakeBackend.last["launched"] is True
+    assert _FakeBackend.last["config"].peer_transfer_ips == {}

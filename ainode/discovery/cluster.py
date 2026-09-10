@@ -38,7 +38,8 @@ class ClusterNode:
     gpu_memory_total_mb: float = 0.0
     gpu_utilization: float = 0.0
     gpu_temp: float = 0.0
-    fabric_ip: str = ""  # this node's cluster-fabric IP (BUG D: launch over fabric, not mgmt)
+    fabric_ip: str = ""  # coordination address: SSH / Ray / rendezvous (BUG D: not mgmt)
+    ib_ips: list = field(default_factory=list)  # RoCE link addresses, bulk transfer only
     instances: list = field(default_factory=list)  # Phase 2: distributed instances this node heads
 
     @classmethod
@@ -67,6 +68,7 @@ class ClusterNode:
             gpu_utilization=getattr(a, "gpu_utilization", 0.0),
             gpu_temp=getattr(a, "gpu_temp", 0.0),
             fabric_ip=getattr(a, "fabric_ip", "") or "",
+            ib_ips=list(getattr(a, "ib_ips", []) or []),
             instances=list(getattr(a, "instances", []) or []),
         )
 
@@ -94,6 +96,7 @@ class ClusterNode:
             gpu_utilization=getattr(announcement, "gpu_utilization", 0.0),
             gpu_temp=getattr(announcement, "gpu_temp", 0.0),
             fabric_ip=getattr(announcement, "fabric_ip", "") or "",
+            ib_ips=list(getattr(announcement, "ib_ips", []) or []),
             instances=list(getattr(announcement, "instances", []) or []),
         )
 

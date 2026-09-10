@@ -59,10 +59,23 @@ class NodeAnnouncement:
     gpu_memory_total_mb: float = 0.0
     gpu_utilization: float = 0.0
     gpu_temp: float = 0.0
-    # This node's IP on the cluster fabric (cluster_interface). The head uses
-    # this to launch distributed peers over the fabric — NOT the mgmt-LAN UDP
-    # source IP (peer_ip), which lands a Ray worker on a non-GPU address (BUG D).
+    # This node's COORDINATION address: what a head uses to reach us for SSH,
+    # Ray and the torch rendezvous. NOT the mgmt-LAN UDP source IP (peer_ip),
+    # which lands a Ray worker on a non-GPU address (BUG D).
+    #
+    # Named "fabric_ip" because on a direct-attach or switched cluster it IS
+    # the CX7 fabric address (cluster_interface). On a switchless mesh it is
+    # the shared Ethernet instead, because each CX7 address reaches exactly one
+    # neighbour — see ainode/cluster/topology.py. The name is kept for wire
+    # compatibility with older peers.
     fabric_ip: str = ""
+    # Every RoCE link address this node has, e.g. the four CX7 twins on a mesh
+    # node. Used for BULK TRANSFER only (model weights, images): a head picks
+    # whichever of these sits on a subnet it shares, and falls back to
+    # fabric_ip when none does. Never used for Ray or rendezvous — on a mesh
+    # no single one of these reaches every node. Empty on older peers, which
+    # then simply transfer over fabric_ip as before.
+    ib_ips: List[str] = field(default_factory=list)
     # Phase 2: distributed instances this node HEADS, as wire dicts
     # (InstanceRecord.to_dict()). Empty for non-heads / solo. Same info as the
     # legacy distributed_instance_id/distributed_peers, but a list so a head can

@@ -182,6 +182,26 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
 
     chosen_peers = [fabric_of(n) for n in chosen]
 
+    # Second address list: where head and peer share a direct RoCE cable, bulk
+    # transfer (model weights) goes over it instead of the coordination
+    # Ethernet. Coordination itself stays on chosen_peers — on a mesh no single
+    # RoCE address reaches every node. Peers that announce no RoCE address, or
+    # that we have no cable to, are simply absent and transfer as before.
+    peer_transfer_ips: dict = {}
+    try:
+        from ainode.cluster.topology import detect_cx7_links, transfer_address
+
+        local_links = detect_cx7_links()
+        for node, coord_ip in zip(chosen, chosen_peers):
+            direct = transfer_address(
+                list(getattr(node, "ib_ips", []) or []), coord_ip, local_links
+            )
+            if direct and direct != coord_ip:
+                peer_transfer_ips[coord_ip] = direct
+    except Exception:
+        logger.exception("Could not resolve direct transfer addresses; "
+                         "falling back to the coordination path")
+
     # P2-2: APPEND a new instance — do NOT tear down existing ones. Each instance
     # gets its own port (8000, 8001, …), container-name token, and config SNAPSHOT
     # (never the shared app["config"], which would cross-wire instances).
@@ -224,7 +244,8 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
             overrides["gpu_memory_utilization"] = gmu
 
     inst_config = replace(config, model=model, distributed_mode="head",
-                          peer_ips=chosen_peers, api_port=port, **overrides)
+                          peer_ips=chosen_peers, peer_transfer_ips=peer_transfer_ips,
+                          api_port=port, **overrides)
     backend = get_backend(inst_config, instance_id=name_token)
     try:
         started = backend.start_distributed()

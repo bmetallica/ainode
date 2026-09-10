@@ -117,9 +117,15 @@ class NodeConfig:
     #               directly on this box. Expected to announce itself via
     #               UDP discovery so the head's UI sees it.
     distributed_mode: str = "solo"  # "solo" | "head" | "member"
-    # IPs of peer workers (on the cluster_interface subnet) when distributed.
-    # Used only when distributed_mode="head".
+    # Coordination addresses of peer workers when distributed — what Ray, SSH
+    # and the torch rendezvous use. Used only when distributed_mode="head".
     peer_ips: List[str] = field(default_factory=list)
+    # Optional per-peer address for BULK TRANSFER (model weights), keyed by the
+    # peer_ips entry. Resolved at launch from the peers' announced RoCE
+    # addresses: where head and peer share a direct cable, the weights go over
+    # it instead of the shared Ethernet. A peer missing here transfers over its
+    # peer_ips address, which is what every node did before.
+    peer_transfer_ips: Dict[str, str] = field(default_factory=dict)
     # SSH user for head-to-worker passwordless login (eugr launcher uses it).
     ssh_user: str = "ubuntu"
     # Interface NCCL/Ray/Gloo bind to (e.g. "enp1s0f0np0" for DGX Spark direct

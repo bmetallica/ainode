@@ -1318,13 +1318,30 @@ class NvidiaBackend(EngineBackend):
                 f"(rc={result.returncode}): {result.stderr.strip()}"
             )
 
+    def _transfer_ip(self, peer_ip: str) -> str:
+        """Address to push bulk data to ``peer_ip`` over.
+
+        ``peer_ip`` is the peer's coordination address. If the launch path
+        found a direct RoCE cable to this peer it recorded the far-side
+        address in ``peer_transfer_ips``; use it, so weights move at CX7 speed
+        instead of over the shared 10G Ethernet. Absent → transfer over the
+        coordination address, which is what every node did before.
+        """
+        return (getattr(self.config, "peer_transfer_ips", None) or {}).get(
+            peer_ip, peer_ip
+        )
+
     def _ensure_peer_has_model(self, peer_ip: str, peer_hf_cache: str) -> None:
-        """Distribute the model weights to a peer over the fabric if it's missing.
+        """Distribute the model weights to a peer if it's missing them.
 
         The launch only succeeds if every node can read the model from its local
         HF cache. Rather than require manual pre-placement, the head streams the
         weights to any selected peer that lacks them. Uses tar-over-ssh (the image
-        ships tar + ssh, not rsync) on the cluster fabric (``peer_ip``).
+        ships tar + ssh, not rsync).
+
+        Runs over :meth:`_transfer_ip`, not ``peer_ip``: on a mesh those differ,
+        and this is the one call path where the direct cable is worth using —
+        it moves tens of GB, while everything else here is control traffic.
         Best-effort no-op when the peer already has it, or the head doesn't.
         """
         model = self.config.model or ""
@@ -1336,7 +1353,8 @@ class NvidiaBackend(EngineBackend):
             return  # head doesn't have it either — engine will report clearly
         peer_hub = peer_hf_cache.rstrip("/") + "/hub"
         target = f"{peer_hub}/{model_dir}"
-        ssh_target = f"{self.config.ssh_user}@{peer_ip}"
+        transfer_ip = self._transfer_ip(peer_ip)
+        ssh_target = f"{self.config.ssh_user}@{transfer_ip}"
         ssh_opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10"]
 
         check = subprocess.run(
@@ -1346,7 +1364,11 @@ class NvidiaBackend(EngineBackend):
         if "present" in (check.stdout or ""):
             return  # peer already has the weights
 
-        logger.info("Distributing %s to %s over the fabric (not cached)...", model_dir, peer_ip)
+        logger.info(
+            "Distributing %s to %s (not cached)%s...",
+            model_dir, transfer_ip,
+            " — direct RoCE link" if transfer_ip != peer_ip else "",
+        )
         self._load_phase = "distributing"
         ssh_e = "ssh " + " ".join(ssh_opts)
         if shutil.which("rsync"):
@@ -1369,10 +1391,10 @@ class NvidiaBackend(EngineBackend):
             result = subprocess.run(["bash", "-lc", tar], capture_output=True, text=True, timeout=7200)
         if result.returncode != 0:
             raise NvidiaBackendError(
-                f"Failed to distribute {model_dir} to {peer_ip} "
+                f"Failed to distribute {model_dir} to {transfer_ip} "
                 f"(rc={result.returncode}): {result.stderr.strip()[:300]}"
             )
-        logger.info("Distributed %s to %s", model_dir, peer_ip)
+        logger.info("Distributed %s to %s", model_dir, transfer_ip)
 
     def _ssh_stop_peer_container(self, peer_ip: str) -> None:
         """Best-effort ``docker stop && docker rm`` on a peer's worker container.
