@@ -319,3 +319,58 @@ class TestFabricClassification:
         _wire_mesh(sysfs)
         with mock.patch("subprocess.run", side_effect=_fake_ip):
             assert topology.detect_topology(CLUSTER_IF).fabric is topology.Fabric.MESH
+
+
+# ---------------------------------------------------------------------------
+# `ainode doctor` fabric section — the operator's check command
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorFabricReport:
+    def _report(self, sysfs_wired, config, monkeypatch):
+        from ainode.cli import doctor
+
+        monkeypatch.setattr(
+            "ainode.core.config.NodeConfig.load", classmethod(lambda cls: config)
+        )
+        with mock.patch("subprocess.run", side_effect=_fake_ip):
+            return doctor.fabric_report()
+
+    def test_mesh_reports_ok_with_the_derived_settings(self, sysfs, monkeypatch):
+        _wire_mesh(sysfs)
+        verdict, rows, warnings = self._report(sysfs, _config(), monkeypatch)
+        fields = dict(rows)
+        assert verdict == "ok"
+        assert fields["Fabric"] == "mesh"
+        assert fields["Active CX7 links"] == "4"
+        assert fields["Coordination iface"] == COORD_IF
+        assert fields["Coordination IP"] == "10.0.0.11"
+        assert fields["NCCL_IB_HCA"] == ",".join(MESH_HCAS)
+        assert fields["NCCL_NET_PLUGIN"] == "none"
+        assert warnings == []
+
+    def test_direct_reports_ok_and_defers_hca_detection(self, sysfs, monkeypatch):
+        _wire_direct(sysfs)
+        verdict, rows, warnings = self._report(sysfs, _config(), monkeypatch)
+        fields = dict(rows)
+        assert verdict == "ok"
+        assert fields["Fabric"] == "direct"
+        assert fields["Coordination iface"] == CLUSTER_IF
+        assert fields["NCCL_IB_HCA"] == "<local autodetect>"
+        assert warnings == []
+
+    def test_odd_link_count_warns_but_stays_harmless(self, sysfs, monkeypatch):
+        _hca(sysfs, "rocep1s0f1", "enp1s0f1np1")
+        _hca(sysfs, "roceP2p1s0f1", CLUSTER_IF)
+        _hca(sysfs, "rocep1s0f0", "enp1s0f0np0")
+        verdict, rows, warnings = self._report(sysfs, _config(), monkeypatch)
+        assert verdict == "unknown"
+        assert dict(rows)["Fabric"] == "unknown"
+        assert any("expected 2" in w for w in warnings)
+
+    def test_missing_coordination_address_is_flagged(self, sysfs, monkeypatch):
+        _wire_direct(sysfs)
+        config = _config(cluster_interface="enX-unplugged")
+        verdict, _rows, warnings = self._report(sysfs, config, monkeypatch)
+        assert verdict == "warn"
+        assert any("cannot join a cluster" in w for w in warnings)
