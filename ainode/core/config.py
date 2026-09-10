@@ -26,7 +26,11 @@ class NodeConfig:
     host: str = "0.0.0.0"
     api_port: int = 8000
     web_port: int = 3000
-    discovery_port: int = 5678
+    # 5679, matching scripts/install.sh and the docs. The code default used to
+    # be 5678, so a node installed by hand (no install.sh) would not see nodes
+    # installed by it. Real installs always carry an explicit value in
+    # config.json, so this only affects hand-rolled ones.
+    discovery_port: int = 5679
 
     # Engine
     engine_strategy: str = "pip"  # "pip" | "docker"
@@ -120,7 +124,21 @@ class NodeConfig:
     ssh_user: str = "ubuntu"
     # Interface NCCL/Ray/Gloo bind to (e.g. "enp1s0f0np0" for DGX Spark direct
     # connect, or the dedicated cluster-switch NIC).
+    #
+    # On a direct-attach pair or a QSFP-switched cluster this one interface is
+    # both the coordination path and the RDMA path, because every node shares
+    # the subnet. On a switchless 3-node mesh that is no longer true — each CX7
+    # port is a private link to a different neighbour — so the two roles split
+    # across the fields below. See ainode/cluster/topology.py.
     cluster_interface: str = "eno1"
+    # Interface for coordination only: Ray, UDP discovery, SSH. Empty = detect
+    # (mesh -> the shared 10G Ethernet; otherwise cluster_interface, i.e. the
+    # current behaviour). Set it explicitly to override detection.
+    coord_interface: str = ""
+    # RoCE devices for NCCL_IB_HCA, e.g. ["rocep1s0f0", "roceP2p1s0f0"]. Empty =
+    # detect (mesh -> all four active devices; otherwise the backend's existing
+    # subnet-filtered detection). Set it explicitly to override detection.
+    rdma_hcas: List[str] = field(default_factory=list)
 
     # Storage paths (override defaults)
     datasets_dir: Optional[str] = None
