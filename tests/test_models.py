@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -687,3 +688,80 @@ class TestCancellableRepoDownload:
         assert jobs[job_id]["status"] == "cancelled"
         assert fake.downloaded == []
         assert not target.exists()
+
+    def test_progress_poller_cannot_clobber_the_completion_values(self, tmp_path):
+        """The poller runs concurrently and writes the measured directory size.
+        ``poll_stop.set()`` only ends the *next* iteration, so a poller already
+        awaiting its measurement used to write it AFTER the completion values —
+        leaving a finished download reporting "completed" at a fraction of the
+        way, with the UI progress bar stuck short of the end.
+
+        Ordered deterministically rather than raced: the measurement blocks
+        until a watcher thread releases it, and the watcher releases as soon as
+        the job reports "completed". With the terminal write happening before
+        the poller is stopped, that release is guaranteed to let the poller's
+        stale measurement land last; with the poller stopped first, the status
+        never flips while the watcher is waiting, so it releases on its timeout
+        and the terminal write is still last.
+        """
+        files = {"a.bin": b"x" * 100}
+        declared_total = 10_000          # far more than the 100 bytes written
+        release = threading.Event()
+        jobs_ref = {}
+
+        def _blocking_measure(_path):
+            release.wait(timeout=5)
+            return 100                   # 1% of the declared total
+
+        def _watch():
+            for _ in range(30):
+                job = jobs_ref.get("job")
+                if job is not None and job.get("status") == "completed":
+                    break                # terminal write already happened
+                time.sleep(0.01)
+            release.set()
+
+        fake = _FakeHfHub(files)
+        manager = _SNS(models_dir=tmp_path)
+        jobs = {"job-1": {"model_id": "org/model-slow", "status": "downloading",
+                          "error": None, "finished_at": None}}
+        jobs_ref["job"] = jobs["job-1"]
+
+        watcher = threading.Thread(target=_watch, daemon=True)
+        watcher.start()
+        with patch.dict(_sys.modules, {"huggingface_hub": fake}), \
+             patch.object(_api_routes, "_get_repo_total_bytes", return_value=declared_total), \
+             patch.object(_api_routes, "_get_dir_bytes", _blocking_measure):
+            _asyncio.run(
+                _api_routes._run_download_repo(manager, "org/model-slow", "job-1", jobs)
+            )
+        watcher.join(timeout=2)
+
+        job = jobs["job-1"]
+        assert job["status"] == "completed"
+        assert job["progress"] == 100.0
+        assert job["downloaded_bytes"] == declared_total
+
+    def test_a_cancelled_download_still_reports_cancelled_last(self, tmp_path):
+        """Same ordering guarantee on the cancel path — and the partial
+        directory is still removed after the terminal write."""
+        files = {"a.bin": b"x" * 64, "b.bin": b"y" * 64}
+        jobs_seen = {}
+
+        def _cancel_after_first(_fname):
+            jobs_seen["job"]["_cancel"] = True
+
+        fake = _FakeHfHub(files, after_file=_cancel_after_first)
+
+        manager = _SNS(models_dir=tmp_path)
+        jobs = {"job-1": {"model_id": "org/m", "status": "downloading",
+                          "error": None, "finished_at": None}}
+        jobs_seen["job"] = jobs["job-1"]
+
+        with patch.dict(_sys.modules, {"huggingface_hub": fake}), \
+             patch.object(_api_routes, "_get_repo_total_bytes", return_value=128):
+            _asyncio.run(_api_routes._run_download_repo(manager, "org/m", "job-1", jobs))
+
+        assert jobs["job-1"]["status"] == "cancelled"
+        assert jobs["job-1"]["finished_at"] is not None
+        assert not (tmp_path / "org--m").exists()

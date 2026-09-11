@@ -58,6 +58,16 @@ Versions follow [Semantic Versioning](https://semver.org/).
   "manifest unknown".
 
 ### Fixed
+- **A completed repo download no longer reports stale progress** — the progress
+  poller and the completion write raced. `poll_stop.set()` only ends the poller's
+  *next* iteration, so a poller already awaiting its directory measurement still
+  wrote that measurement, and it landed after the completion values and clobbered
+  them: a finished download reporting `"status": "completed"` with `progress` well
+  short of 100 and a `downloaded_bytes` that did not match, leaving the UI bar
+  stuck. The poller is now awaited to a stop *before* the terminal state is
+  written, so those values are the last word on the job. This was also the cause
+  of the intermittent `test_completion_layout_identical_and_bytes_tracked`
+  failure (roughly one full-suite run in five).
 - **A node going offline no longer takes the head down with it** — a head
   configured across three Sparks with one powered off crashed on boot
   (`start_distributed()` raises on an unreachable peer, and the exception

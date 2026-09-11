@@ -1132,28 +1132,38 @@ async def _run_download_repo(manager: "ModelManager", hf_repo: str, job_id: str,
         # downloads can't gang up on the link — what stacked Nemotron+MiniMax did.
         async with _download_gate():
             await loop.run_in_executor(None, _do_download)
-        jobs[job_id]["status"] = "completed"
-        jobs[job_id]["finished_at"] = time.time()
-        jobs[job_id]["progress"] = 100.0
+        terminal = {"status": "completed", "progress": 100.0}
         if total_bytes > 0:
-            jobs[job_id]["downloaded_bytes"] = total_bytes
+            terminal["downloaded_bytes"] = total_bytes
+        discard_partial = False
     except _DownloadCancelled:
-        jobs[job_id]["status"] = "cancelled"
-        jobs[job_id]["finished_at"] = time.time()
-        # Clean up partial download
-        try:
-            if target.exists():
-                shutil.rmtree(target)
-        except Exception:
-            pass
+        terminal = {"status": "cancelled"}
+        discard_partial = True
     except Exception as exc:
-        jobs[job_id]["status"] = "failed"
-        jobs[job_id]["error"] = str(exc)
-        jobs[job_id]["finished_at"] = time.time()
+        terminal = {"status": "failed", "error": str(exc)}
+        discard_partial = False
     finally:
+        # Stop the poller BEFORE the terminal state is written, not after.
+        # ``poll_stop.set()`` only ends the *next* iteration: a poller already
+        # awaiting _get_dir_bytes still writes its measurement when it resolves,
+        # and that write used to land after the completion values and clobber
+        # them — a finished download reporting "completed" at 87%, with a
+        # progress bar stuck short of the end. Awaiting the task here means the
+        # poller can never run again (asyncio is single-threaded), so the writes
+        # below are the last word on this job.
         poll_stop.set()
         try:
             await poll_task
+        except Exception:
+            pass
+
+    terminal["finished_at"] = time.time()
+    jobs[job_id].update(terminal)
+
+    if discard_partial:
+        try:
+            if target.exists():
+                shutil.rmtree(target)
         except Exception:
             pass
 
