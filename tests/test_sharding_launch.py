@@ -8,6 +8,7 @@ patched backend so nothing actually launches.
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import patch
 
 import pytest
@@ -266,3 +267,96 @@ def test_transfer_resolution_failure_does_not_block_the_launch():
     assert resp.status == 200
     assert _FakeBackend.last["launched"] is True
     assert _FakeBackend.last["config"].peer_transfer_ips == {}
+
+
+# ---------------------------------------------------------------------------
+# Part C — the strategy is honoured instead of always building TP
+# ---------------------------------------------------------------------------
+
+
+def _members(n):
+    """n member nodes, so the cluster has n+1 counting the head."""
+    return [_member(f"m{i}", fabric_ip=f"10.0.0.{12 + i}") for i in range(n)]
+
+
+def _ids(n):
+    return ["head"] + [f"m{i}" for i in range(n)]
+
+
+def test_two_nodes_still_launch_tensor_parallel():
+    """Regression guard: the existing 2-node setups must be untouched."""
+    config, resp = _run({"model": "m", "node_ids": _ids(1)}, _members(1))
+    assert resp.status == 200
+    body = json.loads(resp.body)
+    assert body["tensor_parallel_size"] == 2
+    assert body["pipeline_parallel_size"] == 1
+    assert body["strategy"] == "tensor"
+    assert _FakeBackend.last["config"].tensor_parallel_size == 2
+
+
+def test_four_nodes_still_launch_tensor_parallel():
+    config, resp = _run({"model": "m", "node_ids": _ids(3)}, _members(3))
+    assert resp.status == 200
+    assert json.loads(resp.body)["tensor_parallel_size"] == 4
+
+
+def test_three_nodes_auto_resolves_to_pipeline():
+    """TP=3 has no models behind it, so auto must pick pipeline."""
+    config, resp = _run({"model": "m", "node_ids": _ids(2)}, _members(2))
+    assert resp.status == 200
+    body = json.loads(resp.body)
+    assert body["strategy"] == "pipeline"
+    assert body["pipeline_parallel_size"] == 3
+    assert body["tensor_parallel_size"] == 1
+    assert body["parallel_plan"]["label"] == "PP=3"
+
+
+def test_three_nodes_explicit_tensor_is_refused_before_launching():
+    config, resp = _run(
+        {"model": "m", "node_ids": _ids(2), "strategy": "tensor"}, _members(2)
+    )
+    assert resp.status == 422
+    body = json.loads(resp.body)
+    assert "pipeline" in body["error"]
+    assert body["node_count"] == 3
+    # Nothing was started — the point of validating before the backend runs.
+    assert _FakeBackend.last.get("launched") is not True
+
+
+def test_three_nodes_explicit_data_parallel():
+    config, resp = _run(
+        {"model": "m", "node_ids": _ids(2), "strategy": "data"}, _members(2)
+    )
+    assert resp.status == 200
+    body = json.loads(resp.body)
+    assert body["data_parallel_size"] == 3
+    assert body["tensor_parallel_size"] == 1
+    assert _FakeBackend.last["config"].parallel_strategy == "data"
+
+
+def test_docs_spelling_of_the_strategy_is_accepted():
+    """The UI posts "tensor", the API docs say "tensor_parallel"; both have
+    been sent for releases and neither was ever acted on."""
+    config, resp = _run(
+        {"model": "m", "node_ids": _ids(1), "strategy": "tensor_parallel"},
+        _members(1),
+    )
+    assert resp.status == 200
+    assert json.loads(resp.body)["tensor_parallel_size"] == 2
+
+
+def test_unknown_strategy_is_a_400():
+    config, resp = _run(
+        {"model": "m", "node_ids": _ids(1), "strategy": "megatron"}, _members(1)
+    )
+    assert resp.status == 400
+    assert "tensor, pipeline, data, auto" in json.loads(resp.body)["error"]
+
+
+def test_instance_record_carries_every_axis():
+    config, resp = _run({"model": "m", "node_ids": _ids(2)}, _members(2))
+    assert resp.status == 200
+    cfg = _FakeBackend.last["config"]
+    assert (cfg.tensor_parallel_size, cfg.pipeline_parallel_size,
+            cfg.data_parallel_size) == (1, 3, 1)
+    assert cfg.parallel_strategy == "pipeline"

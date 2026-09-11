@@ -9,6 +9,7 @@ from typing import Optional
 from aiohttp import web
 
 from ainode.discovery.cluster import ClusterState
+from ainode.engine.parallelism import ParallelPlanError, Strategy, plan_for
 from ainode.engine.sharding import ShardingPlanner, ShardingStrategy, ShardingConfig
 from ainode.engine.ray_setup import get_ray_status
 
@@ -16,6 +17,16 @@ logger = logging.getLogger(__name__)
 
 # Module-level state for active sharding session
 _active_sharding: Optional[ShardingConfig] = None
+
+# The memory planner (sharding.py) models tensor and pipeline splits only — a
+# data-parallel replica set has different memory behaviour (a full copy per
+# node) that it does not describe, so the preview declines it rather than
+# returning a number that would be wrong.
+_SHARDING_STRATEGY_BY_AXIS = {
+    Strategy.AUTO: ShardingStrategy.AUTO,
+    Strategy.TENSOR: ShardingStrategy.TENSOR_PARALLEL,
+    Strategy.PIPELINE: ShardingStrategy.PIPELINE_PARALLEL,
+}
 
 
 def register_sharding_routes(app: web.Application) -> None:
@@ -37,11 +48,16 @@ async def handle_sharding_plan(request: web.Request) -> web.Response:
         return web.json_response({"error": "model parameter required"}, status=400)
 
     strategy_str = request.query.get("strategy", "auto")
+    # Normalise first, so the preview accepts the same spellings the launch
+    # route does ("tensor" from the UI, "tensor_parallel" from the docs).
     try:
-        strategy = ShardingStrategy(strategy_str)
-    except ValueError:
+        strategy = _SHARDING_STRATEGY_BY_AXIS[Strategy.parse(strategy_str)]
+    except ParallelPlanError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except KeyError:
         return web.json_response(
-            {"error": f"Invalid strategy: {strategy_str}. Use: auto, tensor_parallel, pipeline_parallel"},
+            {"error": f"The planner cannot preview {strategy_str!r} yet; "
+                      f"use auto, tensor or pipeline."},
             status=400,
         )
 
@@ -107,9 +123,15 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         except (TypeError, ValueError):
             pass
 
-    strategy_str = body.get("strategy", "tensor_parallel")
-    # We accept but don't gate on strategy here — vLLM picks TP vs PP via
-    # CLI args in the launch script; for now any min_nodes > 1 triggers TP.
+    # Parallelism axis. Previously read and ignored ("any min_nodes > 1
+    # triggers TP"), which is why the UI's Pipeline pill did nothing and why a
+    # 3-node launch would have built the unsupported TP=3. The plan itself is
+    # resolved further down, once the participating nodes are known.
+    strategy_str = body.get("strategy") or "auto"
+    try:
+        strategy = Strategy.parse(strategy_str)
+    except ParallelPlanError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
 
     cluster: ClusterState = request.app["cluster_state"]
     config: NodeConfig = request.app["config"]
@@ -182,6 +204,18 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
 
     chosen_peers = [fabric_of(n) for n in chosen]
 
+    # Resolve the split now that the node set is final. This is where a 3-node
+    # tensor-parallel request is refused — with the alternatives named, before
+    # anything is launched — instead of failing inside vLLM's engine startup.
+    try:
+        plan = plan_for(strategy, 1 + len(chosen_peers))
+    except ParallelPlanError as exc:
+        return web.json_response({
+            "error": str(exc),
+            "strategy": strategy.value,
+            "node_count": 1 + len(chosen_peers),
+        }, status=422)
+
     # Second address list: where head and peer share a direct RoCE cable, bulk
     # transfer (model weights) goes over it instead of the coordination
     # Ethernet. Coordination itself stays on chosen_peers — on a mesh no single
@@ -245,6 +279,10 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
 
     inst_config = replace(config, model=model, distributed_mode="head",
                           peer_ips=chosen_peers, peer_transfer_ips=peer_transfer_ips,
+                          parallel_strategy=plan.strategy.value,
+                          tensor_parallel_size=plan.tensor_parallel_size,
+                          pipeline_parallel_size=plan.pipeline_parallel_size,
+                          data_parallel_size=plan.data_parallel_size,
                           api_port=port, **overrides)
     backend = get_backend(inst_config, instance_id=name_token)
     try:
@@ -258,13 +296,21 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     manager.add(InstanceRecord(
         instance_id=instance_id, model=model, head_node_id=config.node_id or "head",
         peer_ips=chosen_peers, api_port=port,
-        tensor_parallel_size=1 + len(chosen_peers), status="starting"), backend)
+        tensor_parallel_size=plan.tensor_parallel_size,
+        pipeline_parallel_size=plan.pipeline_parallel_size,
+        data_parallel_size=plan.data_parallel_size,
+        status="starting"), backend)
 
     if is_primary:
         # Back-compat: the proxy/status path reads app["config"] + app["engine"].
         config.model = model
         config.distributed_mode = "head"
         config.peer_ips = chosen_peers
+        config.peer_transfer_ips = peer_transfer_ips
+        config.parallel_strategy = plan.strategy.value
+        config.tensor_parallel_size = plan.tensor_parallel_size
+        config.pipeline_parallel_size = plan.pipeline_parallel_size
+        config.data_parallel_size = plan.data_parallel_size
         try:
             config.save()
         except Exception:
@@ -278,8 +324,14 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         "distributed_mode": "head",
         "peer_ips": chosen_peers,
         "api_port": port,
-        "tensor_parallel_size": 1 + len(chosen_peers),
-        "strategy": strategy_str,
+        # Flat sizes stay at the top level for callers that read them today.
+        "tensor_parallel_size": plan.tensor_parallel_size,
+        "pipeline_parallel_size": plan.pipeline_parallel_size,
+        "data_parallel_size": plan.data_parallel_size,
+        # The resolved axis, not what was asked for: "auto" on three nodes
+        # comes back as "pipeline".
+        "strategy": plan.strategy.value,
+        "parallel_plan": plan.to_dict(),
     })
 
 

@@ -45,6 +45,7 @@ from ainode.cluster.hca_discovery import (
     detect_fabric_ip,
 )
 from ainode.cluster.topology import TopologyInfo, topology_for_config
+from ainode.engine.parallelism import ParallelPlan, Strategy
 from ainode.core.config import LOGS_DIR, NodeConfig
 from ainode.engine.backends.base import EngineBackend
 
@@ -334,12 +335,13 @@ class NvidiaBackend(EngineBackend):
             )
 
         # Step 4 — docker exec into local head container to start vllm serve.
-        vllm_cmd = self._build_vllm_exec_cmd(tp_size=self._tp_size())
+        plan = self._parallel_plan()
+        vllm_cmd = self._build_vllm_exec_cmd(plan=plan)
         env = self._build_env_for_subprocess()
 
         logger.info(
-            "Starting distributed vllm serve: TP=%d across head + %d peers",
-            self._tp_size(),
+            "Starting distributed vllm serve: %s across head + %d peers",
+            plan.label(),
             len(self.config.peer_ips),
         )
         self._process = subprocess.Popen(
@@ -960,7 +962,7 @@ class NvidiaBackend(EngineBackend):
 
         image = self._engine_image()
         cmd.extend([image, *self._serve_argv_prefix(image), serve_target])
-        cmd.extend(self._build_vllm_serve_args(tp_size=1))
+        cmd.extend(self._build_vllm_serve_args(plan=ParallelPlan()))
         cmd.extend(name_args)
         return cmd
 
@@ -1129,7 +1131,7 @@ class NvidiaBackend(EngineBackend):
         )
         return False
 
-    def _build_vllm_serve_args(self, tp_size: int) -> List[str]:
+    def _build_vllm_serve_args(self, plan: ParallelPlan) -> List[str]:
         """Assemble the positional ``vllm serve`` args after ``<model>``.
 
         ``config.extra_vllm_args`` is appended verbatim so a model's published
@@ -1161,8 +1163,20 @@ class NvidiaBackend(EngineBackend):
             kv_dtype = self._effective_kv_cache_dtype()
             if kv_dtype:
                 args.extend(["--kv-cache-dtype", kv_dtype])
-        if tp_size > 1 and wanted("--tensor-parallel-size"):
-            args.extend(["--tensor-parallel-size", str(tp_size)])
+        # Parallelism. Each axis is emitted only when it is actually > 1, so a
+        # solo serve and a plain TP launch produce byte-identical command lines
+        # to before — vLLM defaults all three to 1 anyway, and an explicit
+        # "--pipeline-parallel-size 1" would be noise in the logs operators
+        # read to check the launch.
+        if plan.tensor_parallel_size > 1 and wanted("--tensor-parallel-size"):
+            args.extend(["--tensor-parallel-size", str(plan.tensor_parallel_size)])
+        if plan.pipeline_parallel_size > 1 and wanted("--pipeline-parallel-size"):
+            args.extend(["--pipeline-parallel-size", str(plan.pipeline_parallel_size)])
+        if plan.data_parallel_size > 1 and wanted("--data-parallel-size"):
+            args.extend(["--data-parallel-size", str(plan.data_parallel_size)])
+        # Ray is what places ranks on the peer nodes, so it is required by any
+        # multi-node split, not just by TP.
+        if plan.is_distributed and wanted("--distributed-executor-backend"):
             args.extend(["--distributed-executor-backend", "ray"])
         if self.config.max_model_len and wanted("--max-model-len"):
             args.extend(["--max-model-len", str(self.config.max_model_len)])
@@ -1220,7 +1234,7 @@ class NvidiaBackend(EngineBackend):
             cmd.extend(["-e", f"{key}={value}"])
         return cmd
 
-    def _build_vllm_exec_cmd(self, tp_size: int) -> List[str]:
+    def _build_vllm_exec_cmd(self, plan: ParallelPlan) -> List[str]:
         """Build the ``docker exec`` command that launches ``vllm serve``.
 
         Runs INSIDE the already-started head Ray container. Ray picks up
@@ -1229,7 +1243,7 @@ class NvidiaBackend(EngineBackend):
         """
         head = self._head_container_name()
         inner = ["vllm", "serve", self.config.model]
-        inner.extend(self._build_vllm_serve_args(tp_size=tp_size))
+        inner.extend(self._build_vllm_serve_args(plan=plan))
 
         # Wrap the command in bash so stdout/stderr line-buffer correctly.
         # docker exec -i lets us stream logs back; -d would detach.
@@ -1458,9 +1472,31 @@ class NvidiaBackend(EngineBackend):
     # Helpers
     # ------------------------------------------------------------------
 
+    def _parallel_plan(self) -> ParallelPlan:
+        """How this instance splits across head + peers, one GPU per node.
+
+        Reads the axis sizes the launch path resolved into the config
+        snapshot. A config that carries none (an older record, or a launch
+        that went through a path predating the parallelism module) falls back
+        to tensor parallelism across every node — exactly what this method
+        returned before, so nothing about the existing 2-/4-node launches
+        moves.
+        """
+        node_count = 1 + len(self.config.peer_ips)
+        plan = ParallelPlan.from_dict({
+            "tensor_parallel_size": getattr(self.config, "tensor_parallel_size", 0) or 0,
+            "pipeline_parallel_size": getattr(self.config, "pipeline_parallel_size", 0) or 0,
+            "data_parallel_size": getattr(self.config, "data_parallel_size", 0) or 0,
+            "strategy": getattr(self.config, "parallel_strategy", "") or "",
+        })
+        if plan.world_size == node_count and plan.is_distributed:
+            return plan
+        return ParallelPlan(tensor_parallel_size=node_count,
+                            strategy=Strategy.TENSOR)
+
     def _tp_size(self) -> int:
-        """Total TP = 1 local GPU + N peer GPUs. One GPU per GB10 node."""
-        return 1 + len(self.config.peer_ips)
+        """Back-compat shim — the TP factor of :meth:`_parallel_plan`."""
+        return self._parallel_plan().tensor_parallel_size
 
     def _topology(self) -> TopologyInfo:
         """This node's fabric wiring, detected once per backend instance.

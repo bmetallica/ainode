@@ -553,3 +553,178 @@ class TestBackendTransferIp:
         link = topology.CX7Link(hca="rocep1s0f1", netdev="enp1s0f1np1",
                                 ipv4="192.168.177.11", cidr="192.168.177.11/24")
         assert topology.transfer_address(SPARK2_IB, "10.0.0.12", [link]) == "192.168.177.12"
+
+
+# ---------------------------------------------------------------------------
+# Part C — the backends emit the flags for every axis
+# ---------------------------------------------------------------------------
+
+
+class TestNvidiaParallelFlags:
+    def _args(self, plan):
+        from ainode.engine.backends.nvidia import NvidiaBackend
+
+        backend = NvidiaBackend(_config(engine_image="vllm/vllm-openai:v0.27.1"))
+        return backend._build_vllm_serve_args(plan=plan)
+
+    def test_pipeline_parallel_is_emitted(self):
+        from ainode.engine.parallelism import ParallelPlan
+
+        args = self._args(ParallelPlan(pipeline_parallel_size=3))
+        assert "--pipeline-parallel-size" in args
+        assert args[args.index("--pipeline-parallel-size") + 1] == "3"
+        # Not split along an axis it is not using.
+        assert "--tensor-parallel-size" not in args
+        assert "--data-parallel-size" not in args
+        # Ray places the ranks on the peers for any multi-node split.
+        assert "--distributed-executor-backend" in args
+
+    def test_data_parallel_is_emitted(self):
+        from ainode.engine.parallelism import ParallelPlan
+
+        args = self._args(ParallelPlan(data_parallel_size=3))
+        assert args[args.index("--data-parallel-size") + 1] == "3"
+
+    def test_tensor_parallel_is_unchanged(self):
+        from ainode.engine.parallelism import ParallelPlan
+
+        args = self._args(ParallelPlan(tensor_parallel_size=4))
+        assert args[args.index("--tensor-parallel-size") + 1] == "4"
+        assert "--pipeline-parallel-size" not in args
+
+    def test_solo_emits_no_parallelism_flags_at_all(self):
+        """A single-node serve must produce the same command line as before —
+        vLLM defaults every axis to 1, and an explicit "1" is log noise."""
+        from ainode.engine.parallelism import ParallelPlan
+
+        args = self._args(ParallelPlan())
+        assert "--tensor-parallel-size" not in args
+        assert "--pipeline-parallel-size" not in args
+        assert "--data-parallel-size" not in args
+        assert "--distributed-executor-backend" not in args
+
+    def test_combined_axes(self):
+        from ainode.engine.parallelism import ParallelPlan
+
+        args = self._args(ParallelPlan(tensor_parallel_size=2,
+                                       pipeline_parallel_size=2))
+        assert args[args.index("--tensor-parallel-size") + 1] == "2"
+        assert args[args.index("--pipeline-parallel-size") + 1] == "2"
+
+    def test_an_explicit_recipe_flag_still_wins(self):
+        """extra_vllm_args suppresses the built-in — a published recipe that
+        pins its own -pp must not end up with the flag twice."""
+        from ainode.engine.backends.nvidia import NvidiaBackend
+        from ainode.engine.parallelism import ParallelPlan
+
+        cfg = _config(extra_vllm_args=["--pipeline-parallel-size", "2"])
+        args = NvidiaBackend(cfg)._build_vllm_serve_args(
+            plan=ParallelPlan(pipeline_parallel_size=3)
+        )
+        assert args.count("--pipeline-parallel-size") == 1
+        assert args[args.index("--pipeline-parallel-size") + 1] == "2"
+
+
+class TestNvidiaPlanFromConfig:
+    def test_resolved_config_is_used(self):
+        from ainode.engine.backends.nvidia import NvidiaBackend
+
+        cfg = _config(peer_ips=["10.0.0.12", "10.0.0.13"],
+                      parallel_strategy="pipeline", tensor_parallel_size=1,
+                      pipeline_parallel_size=3, data_parallel_size=1)
+        assert NvidiaBackend(cfg)._parallel_plan().pipeline_parallel_size == 3
+
+    def test_unresolved_config_falls_back_to_tensor_across_all_nodes(self):
+        """An older config.json carries no sizes; the backend must behave
+        exactly as it did when it derived TP from peer_ips."""
+        from ainode.engine.backends.nvidia import NvidiaBackend
+
+        cfg = _config(peer_ips=["10.0.0.12", "10.0.0.13", "10.0.0.14"])
+        plan = NvidiaBackend(cfg)._parallel_plan()
+        assert plan.tensor_parallel_size == 4
+        assert plan.pipeline_parallel_size == 1
+
+    def test_a_plan_that_does_not_fill_the_nodes_is_ignored(self):
+        """Stale sizes from a previous launch with a different node set must
+        not silently under-fill; fall back to the node-count derivation."""
+        from ainode.engine.backends.nvidia import NvidiaBackend
+
+        cfg = _config(peer_ips=["10.0.0.12"], pipeline_parallel_size=3)
+        assert NvidiaBackend(cfg)._parallel_plan().tensor_parallel_size == 2
+
+    def test_tp_size_shim_still_answers(self):
+        from ainode.engine.backends.nvidia import NvidiaBackend
+
+        cfg = _config(peer_ips=["10.0.0.12"])
+        assert NvidiaBackend(cfg)._tp_size() == 2
+
+
+class TestEugrLaunchScript:
+    def _script(self, config, tmp_path, monkeypatch) -> str:
+        monkeypatch.setattr(
+            "ainode.engine.backends.eugr.EUGR_LAUNCHER",
+            tmp_path / "launch-cluster.sh",
+        )
+        monkeypatch.setattr(
+            "ainode.engine.backends.eugr.detect_gpu", lambda: None
+        )
+        return EugrBackend(config)._write_distributed_launch_script().read_text()
+
+    def test_pipeline_parallel_reaches_the_launcher(self, tmp_path, monkeypatch):
+        """launch-cluster.sh parses -tp/-pp/-dp out of the script itself to
+        size the node list, so the flags have to be in the text."""
+        config = _config(peer_ips=["10.0.0.12", "10.0.0.13"],
+                         parallel_strategy="pipeline", tensor_parallel_size=1,
+                         pipeline_parallel_size=3, data_parallel_size=1)
+        script = self._script(config, tmp_path, monkeypatch)
+        assert "--tensor-parallel-size 1" in script
+        assert "--pipeline-parallel-size 3" in script
+        assert "--data-parallel-size" not in script
+
+    def test_data_parallel_reaches_the_launcher(self, tmp_path, monkeypatch):
+        config = _config(peer_ips=["10.0.0.12", "10.0.0.13"],
+                         parallel_strategy="data", tensor_parallel_size=1,
+                         pipeline_parallel_size=1, data_parallel_size=3)
+        script = self._script(config, tmp_path, monkeypatch)
+        assert "--data-parallel-size 3" in script
+
+    def test_tensor_parallel_script_is_unchanged(self, tmp_path, monkeypatch):
+        """The 2-node script must read exactly as it did: TP=2, PP=1."""
+        config = _config(peer_ips=["10.0.0.12"])
+        script = self._script(config, tmp_path, monkeypatch)
+        assert "--tensor-parallel-size 2" in script
+        assert "--pipeline-parallel-size 1" in script
+        assert "--data-parallel-size" not in script
+
+
+class TestAnnouncedParallelPlan:
+    def _instances(self, config):
+        from ainode.api.server import _head_instances
+
+        return _head_instances(config)
+
+    def test_pipeline_head_advertises_pp(self):
+        got = self._instances(_config(
+            peer_ips=["10.0.0.12", "10.0.0.13"], parallel_strategy="pipeline",
+            tensor_parallel_size=1, pipeline_parallel_size=3, data_parallel_size=1,
+        ))
+        assert got[0]["pipeline_parallel_size"] == 3
+        assert got[0]["tensor_parallel_size"] == 1
+
+    def test_unresolved_head_advertises_tensor_as_before(self):
+        got = self._instances(_config(peer_ips=["10.0.0.12", "10.0.0.13"]))
+        assert got[0]["tensor_parallel_size"] == 3
+        assert got[0]["pipeline_parallel_size"] == 1
+
+    def test_solo_head_advertises_nothing(self):
+        assert self._instances(_config(peer_ips=[])) == []
+
+    def test_record_renders_a_badge_label(self):
+        from ainode.discovery.instance import InstanceRecord
+
+        record = InstanceRecord.from_dict(self._instances(_config(
+            peer_ips=["10.0.0.12", "10.0.0.13"], parallel_strategy="pipeline",
+            tensor_parallel_size=1, pipeline_parallel_size=3, data_parallel_size=1,
+        ))[0])
+        assert record.parallel_label() == "PP=3"
+        assert record.world_size == 3

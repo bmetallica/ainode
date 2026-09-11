@@ -24,8 +24,29 @@ class InstanceRecord:
     member_node_ids: List[str] = field(default_factory=list)  # resolved: head + peers, by node_id
     peer_ips: List[str] = field(default_factory=list)          # peer FABRIC IPs (wire form)
     api_port: int = 8000
+    # The split across member nodes. tensor_parallel_size is the historical
+    # field and stays first for readability of old records; the other two
+    # default to 1, so a record from a previous build parses as the TP-only
+    # plan it described. See ainode/engine/parallelism.py.
     tensor_parallel_size: int = 1
+    pipeline_parallel_size: int = 1
+    data_parallel_size: int = 1
     status: str = "serving"  # starting | distributing | serving | failed
+
+    @property
+    def world_size(self) -> int:
+        """GPUs this instance occupies — one per member node."""
+        return (
+            max(1, self.tensor_parallel_size)
+            * max(1, self.pipeline_parallel_size)
+            * max(1, self.data_parallel_size)
+        )
+
+    def parallel_label(self) -> str:
+        """Short form for the UI badge, e.g. ``"PP=3"``."""
+        from ainode.engine.parallelism import ParallelPlan
+
+        return ParallelPlan.from_dict(asdict(self)).label()
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -35,6 +56,7 @@ class InstanceRecord:
         """Parse a wire dict, ignoring unknown keys (forward-compatible)."""
         fields = (
             "instance_id", "model", "head_node_id", "member_node_ids",
-            "peer_ips", "api_port", "tensor_parallel_size", "status",
+            "peer_ips", "api_port", "tensor_parallel_size",
+            "pipeline_parallel_size", "data_parallel_size", "status",
         )
         return cls(**{k: d[k] for k in fields if k in d})

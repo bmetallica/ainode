@@ -27,6 +27,7 @@ from ainode.engine.backends.nvidia import (
     WORKER_CONTAINER_NAME_PREFIX,
     NvidiaBackendError,
 )
+from ainode.engine.parallelism import ParallelPlan
 
 
 # ---------------------------------------------------------------------------
@@ -1175,7 +1176,7 @@ def _write_model_dir(tmp_path, *, vision=False, architectures=None, config_json=
 
 
 def _kv_dtype_arg(backend):
-    args = backend._build_vllm_serve_args(tp_size=1)
+    args = backend._build_vllm_serve_args(plan=ParallelPlan())
     if "--kv-cache-dtype" not in args:
         return None
     return args[args.index("--kv-cache-dtype") + 1]

@@ -211,13 +211,30 @@ def _head_instances(config) -> list:
     if not peer_ips:
         return []
     iid = f"{config.node_id or 'head'}:{config.model}"
+
+    # The split this head is actually running. A config that carries no
+    # resolved sizes (an older config.json, or a systemd-path launch that
+    # never went through /api/sharding/launch) reads as tensor-parallel across
+    # every node — what this advertised before the other axes existed.
+    from ainode.engine.parallelism import ParallelPlan
+
+    plan = ParallelPlan.from_dict({
+        "tensor_parallel_size": getattr(config, "tensor_parallel_size", 0) or 0,
+        "pipeline_parallel_size": getattr(config, "pipeline_parallel_size", 0) or 0,
+        "data_parallel_size": getattr(config, "data_parallel_size", 0) or 0,
+    })
+    if plan.world_size != 1 + len(peer_ips) or not plan.is_distributed:
+        plan = ParallelPlan(tensor_parallel_size=1 + len(peer_ips))
+
     return [InstanceRecord(
         instance_id=iid,
         model=config.model or "",
         head_node_id=config.node_id or "unknown",
         peer_ips=peer_ips,
         api_port=config.api_port,
-        tensor_parallel_size=1 + len(peer_ips),
+        tensor_parallel_size=plan.tensor_parallel_size,
+        pipeline_parallel_size=plan.pipeline_parallel_size,
+        data_parallel_size=plan.data_parallel_size,
         status="serving",
     ).to_dict()]
 
@@ -1047,6 +1064,8 @@ async def handle_cluster_resources(request: web.Request) -> web.Response:
     # advertises the instances it heads. Resolve each instance's peer FABRIC IPs
     # (BUG D) back to member node ids/names. `distributed_instance` (singular)
     # stays = the first one, for one release of back-compat.
+    from ainode.discovery.instance import InstanceRecord
+
     by_fabric = {
         (getattr(m, "fabric_ip", "") or ""): m
         for m in cluster.members() if getattr(m, "fabric_ip", "")
@@ -1071,6 +1090,13 @@ async def handle_cluster_resources(request: web.Request) -> web.Response:
             "peer_node_ids": peer_node_ids,
             "member_names": member_names,
             "tensor_parallel_size": inst.get("tensor_parallel_size") or (1 + len(peers)),
+            # PP/DP default to 1, so an instance advertised by a node running an
+            # older build reads as the tensor-parallel split it actually is.
+            "pipeline_parallel_size": inst.get("pipeline_parallel_size") or 1,
+            "data_parallel_size": inst.get("data_parallel_size") or 1,
+            # Ready-made badge text ("PP=3", "TP=2 · PP=2") so the UI does not
+            # re-derive the label from three sizes in three places.
+            "parallel_label": InstanceRecord.from_dict(inst).parallel_label(),
             "model": model,
             "status": inst.get("status", "serving"),
         }

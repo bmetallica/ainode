@@ -126,6 +126,20 @@ class NodeConfig:
     # it instead of the shared Ethernet. A peer missing here transfers over its
     # peer_ips address, which is what every node did before.
     peer_transfer_ips: Dict[str, str] = field(default_factory=dict)
+    # How the model is split across the member nodes, resolved at launch from
+    # the requested strategy and the node count (see engine/parallelism.py) and
+    # snapshotted here so the backend can emit the right vLLM flags.
+    #
+    # All zero = "not resolved", which the backends read as tensor-parallel
+    # across every node — what they computed from peer_ips before these fields
+    # existed, so an old config.json or a launch path that never sets them
+    # behaves exactly as it did. A 3-node launch cannot use that fallback (no
+    # model supports TP=3), so it always carries an explicit plan.
+    parallel_strategy: str = ""  # "" | tensor | pipeline | data
+    tensor_parallel_size: int = 0
+    pipeline_parallel_size: int = 0
+    data_parallel_size: int = 0
+
     # SSH user for head-to-worker passwordless login (eugr launcher uses it).
     ssh_user: str = "ubuntu"
     # Interface NCCL/Ray/Gloo bind to (e.g. "enp1s0f0np0" for DGX Spark direct

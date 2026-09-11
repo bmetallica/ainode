@@ -18,6 +18,14 @@ Parent: `../../AGENTS.md` · State / "why" / history: Obsidian Vault → `Titani
 - **`--gpu-memory-utilization` target `0.85`** (config default is `0.9`).
 - `--kv-cache-dtype fp8` is required for long context (32k+) or it OOMs.
 
+## Parallelism (tensor / pipeline / data)
+
+- **Never derive the split from the node count in a backend.** `ainode/engine/parallelism.py` owns it: the launch path resolves a `ParallelPlan` and snapshots it into the config; backends read it. A config with no resolved sizes falls back to TP across every node, which is what the backends computed before — keep that fallback, it is what makes an old `config.json` and the systemd launch path keep working.
+- **TP is only ever 1, 2, 4 or 8.** Tensor parallelism splits attention heads and head counts are powers of two, so TP=3 has no models behind it. `plan_for()` refuses it with the alternatives named; do not add a bypass.
+- **A 3-node cluster means pipeline (or data) parallel.** `auto` resolves to PP there. Upstream's working 3-node recipe is `-tp 1 -pp 3` (`recipes/3x-spark-cluster/`, MIT).
+- **Data parallelism is unverified on this hardware** — documented upstream, no recipe behind it. `recommend_strategy()` never picks it; it stays an explicit operator choice. If you verify it, say so here.
+- Emit a `--*-parallel-size` flag only when that axis is > 1, so a solo serve and a plain TP launch produce the command line they always did.
+
 ## Fabric topology (mesh vs. direct)
 
 - `ainode/cluster/topology.py` classifies by **active CX7 link count**: 2 = `DIRECT`, 4 = `MESH`, anything else = `UNKNOWN`. `UNKNOWN` behaves exactly like `DIRECT` — degrade to current behaviour, never refuse to launch.
