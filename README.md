@@ -21,7 +21,6 @@ platform, open source ChatGPT alternative.
   <a href="https://github.com/bmetallica/ainode/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/bmetallica/ainode?display_name=tag&style=flat-square&color=76B900&label=release"></a>
   <a href="https://github.com/bmetallica/ainode/blob/main/LICENSE"><img alt="license" src="https://img.shields.io/badge/license-Apache%202.0-76B900?style=flat-square"></a>
   <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white">
-  <a href="https://hub.docker.com/r/argentaios/ainode"><img alt="docker pulls" src="https://img.shields.io/docker/pulls/argentaios/ainode?style=flat-square&logo=docker&logoColor=white&label=dockerhub&color=2496ED"></a>
   <a href="https://github.com/users/bmetallica/packages/container/package/ainode"><img alt="ghcr" src="https://img.shields.io/badge/ghcr-bmetallica%2Fainode-24292e?style=flat-square&logo=github"></a>
   <img alt="CUDA" src="https://img.shields.io/badge/CUDA-13-76B900?style=flat-square&logo=nvidia&logoColor=white">
   <img alt="vLLM" src="https://img.shields.io/badge/vLLM-0.19-7C3AED?style=flat-square">
@@ -41,6 +40,59 @@ platform, open source ChatGPT alternative.
   &nbsp;·&nbsp;
   <a href="#state-of-distributed-inference-june-2026">What Works / What Doesn't</a>
 </p>
+
+---
+
+## This is a fork
+
+**Upstream: [getainode/ainode](https://github.com/getainode/ainode)** — everything
+below is theirs unless noted. Apache-2.0, same as this fork.
+
+It exists to run AINode on **three DGX Sparks wired in a switchless ring**, which
+upstream does not support. Two assumptions in the original break on that topology:
+
+1. **One cluster NIC per node.** `cluster_interface` is a single field that
+   simultaneously names the NCCL socket interface, the address the node
+   announces, the SSH/Ray target, and the subnet filter for HCA selection. That
+   holds while every node shares one ConnectX-7 subnet. In a ring it does not —
+   each port is a private link to a *different* neighbour, so no CX7 subnet
+   reaches all three nodes.
+2. **Tensor parallelism only.** The launch path always built TP = node count.
+   TP splits attention heads across ranks and head counts are powers of two, so
+   **TP=3 has no models behind it** — three nodes were simply unusable.
+
+What this fork adds:
+
+- **Fabric topology detection** — 2 active CX7 links = direct-attach, 4 = mesh.
+  On a mesh, coordination (Ray, discovery, SSH) moves to the shared 10G Ethernet
+  while NCCL gets all four RoCE devices and routes the ring itself.
+- **A second address list** so model weights travel over a direct RoCE cable
+  where one exists, instead of the coordination Ethernet.
+- **Pipeline and data parallel** in the launch path, the state model and the UI.
+  An impossible split is refused at the API with the alternatives named, rather
+  than failing deep inside vLLM startup.
+- **Node-failure handling** — a head no longer crash-loops when a peer is
+  offline, degraded instances are visible, and one click relaunches them on the
+  nodes that are still up.
+- **Self-contained distribution** — its own image, installer and CI, so it does
+  not depend on upstream's releases.
+
+The network heuristics and the 3-node parallelism constraints are adapted from
+[eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) (MIT), whose
+`autodiscover.sh`, `launch-cluster.sh` and `docs/NETWORKING.md` document this
+hardware. Borrowed logic is marked at each site; there are no verbatim copies.
+
+Background on what was changed and why: [`docs/mesh/PHASE1-ANALYSE.md`](docs/mesh/PHASE1-ANALYSE.md)
+(an audit of the original code before any of it was touched — German) and
+[`docs/mesh/BOOTSTRAP.md`](docs/mesh/BOOTSTRAP.md) (publishing this fork's image).
+
+**If you are not running a 3-node mesh, upstream is the better choice** — it is
+the maintained project, and the mesh work here is of no use to you. Two fixes
+found along the way are not mesh-specific and apply to any cluster, so they are
+worth carrying upstream rather than keeping here: a head that crash-looped when
+a peer was offline, and a completed model download that reported stale progress
+because its progress poller raced the completion write. Both are in the
+[changelog](CHANGELOG.md).
 
 ---
 
@@ -155,14 +207,13 @@ current member list with per-node role, address, and last-seen.
 Upgrade is `ainode update` (resolves + pulls the newest pinned release
 and restarts) — or `ainode update 0.5.2` to pin a specific version.
 
-**Prefer to pull the image yourself?** Both registries serve identical
-images — GHCR is canonical (what the installer uses), Docker Hub is a
-public mirror:
+**Prefer to pull the image yourself?** GHCR is the only registry this fork
+publishes to; Docker Hub mirroring is opt-in and off by default (see
+[`docs/mesh/BOOTSTRAP.md`](docs/mesh/BOOTSTRAP.md)):
 
 ```bash
-docker pull ghcr.io/bmetallica/ainode:latest      # canonical (always newest)
-docker pull argentaios/ainode:latest             # Docker Hub mirror
-# pin a release instead: …/ainode:0.5.2
+docker pull ghcr.io/bmetallica/ainode:latest     # always newest
+# pin a release instead: ghcr.io/bmetallica/ainode:0.5.6
 ```
 
 ### Two nodes (distributed mode)
