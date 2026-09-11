@@ -1,208 +1,113 @@
-# AINode auf 3 DGX Sparks im Ring — Schritt für Schritt
+# AINode auf dem Cluster `ai-vkv` — Schritt für Schritt
 
-Für genau eine Konfiguration: **drei DGX Sparks, ringförmig ohne Switch
-verkabelt**, zusätzlich alle drei am gemeinsamen 10G-Ethernet (`enP7s7`).
-Der Cluster wurde mit **NVIDIA Sync** aufgesetzt.
+Für genau diesen Cluster: **drei DGX Sparks, ringförmig ohne Switch**, alle drei
+zusätzlich am flachen 10G-LAN. Aufgesetzt mit **NVIDIA Sync**.
 
-Jeder Schritt ist **pro Knoten einzeln** ausgeschrieben. Wo etwas auf allen
-drei Knoten identisch ist, steht es einmal mit dem Hinweis „auf allen drei".
+Alle Befehle enthalten die echten Adressen — nichts zu ersetzen. Jeder Schritt
+ist pro Knoten einzeln ausgeschrieben; wo etwas überall gleich ist, steht es
+einmal mit dem Hinweis „auf allen drei".
 
-Namen in dieser Anleitung: `spark1`, `spark2`, `spark3`. `spark1` ist der Head
-(Web-UI + API). Ersetze sie durch deine echten Hostnamen.
+**Head ist `Spark1`** (Web-UI + API).
 
----
+## Deine Topologie
 
-## Bevor du anfängst: was NVIDIA Sync bereits gemacht hat
+| | Spark1 | Spark2 | Spark3 |
+|---|---|---|---|
+| **LAN** `enP7s7` | `192.168.1.2` | `192.168.1.3` | `192.168.1.4` |
+| Port 0 `enp1s0f0np0` | `10.100.36.1` | `10.100.34.2` | `10.100.32.1` |
+| Port 0 `enP2p1s0f0np0` | `10.100.37.1` | `10.100.35.2` | `10.100.33.1` |
+| Port 1 `enp1s0f1np1` | `10.100.32.2` | `10.100.36.2` | `10.100.34.1` |
+| Port 1 `enP2p1s0f1np1` | `10.100.33.2` | `10.100.37.2` | `10.100.35.1` |
 
-NVIDIA Sync koppelt Sparks paarweise über den 200G-QSFP-Link und vergibt dabei
-selbst IP-Adressen auf den ConnectX-7-Interfaces. **Für einen Dreier-Ring
-reicht das nicht**, und die vergebenen Adressen kollidieren in der Regel mit
-dem Schema, das der Ring braucht: dort muss jeder der vier CX7-Ports pro Knoten
-in einem *eigenen* /24 liegen, und die beiden Enden eines Kabels müssen sich
-dasselbe /24 teilen.
+Daraus ergeben sich sechs Punkt-zu-Punkt-Netze, je eins pro Kabel-Twin:
 
-Sieh dir zuerst an, was aktuell gesetzt ist — **auf allen drei**:
+| Netz | Verbindet |
+|---|---|
+| `10.100.36.0/24`, `10.100.37.0/24` | Spark1 **Port 0** ↔ Spark2 **Port 1** |
+| `10.100.34.0/24`, `10.100.35.0/24` | Spark2 **Port 0** ↔ Spark3 **Port 1** |
+| `10.100.32.0/24`, `10.100.33.0/24` | Spark3 **Port 0** ↔ Spark1 **Port 1** |
+
+```
+        Spark1
+       /      \
+ 32/33          36/37
+     /            \
+ Spark3 --34/35-- Spark2
+```
+
+> **NVIDIA Sync hat das korrekt aufgesetzt — du musst am Netz nichts ändern.**
+> Ich hatte in einer früheren Fassung dieser Anleitung angenommen, Sync würde
+> für einen Dreier-Ring ein kollidierendes Schema schreiben. Für diesen Cluster
+> stimmt das nicht: die Steckung folgt dem Muster „Port 0 an Port 1 des
+> Nachbarn", jedes Interface liegt in einem eigenen Subnetz, und beide Enden
+> eines Kabels teilen sich eins. Genau das braucht der Ring.
+>
+> Bei drei Knoten ist ein Ring zugleich **voll vermascht**: jedes Paar hat ein
+> direktes Kabel. Deshalb funktioniert auch Tensor-Parallel über **je zwei**
+> beliebige der drei Knoten.
+
+### Eine Sache zum Nachsehen
+
+Die Adresse für Spark3 stand in deiner Ausgabe als `192.168.4` — vermutlich ein
+Tippfehler für `192.168.1.4`. Die Anleitung geht davon aus. Prüf es kurz:
 
 ```bash
-ip -br -4 addr show | grep -E 'enp1s0f|enP2p1s0f|enP7s7'
-ls /etc/netplan/
+ssh Spark3 ip -br -4 addr show enP7s7
 ```
 
-Wenn dort bereits CX7-Adressen stehen, die nicht dem Schema in Schritt 2
-entsprechen, ersetzt du sie dort. Die von NVIDIA Sync eingerichtete
-SSH-Verbindung und der Hostname-Eintrag bleiben nützlich — die nimmst du mit.
-
-> **Ehrlicher Hinweis:** Ich kann nicht prüfen, was deine Sync-Version konkret
-> geschrieben hat. Vergleiche die Ausgabe oben mit Schritt 2 und passe nur an,
-> was abweicht. Lösche keine Netplan-Datei, ohne vorher hineingesehen zu haben.
+Wäre Spark3 tatsächlich in einem anderen Subnetz als Spark1 und Spark2, würde
+die Koordination nicht funktionieren — alle drei müssen sich über `enP7s7`
+gegenseitig erreichen.
 
 ---
 
-## Schritt 1 — Verkabelung prüfen
+## Schritt 1 — Verkabelung und Adressen bestätigen
 
-Der Ring braucht eine bestimmte Steckung: **Port 0 des einen Sparks an Port 1
-des nächsten** (nicht Port 0 an Port 0, wie beim Zweier-Setup).
-
-```
-spark1 Port 0  ──────  Port 1 spark2
-spark2 Port 0  ──────  Port 1 spark3
-spark3 Port 0  ──────  Port 1 spark1
-```
-
-Zusätzlich: alle drei mit dem **RJ-45-10G-Port** (`enP7s7`) am selben Switch /
-im selben flachen LAN. Das ist im Ring nicht optional — es ist der einzige Weg,
-auf dem jeder Knoten jeden erreicht.
-
-Prüfen — **auf allen drei**:
+**Auf allen drei** — vier aktive CX7-Links:
 
 ```bash
 ibdev2netdev | grep 'Up)' | wc -l
 ```
 
-**Erfolg: `4`.** Vier aktive CX7-Links bedeuten „beide QSFP-Ports verkabelt".
-Steht dort `2`, ist nur ein Kabel gesteckt oder eine Seite ist down — dann
-stimmt die Verkabelung nicht und alles Weitere greift nicht.
+**Erfolg: `4`.** Genau darauf stützt sich die Mesh-Erkennung von AINode.
 
-Fehlt `ibdev2netdev`, geht es auch ohne:
+Fehlt `ibdev2netdev`:
 
 ```bash
-for d in /sys/class/infiniband/*/ports/1/state; do cat "$d"; done
+for f in /sys/class/infiniband/*/ports/1/state; do cat "$f"; done
 ```
 Erfolg: vier Zeilen, alle beginnend mit `4:` (ACTIVE).
 
+Dann vom **Spark1** aus die drei Direktlinks prüfen:
+
+```bash
+ping -c2 10.100.36.2      # -> Spark2 über Port 0
+ping -c2 10.100.32.1      # -> Spark3 über Port 1
+ssh Spark2 ping -c2 10.100.34.1   # Spark2 -> Spark3 über Port 0
+```
+
+**Erfolg: alle drei antworten.** Damit ist der Ring geschlossen.
+
 ---
 
-## Schritt 2 — Netplan, pro Knoten einzeln
+## Schritt 2 — Netzkonfiguration
 
-Jeder der vier CX7-Ports bekommt ein **eigenes /24**. Die beiden Enden eines
-Kabels teilen sich ein /24. MTU 9000 auf allen CX7-Interfaces.
+**Nichts zu tun.** NVIDIA Sync hat die Interfaces bereits korrekt vergeben
+(siehe oben). Diesen Schritt gibt es hier nur, damit die Nummerierung mit der
+allgemeinen Fassung übereinstimmt.
 
-> **Wichtig:** `enP7s7` (10G) wird hier **nicht** angefasst — das bleibt bei
-> DHCP oder deiner bestehenden statischen Konfiguration.
+Falls du die Konfiguration später einmal von Hand nachbauen musst, steht das
+Schema im Anhang am Ende dieser Datei.
 
-### spark1
-
-`/etc/netplan/40-cx7.yaml`:
-
-```yaml
-network:
-  version: 2
-  ethernets:
-    enp1s0f0np0:            # Port 0 → spark2 Port 1
-      dhcp4: no
-      dhcp6: no
-      link-local: []
-      mtu: 9000
-      addresses: [192.168.177.11/24]
-    enP2p1s0f0np0:          # Port 0, zweiter Twin
-      dhcp4: no
-      dhcp6: no
-      link-local: []
-      mtu: 9000
-      addresses: [192.168.178.11/24]
-    enp1s0f1np1:            # Port 1 → spark3 Port 0
-      dhcp4: no
-      dhcp6: no
-      link-local: []
-      mtu: 9000
-      addresses: [192.168.187.11/24]
-    enP2p1s0f1np1:          # Port 1, zweiter Twin
-      dhcp4: no
-      dhcp6: no
-      link-local: []
-      mtu: 9000
-      addresses: [192.168.188.11/24]
-```
-
-### spark2
-
-```yaml
-network:
-  version: 2
-  ethernets:
-    enp1s0f0np0:            # Port 0 → spark3 Port 1
-      dhcp4: no
-      dhcp6: no
-      link-local: []
-      mtu: 9000
-      addresses: [192.168.197.12/24]
-    enP2p1s0f0np0:
-      dhcp4: no
-      dhcp6: no
-      link-local: []
-      mtu: 9000
-      addresses: [192.168.198.12/24]
-    enp1s0f1np1:            # Port 1 → spark1 Port 0
-      dhcp4: no
-      dhcp6: no
-      link-local: []
-      mtu: 9000
-      addresses: [192.168.177.12/24]
-    enP2p1s0f1np1:
-      dhcp4: no
-      dhcp6: no
-      link-local: []
-      mtu: 9000
-      addresses: [192.168.178.12/24]
-```
-
-### spark3
-
-```yaml
-network:
-  version: 2
-  ethernets:
-    enp1s0f0np0:            # Port 0 → spark1 Port 1
-      dhcp4: no
-      dhcp6: no
-      link-local: []
-      mtu: 9000
-      addresses: [192.168.187.13/24]
-    enP2p1s0f0np0:
-      dhcp4: no
-      dhcp6: no
-      link-local: []
-      mtu: 9000
-      addresses: [192.168.188.13/24]
-    enp1s0f1np1:            # Port 1 → spark2 Port 0
-      dhcp4: no
-      dhcp6: no
-      link-local: []
-      mtu: 9000
-      addresses: [192.168.197.13/24]
-    enP2p1s0f1np1:
-      dhcp4: no
-      dhcp6: no
-      link-local: []
-      mtu: 9000
-      addresses: [192.168.198.13/24]
-```
-
-### Anwenden — auf allen drei
+Eine Kontrolle lohnt sich trotzdem — **auf allen drei**:
 
 ```bash
-sudo chmod 600 /etc/netplan/40-cx7.yaml
-sudo netplan apply
+ip -br -4 addr show | grep -E 'enp1s0f|enP2p1s0f'
 ```
 
-**Nie zwei Interfaces ins selbe Subnetz legen.** Das verwirrt die
-Autoerkennung und zerlegt das Routing — sowohl bei AINode als auch bei NCCL.
-
-### Verkabelung gegen die Adressen prüfen
-
-Vom **spark1** aus:
-
-```bash
-ping -c2 192.168.177.12    # → spark2, über Port 0
-ping -c2 192.168.187.13    # → spark3, über Port 1
-```
-Vom **spark2** aus:
-```bash
-ping -c2 192.168.197.13    # → spark3, über Port 0
-```
-
-**Erfolg: alle drei antworten.** Wenn nicht, sind zwei Kabel vertauscht —
-korrigiere die Steckung, nicht die Adressen.
+**Erfolg:** vier Zeilen, vier verschiedene `10.100.3x`-Netze. Tauchte ein Netz
+zweimal auf, wäre das ein Fehler: zwei Interfaces im selben Subnetz zerlegen
+das Routing und die Autoerkennung.
 
 ---
 
@@ -214,38 +119,47 @@ korrigiere die Steckung, nicht die Adressen.
 ip -br -4 addr show enP7s7
 ```
 
-**Erfolg:** Status `UP` und eine Adresse aus deinem LAN, z. B.
-`10.0.0.11/24`. Alle drei müssen im **selben** Subnetz liegen und sich
-gegenseitig pingen können. Notiere die drei Adressen — du brauchst sie gleich.
+**Erfolg:** `UP` und die erwartete Adresse — Spark1 `192.168.1.2`,
+Spark2 `192.168.1.3`, Spark3 `192.168.1.4`. Alle drei im selben `/24`.
 
-In dieser Anleitung: `spark1 = 10.0.0.11`, `spark2 = 10.0.0.12`, `spark3 = 10.0.0.13`.
+Gegenseitige Erreichbarkeit vom **Spark1**:
+
+```bash
+ping -c2 192.168.1.3 && ping -c2 192.168.1.4
+```
+
+Dieses Netz trägt Ray, die UDP-Discovery und SSH. Im Ring ist es der einzige
+Weg, auf dem jeder Knoten jeden erreicht — über die `10.100.3x`-Links erreicht
+jeder Knoten nur seine zwei direkten Nachbarn, nicht sich selbst als Gruppe.
 
 ---
 
 ## Schritt 4 — Passwortloses SSH vom Head zu den anderen
 
-Nur vom Head (`spark1`) zu den beiden anderen — **über die 10G-Adressen**, nicht
-über die CX7-Adressen.
+NVIDIA Sync hat dir die Aliase `Spark1` / `Spark2` / `Spark3` eingerichtet. Die
+sind für deine eigenen Befehle bequem — **AINode benutzt sie nicht.** Der Head
+verbindet sich mit `<ssh_user>@192.168.1.3`, also über die IP. Ein Alias in
+`~/.ssh/config` mit eigenem Key oder Benutzernamen greift dabei unter Umständen
+nicht.
 
-Auf **spark1**:
+Deshalb genau so testen, wie AINode es tut — auf **Spark1**:
+
+```bash
+ssh -o BatchMode=yes "$USER@192.168.1.3" hostname
+ssh -o BatchMode=yes "$USER@192.168.1.4" hostname
+```
+
+**Erfolg:** beide geben ihren Hostnamen aus, ohne Passwortabfrage. Schlägt es
+fehl, obwohl `ssh Spark2` funktioniert, liegt es am Alias — dann nachlegen:
 
 ```bash
 [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
-ssh-copy-id -o StrictHostKeyChecking=accept-new 10.0.0.12
-ssh-copy-id -o StrictHostKeyChecking=accept-new 10.0.0.13
+ssh-copy-id -o StrictHostKeyChecking=accept-new "$USER@192.168.1.3"
+ssh-copy-id -o StrictHostKeyChecking=accept-new "$USER@192.168.1.4"
 ```
 
-Prüfen:
-
-```bash
-ssh -o BatchMode=yes 10.0.0.12 hostname
-ssh -o BatchMode=yes 10.0.0.13 hostname
-```
-
-**Erfolg:** beide geben ihren Hostnamen aus, ohne nach einem Passwort zu fragen.
-
-Falls NVIDIA Sync bereits Schlüssel verteilt hat, funktioniert das ggf. sofort —
-dann überspringe `ssh-copy-id`.
+Der Container mountet `~/.ssh` des Host-Benutzers read-only, der Key muss also
+dem Benutzer gehören, unter dem du installierst.
 
 ---
 
@@ -260,8 +174,9 @@ sudo mkdir -p /mnt/shared-models
 Der Installer bricht ab, wenn das Verzeichnis fehlt. Ein leeres Verzeichnis
 genügt zum Start.
 
-**Empfohlen:** exportiere es per NFS vom `spark1` und mounte es auf den anderen
-beiden — **über die 10G-Adresse**, nicht über eine CX7-Adresse. Der Ring ist
+**Empfohlen:** exportiere es per NFS von `Spark1` (`192.168.1.2`) und mounte es
+auf den anderen beiden — **über die 10G-Adresse**, nicht über eine
+`10.100.3x`-Adresse. Der Ring ist
 nicht voll vermascht gedacht für NFS, und AINode verteilt Modellgewichte
 ohnehin selbst über die Direktlinks (siehe Schritt 9).
 
@@ -293,8 +208,8 @@ docker build -f scripts/Dockerfile.ainode -t ainode:dev .
 Dann das Image auf die anderen beiden bringen:
 
 ```bash
-docker save ainode:dev | ssh 10.0.0.12 docker load
-docker save ainode:dev | ssh 10.0.0.13 docker load
+docker save ainode:dev | ssh Spark2 docker load
+docker save ainode:dev | ssh Spark3 docker load
 ```
 
 ---
@@ -304,7 +219,7 @@ docker save ainode:dev | ssh 10.0.0.13 docker load
 `INSTALLER` steht für:
 `https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh`
 
-### spark1 — der Head
+### Spark1 — der Head (`192.168.1.2`)
 
 ```bash
 curl -fsSL $INSTALLER | bash
@@ -319,13 +234,13 @@ Bei einem lokal gebauten Image (Weg B):
 AINODE_IMAGE=ainode:dev bash -c "$(curl -fsSL $INSTALLER)"
 ```
 
-### spark2 — Member
+### Spark2 — Member (`192.168.1.3`)
 
 ```bash
 curl -fsSL $INSTALLER | bash -s -- --job worker
 ```
 
-### spark3 — Member
+### Spark3 — Member (`192.168.1.4`)
 
 ```bash
 curl -fsSL $INSTALLER | bash -s -- --job worker
@@ -356,7 +271,7 @@ p = pathlib.Path.home() / ".ainode" / "config.json"
 cfg = json.loads(p.read_text())
 cfg["coord_interface"] = "enP7s7"     # Ray, Discovery, SSH
 cfg["rdma_hcas"] = []                 # leer = automatisch alle vier RoCE-Geräte
-cfg["cluster_id"] = "spark-mesh"      # auf allen drei identisch!
+cfg["cluster_id"] = "ai-vkv"          # auf allen drei identisch!
 p.write_text(json.dumps(cfg, indent=2))
 print(json.dumps(cfg, indent=2))
 EOF
@@ -383,7 +298,7 @@ docker exec ainode ainode doctor
 Fabric                 mesh
 Active CX7 links       4
 Coordination iface     enP7s7
-Coordination IP        10.0.0.11             ← die 10G-Adresse, keine 192.168.x
+Coordination IP        192.168.1.2           ← die 10G-Adresse, keine 10.100.3x
 NCCL_IB_HCA            roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1
 NCCL_IB_MERGE_NICS     0
 NCCL_IB_SUBNET_AWARE_ROUTING  1
@@ -395,7 +310,7 @@ NCCL_NET_PLUGIN        none
 | `Fabric direct` | nur 2 Links aktiv → zurück zu Schritt 1, ein Kabel fehlt |
 | `Fabric unknown` | eine andere Zahl als 2 oder 4 → Verkabelung prüfen |
 | `Coordination IP <none>` | `enP7s7` hat keine Adresse → Schritt 3 |
-| eine `192.168.x`-Adresse als Coordination IP | `coord_interface` wurde nicht gesetzt → Schritt 8 |
+| eine `10.100.3x`-Adresse als Coordination IP | `coord_interface` wurde nicht gesetzt → Schritt 8 |
 
 Dann vom **spark1** prüfen, dass alle drei einander sehen:
 
@@ -404,8 +319,8 @@ curl -s localhost:3000/api/cluster/resources \
   | jq '.nodes[] | {hostname, fabric_ip, ib_ips}'
 ```
 
-**Erfolg:** drei Einträge; jeder mit seiner **10G-Adresse** als `fabric_ip` und
-**vier** `192.168.1xx.x`-Adressen in `ib_ips`. Die `fabric_ip` darf in `ib_ips`
+**Erfolg:** drei Einträge — `fabric_ip` ist `192.168.1.2` / `.3` / `.4`, und
+`ib_ips` enthält je **vier** `10.100.3x`-Adressen. Die `fabric_ip` darf in `ib_ips`
 nicht vorkommen — das sind zwei getrennte Wege: Koordination über 10G,
 Massentransfer über die Direktlinks.
 
@@ -413,7 +328,7 @@ Massentransfer über die Direktlinks.
 
 ## Schritt 10 — Modell über alle drei Knoten starten
 
-Im Browser auf `http://<spark1>:3000`.
+Im Browser auf `http://192.168.1.2:3000`.
 
 1. **MODELS** → gewünschtes Modell herunterladen und warten, bis es fertig ist.
 2. Im Launch-Bereich: Modell auswählen.
@@ -432,7 +347,7 @@ ergibt sich bei drei Knoten ohnehin **PP=3**.
 Dasselbe per API:
 
 ```bash
-curl -s -X POST http://<spark1>:3000/api/sharding/launch \
+curl -s -X POST http://192.168.1.2:3000/api/sharding/launch \
   -H 'Content-Type: application/json' \
   -d '{"model":"<repo/modell>","node_ids":["<id1>","<id2>","<id3>"],"strategy":"pipeline"}' | jq
 ```
@@ -456,7 +371,7 @@ docker exec ainode tail -f /root/.ainode/logs/distributed.log
 ersten echten Prompt sterben. Teste mit einer langen Eingabe:
 
 ```bash
-curl -s http://<spark1>:8000/v1/chat/completions \
+curl -s http://192.168.1.2:8000/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"<repo/modell>","messages":[{"role":"user","content":"Erkläre in 200 Wörtern, wie Pipeline-Parallelität funktioniert."}]}' | jq -r '.choices[0].message.content'
 ```
@@ -490,7 +405,7 @@ sichtbaren Ausfall gegen ein OOM tauschen.
 Prüfen:
 
 ```bash
-curl -s http://<spark1>:3000/api/cluster/resources \
+curl -s http://192.168.1.2:3000/api/cluster/resources \
   | jq '.distributed_instances[] | {model, degraded, missing_peer_ips, surviving_node_ids}'
 ```
 
@@ -548,3 +463,64 @@ journalctl -u ainode -n 100                                       # Dienst selbs
   automatische Übernahme durch einen anderen Knoten.
 - **Automatischer Neustart nach Knotenausfall** — bewusst nicht, siehe
   Schritt 11.
+
+---
+
+## Anhang — Netzschema von Hand nachbauen
+
+Nur nötig, falls die Konfiguration von NVIDIA Sync einmal verloren geht. Die
+Regeln, aus denen sich alles ableitet:
+
+1. **Steckung:** Port 0 eines Sparks an Port 1 des nächsten, im Kreis.
+2. Jedes der vier CX7-Interfaces pro Knoten bekommt ein **eigenes** Subnetz.
+3. Die beiden Enden eines Kabels teilen sich ein Subnetz.
+4. MTU 9000 auf allen vier.
+5. `enP7s7` bleibt unangetastet.
+
+Für diesen Cluster, `/etc/netplan/40-cx7.yaml` — Werte aus der Tabelle oben:
+
+**Spark1**
+```yaml
+network:
+  version: 2
+  ethernets:
+    enp1s0f0np0:   {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.36.1/24]}
+    enP2p1s0f0np0: {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.37.1/24]}
+    enp1s0f1np1:   {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.32.2/24]}
+    enP2p1s0f1np1: {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.33.2/24]}
+```
+
+**Spark2**
+```yaml
+network:
+  version: 2
+  ethernets:
+    enp1s0f0np0:   {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.34.2/24]}
+    enP2p1s0f0np0: {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.35.2/24]}
+    enp1s0f1np1:   {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.36.2/24]}
+    enP2p1s0f1np1: {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.37.2/24]}
+```
+
+**Spark3**
+```yaml
+network:
+  version: 2
+  ethernets:
+    enp1s0f0np0:   {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.32.1/24]}
+    enP2p1s0f0np0: {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.33.1/24]}
+    enp1s0f1np1:   {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.34.1/24]}
+    enP2p1s0f1np1: {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.35.1/24]}
+```
+
+```bash
+sudo chmod 600 /etc/netplan/40-cx7.yaml
+sudo netplan apply
+```
+
+Prüfe die tatsächliche Präfixlänge, bevor du das übernimmst — NVIDIA Sync setzt
+für Punkt-zu-Punkt-Links teils `/30` statt `/24`. Beides funktioniert, solange
+Regel 2 und 3 gelten:
+
+```bash
+ip -br -4 addr show enp1s0f0np0
+```
