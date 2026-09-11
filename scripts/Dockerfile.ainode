@@ -66,6 +66,28 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# -- eugr launcher ---------------------------------------------------------
+# EugrBackend shells out to /opt/spark-vllm-docker/launch-cluster.sh for both
+# solo and distributed serves: the launcher is what knows how to place Ray
+# workers on peers over SSH and how to hand each node its NCCL environment.
+#
+# It used to be present because this image was FROM ainode-base (the eugr
+# image). Since the orchestrator and engine images were split it is not, and
+# the default backend fails every launch with "eugr launcher missing at
+# /opt/spark-vllm-docker/launch-cluster.sh".
+#
+# Pinned to the same commit scripts/build-base-image.sh builds the engine from,
+# so the launcher and the image it drives always agree. Fetched as a tarball
+# rather than cloned: no git in this image, and we want the scripts, not the
+# history. Keep EUGR_COMMIT in step with build-base-image.sh.
+ARG EUGR_COMMIT=c026c92bd0c1236f947ac212565b15a33ba1b4e7
+RUN set -eux; \
+    mkdir -p /opt/spark-vllm-docker; \
+    curl -fsSL "https://codeload.github.com/eugr/spark-vllm-docker/tar.gz/${EUGR_COMMIT}" \
+      | tar -xz --strip-components=1 -C /opt/spark-vllm-docker; \
+    chmod +x /opt/spark-vllm-docker/*.sh; \
+    test -x /opt/spark-vllm-docker/launch-cluster.sh
+
 # -- Python deps -----------------------------------------------------------
 # Project + its runtime deps from pyproject.toml (aiohttp, pynvml, psutil,
 # rich, huggingface_hub). Plus:
@@ -82,7 +104,13 @@ RUN pip install --no-cache-dir \
 # invalidate the smallest layer possible.
 COPY pyproject.toml README.md /src/
 COPY ainode /src/ainode
-RUN pip install --no-cache-dir /src \
+# [embeddings] pulls sentence-transformers (and torch). Without it the
+# Embeddings tab renders a Load button that can only fail: the manager raises
+# an install hint at first use. Torch adds roughly 2 GB to a nominally slim
+# image — the alternative is a visible feature that does not work, which is
+# worse. Build with --build-arg AINODE_EXTRAS="" for the lean orchestrator.
+ARG AINODE_EXTRAS="[embeddings]"
+RUN pip install --no-cache-dir "/src${AINODE_EXTRAS}" \
     && rm -rf /src /root/.cache/pip
 
 # -- Bundled scripts -------------------------------------------------------

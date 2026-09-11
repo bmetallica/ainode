@@ -116,6 +116,7 @@
               <button class="config-nav-item" data-section="node">🖥️ Node Identity</button>
               <button class="config-nav-item" data-section="storage">📦 Storage</button>
               <button class="config-nav-item" data-section="training">🎓 Training Defaults</button>
+              <button class="config-nav-item" data-section="security">🔒 Security</button>
               <button class="config-nav-item" data-section="network">🌐 Network</button>
               <button class="config-nav-item" data-section="about">ℹ️ About</button>
             </nav>
@@ -177,10 +178,43 @@
               <span style="color:var(--text-muted);font-weight:400">(tokens)</span></label>
             <input id="launch-max-len" class="form-input" type="number" min="1024" step="1024"
                    placeholder="leave empty for the model's own maximum">
+            <label class="form-label">KV cache precision</label>
+            <select id="launch-kv-dtype" class="form-select">
+              <option value="">Default (fp8 — required for long context on GB10)</option>
+              <option value="fp8">fp8 — half the cache, twice the concurrency</option>
+              <option value="auto">auto — required for vision models; fp8 corrupts them on GB10</option>
+            </select>
+
+            <label class="form-label">API name(s)
+              <span style="color:var(--text-muted);font-weight:400">(comma separated)</span></label>
+            <input id="launch-served-name" class="form-input" type="text"
+                   placeholder="e.g. gemma — what clients address instead of the repo id">
+
+            <label class="form-label">Quantization
+              <span style="color:var(--text-muted);font-weight:400">(leave empty to auto-detect)</span></label>
+            <input id="launch-quantization" class="form-input" type="text"
+                   placeholder="awq, gptq, fp8 …">
+
+            <label class="form-label">Engine image
+              <span style="color:var(--text-muted);font-weight:400">(leave empty for the fleet default)</span></label>
+            <input id="launch-engine-image" class="form-input" type="text"
+                   placeholder="e.g. vllm/vllm-openai:v0.27.1">
+
             <label class="form-label">Extra vLLM flags
               <span style="color:var(--text-muted);font-weight:400">(shell style)</span></label>
             <input id="launch-extra-args" class="form-input" type="text"
                    placeholder="--max-num-batched-tokens 8192">
+
+            <label class="launch-check">
+              <input type="checkbox" id="launch-trust-remote-code">
+              <span>Trust remote code <span style="color:var(--text-muted)">— needed by some models; runs code from the repo</span></span>
+            </label>
+
+            <p class="launch-advanced-note">
+              A model with a catalog recipe already carries its proven settings.
+              Anything you set here overrides them, so leave a field empty unless
+              you know it needs changing.
+            </p>
           </details>
 
           <button class="btn-nvidia btn-full" id="launch-btn">LAUNCH</button>

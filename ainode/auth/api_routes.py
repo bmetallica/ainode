@@ -24,6 +24,11 @@ async def handle_auth_status(request: web.Request) -> web.Response:
     return web.json_response({
         "enabled": auth_cfg.enabled,
         "key_count": len(auth_cfg.api_keys),
+        # Ids only — never the key or its hash. Without them the UI can show a
+        # count but cannot offer to revoke any particular key.
+        "keys": [{"id": k.get("id"), "name": k.get("name", ""),
+                  "created_at": k.get("created_at")}
+                 for k in auth_cfg.api_keys],
     })
 
 
@@ -46,12 +51,27 @@ async def handle_auth_disable(request: web.Request) -> web.Response:
 
 
 async def handle_create_key(request: web.Request) -> web.Response:
-    """POST /api/auth/keys -- generate a new API key."""
+    """POST /api/auth/keys -- generate a new API key.
+
+    Body (optional): ``{"name": "anna's laptop"}`` — a label so keys can be
+    told apart when one needs revoking. The key itself is returned once here
+    and never again; only its hash is stored.
+    """
+    from ainode.api.params import str_field
+
+    name = ""
+    try:
+        if request.can_read_body:
+            name = str_field(await request.json(), "name")
+    except Exception:
+        name = ""
+
     auth_cfg: AuthConfig = request.app["auth_config"]
-    entry = auth_cfg.generate_key()
+    entry = auth_cfg.generate_key(name=name)
     return web.json_response({
         "api_key": entry["key"],
         "key_id": entry["id"],
+        "name": entry.get("name", ""),
     })
 
 
