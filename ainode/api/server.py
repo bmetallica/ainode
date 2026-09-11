@@ -12,6 +12,7 @@ from typing import Optional
 import aiohttp
 from aiohttp import web
 
+from ainode.api.params import str_field
 from ainode.core.config import NodeConfig
 from ainode.core.gpu import detect_gpu, GPUInfo
 from ainode.web.serve import get_index_html, get_onboarding_html, get_static_path
@@ -258,15 +259,16 @@ def _build_announcement(config: NodeConfig, engine=None) -> NodeAnnouncement:
     ib_ips: list = []
     try:
         from ainode.cluster.hca_discovery import detect_fabric_ip
-        from ainode.cluster.topology import (
-            detect_cx7_links,
-            local_ib_ips,
-            topology_for_config,
-        )
-        fabric_ip = detect_fabric_ip(topology_for_config(config).coord_interface) or ""
+        from ainode.cluster.topology import local_ib_ips, topology_for_config
+
+        # One detection, reused: topology_for_config already walked sysfs and
+        # resolved every link's address, and each walk costs an `ip` subprocess
+        # per interface. Calling detect_cx7_links() again here doubled that.
+        topo = topology_for_config(config)
+        fabric_ip = detect_fabric_ip(topo.coord_interface) or ""
         # The RoCE link addresses, so a head with a cable to us can push model
         # weights over it instead of the shared Ethernet (see transfer_address).
-        ib_ips = local_ib_ips(detect_cx7_links())
+        ib_ips = local_ib_ips(topo.links)
     except Exception:
         pass
 
@@ -799,7 +801,7 @@ async def _cluster_dispatch(request: web.Request, path: str):
         body = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
-    node_id = (body.get("node_id") or "").strip()
+    node_id = str_field(body, "node_id")
     if not node_id or node_id == config.node_id:
         # Local: hand the body to the local model handler unchanged.
         from ainode.models.api_routes import handle_model_load, handle_model_unload
@@ -1469,7 +1471,7 @@ async def handle_set_model(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    model = (body.get("model") or "").strip()
+    model = str_field(body, "model")
     if not model or "/" not in model:
         return web.json_response({"error": "model must be a HF repo ID (org/name)"}, status=400)
 
@@ -1721,6 +1723,21 @@ async def handle_patch_config(request: web.Request) -> web.Response:
         if key == "cluster_role" and value not in ("auto", "master", "worker"):
             rejected.append(key)
             continue
+        # Device names reach a file that a shell script parses, so a crafted
+        # value is code execution rather than a bad config (see
+        # topology.is_safe_device_name). Reject before it is ever stored.
+        if key in ("cluster_interface", "coord_interface"):
+            from ainode.cluster.topology import is_safe_device_name
+            if value not in ("", None) and not is_safe_device_name(value):
+                rejected.append(key)
+                continue
+        if key == "rdma_hcas":
+            from ainode.cluster.topology import is_safe_device_name
+            if not isinstance(value, list) or not all(
+                is_safe_device_name(v) for v in value
+            ):
+                rejected.append(key)
+                continue
         setattr(config, key, value)
         applied[key] = value
 

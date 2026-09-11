@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Optional
 
 from aiohttp import web
 
+from ainode.api.params import as_object, int_field, str_field, str_list_field
 from ainode.discovery.cluster import ClusterState
 from ainode.engine.parallelism import ParallelPlanError, Strategy, plan_for
 from ainode.engine.sharding import ShardingPlanner, ShardingStrategy, ShardingConfig
@@ -103,32 +105,33 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    model = body.get("model")
+    body = as_object(body)
+    model = str_field(body, "model")
     if not model:
         return web.json_response({"error": "model field required"}, status=400)
 
-    try:
-        min_nodes = int(body.get("min_nodes", 1) or 1)
-    except (TypeError, ValueError):
-        min_nodes = 1
+    min_nodes = int_field(body, "min_nodes", default=1, minimum=1) or 1
 
     # Explicit node selection (preferred): the exact nodes to span, head = this
     # node + the rest as peers. `tp_size` is the legacy count form. Either sets
     # the effective node count so the min_nodes<=1 solo path still triggers.
-    node_ids = body.get("node_ids") or None
+    node_ids = str_list_field(body, "node_ids") or None
     if node_ids:
         min_nodes = len(node_ids)
-    elif body.get("tp_size"):
-        try:
-            min_nodes = int(body.get("tp_size"))
-        except (TypeError, ValueError):
-            pass
+    else:
+        tp_size = int_field(body, "tp_size", minimum=1)
+        if tp_size:
+            min_nodes = tp_size
 
     # Parallelism axis. Previously read and ignored ("any min_nodes > 1
     # triggers TP"), which is why the UI's Pipeline pill did nothing and why a
     # 3-node launch would have built the unsupported TP=3. The plan itself is
     # resolved further down, once the participating nodes are known.
-    strategy_str = body.get("strategy") or "auto"
+    # Deliberately NOT coerced with str_field: Strategy.parse already rejects a
+    # non-string with a 400 naming the valid axes, and silently defaulting a
+    # bogus `strategy` to "auto" would hand the caller a working launch on an
+    # axis they did not ask for — on a cluster, for minutes.
+    strategy_str = body.get("strategy")
     try:
         strategy = Strategy.parse(strategy_str)
     except ParallelPlanError as exc:
@@ -226,7 +229,13 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     try:
         from ainode.cluster.topology import detect_cx7_links, transfer_address
 
-        local_links = detect_cx7_links()
+        # Off the event loop: detection shells out to `ip` once per interface,
+        # each with a 5 s timeout. On a healthy node that is milliseconds, but a
+        # NIC in a bad state would freeze every other request — including the
+        # chat proxy — for as long as it takes to time out.
+        local_links = await asyncio.get_event_loop().run_in_executor(
+            None, detect_cx7_links
+        )
         for node, coord_ip in zip(chosen, chosen_peers):
             direct = transfer_address(
                 list(getattr(node, "ib_ips", []) or []), coord_ip, local_links
@@ -360,7 +369,8 @@ async def handle_sharding_relaunch(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    model = body.get("model")
+    body = as_object(body)
+    model = str_field(body, "model")
     if not model:
         return web.json_response({"error": "model field required"}, status=400)
 
@@ -406,7 +416,7 @@ async def handle_sharding_relaunch(request: web.Request) -> web.Response:
     # Two ways a relaunch can be impossible, and the caller deserves to know
     # which. First: no split of this axis fills the surviving nodes (a TP=4
     # instance down to 3 nodes has no valid tensor split).
-    strategy = body.get("strategy") or "auto"
+    strategy = body.get("strategy")   # see the note in handle_sharding_launch
     try:
         plan = plan_for(strategy, node_count)
     except ParallelPlanError as exc:
