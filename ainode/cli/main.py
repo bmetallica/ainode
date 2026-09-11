@@ -251,12 +251,39 @@ def cmd_start(args):
     # Start the engine in the background — do NOT block the web server.
     # The web UI comes up immediately and shows a loading state while the
     # model warms up. Users should never have to stare at a terminal.
-    if not engine.start():
-        console.print("  [red]Failed to launch engine process.[/red] Check logs in ~/.ainode/logs/")
-        _remove_pid()
-        sys.exit(1)
+    #
+    # A failure here must NOT take the node down with it. The distributed path
+    # raises when a peer is unreachable (SSH refused, node powered off), and
+    # this used to let the exception escape: the process died before
+    # run_server, systemd's Restart=always brought it back, and the head
+    # crash-looped every 10s for as long as one peer was missing — with no UI
+    # to see why, and no way to relaunch across the nodes that ARE up. Serving
+    # the UI with no engine is strictly better: the operator sees the cluster,
+    # reads the reason, and can launch on the surviving nodes.
+    engine_error = ""
+    try:
+        started = engine.start()
+    except Exception as exc:
+        started, engine_error = False, f"{type(exc).__name__}: {exc}"
+    if not started:
+        console.print(
+            f"  [red]Engine did not start.[/red]"
+            f"{(' ' + engine_error) if engine_error else ''}"
+        )
+        console.print("  [dim]Check logs in ~/.ainode/logs/[/dim]")
+        if (config.distributed_mode or "solo") == "head" and config.peer_ips:
+            console.print(
+                "  [yellow]This node is configured as a distributed head over "
+                f"{len(config.peer_ips)} peer(s).[/yellow] If one is offline, "
+                "bring the web UI up and launch across the nodes that are "
+                "online — or set distributed_mode to 'solo' in "
+                "~/.ainode/config.json."
+            )
+        console.print("  [dim]Continuing without an engine so the node stays reachable.[/dim]")
+        engine = None
 
-    console.print("  [dim]Engine starting in background — web UI is ready now.[/dim]\n")
+    if engine is not None:
+        console.print("  [dim]Engine starting in background — web UI is ready now.[/dim]\n")
     console.print("  [bold green]Open http://localhost:3000 to get started.[/bold green]\n")
 
     # Run the API/web server immediately — it handles the engine's loading
@@ -268,7 +295,8 @@ def cmd_start(args):
         console.print("\n  [yellow]Shutting down...[/yellow]")
     finally:
         try:
-            engine.stop()
+            if engine is not None:
+                engine.stop()
         except Exception:
             pass
         _remove_pid()
@@ -431,7 +459,7 @@ def cmd_models(args):
     console.print(table)
     console.print()
     console.print("  Set model:  [bold]ainode config --model <name>[/bold]")
-    console.print("  Full list:  [link=https://ainode.dev/models]https://ainode.dev/models[/link]")
+    console.print("  Full list:  [bold]ainode models[/bold] or the MODELS tab in the web UI")
     console.print()
 
 
@@ -596,7 +624,7 @@ def cmd_service(args):
                 "  The systemd unit is managed on the host — there is no systemd bus here."
             )
             console.print("  To (re)install or migrate the unit on this node, re-run the installer:")
-            console.print("    [bold]curl -fsSL https://ainode.dev/install | bash[/bold]")
+            console.print("    [bold]curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh | bash[/bold]")
             console.print("  (idempotent — it re-renders the unit and preserves your config.json).")
             console.print("  Powered by argentos.ai")
             return

@@ -44,6 +44,8 @@ from ainode.cluster.hca_discovery import (
     build_nccl_ib_hca_whitelist,
     detect_fabric_ip,
 )
+from ainode.cluster.topology import TopologyInfo, topology_for_config
+from ainode.engine.parallelism import ParallelPlan, Strategy
 from ainode.core.config import LOGS_DIR, NodeConfig
 from ainode.engine.backends.base import EngineBackend
 
@@ -127,6 +129,8 @@ class NvidiaBackend(EngineBackend):
         # monotonically as _stream_logs sees the engine's startup markers.
         self._load_phase = "idle"
         self._log_thread: Optional[threading.Thread] = None
+        # Fabric wiring, resolved lazily on first use — see _topology().
+        self._topology_cache: Optional[TopologyInfo] = None
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         self._log_file: Path = LOGS_DIR / "nvidia-vllm.log"
         self._distributed_log: Path = LOGS_DIR / "nvidia-distributed.log"
@@ -272,7 +276,9 @@ class NvidiaBackend(EngineBackend):
         3. SSH to each peer and run ``docker run -d`` there too, pointing
            the workers at the head fabric IP.
         4. ``docker exec`` into the local head container to invoke
-           ``vllm serve --tensor-parallel-size N`` with N = 1 + len(peers).
+           ``vllm serve`` with the parallelism flags for
+           :meth:`_parallel_plan` — tensor, pipeline or data, filling
+           1 + len(peers) GPUs.
 
         The ``Popen`` handle we keep is for the ``vllm serve`` exec
         (step 4); the Ray containers on head + peers are managed by
@@ -297,8 +303,9 @@ class NvidiaBackend(EngineBackend):
         fabric_ip = self._head_fabric_ip()
         if fabric_ip is None:
             raise NvidiaBackendError(
-                f"Could not detect fabric IP on interface "
-                f"{self.config.cluster_interface!r}. Is the NIC up?"
+                f"Could not detect a coordination IP on interface "
+                f"{self._topology().coord_interface!r} "
+                f"(fabric: {self._topology().fabric.value}). Is the NIC up?"
             )
 
         hf_cache = self._head_hf_cache()
@@ -330,12 +337,13 @@ class NvidiaBackend(EngineBackend):
             )
 
         # Step 4 — docker exec into local head container to start vllm serve.
-        vllm_cmd = self._build_vllm_exec_cmd(tp_size=self._tp_size())
+        plan = self._parallel_plan()
+        vllm_cmd = self._build_vllm_exec_cmd(plan=plan)
         env = self._build_env_for_subprocess()
 
         logger.info(
-            "Starting distributed vllm serve: TP=%d across head + %d peers",
-            self._tp_size(),
+            "Starting distributed vllm serve: %s across head + %d peers",
+            plan.label(),
             len(self.config.peer_ips),
         )
         self._process = subprocess.Popen(
@@ -526,10 +534,20 @@ class NvidiaBackend(EngineBackend):
         * ``NCCL_IB_GID_INDEX=3`` — per Phase 1. Hardcoded because
           every DGX Spark + GX10 we've tested uses the same slot.
         * ``HF_HUB_ENABLE_HF_TRANSFER=1`` — always on, per install-UX spec.
+
+        The socket interface and the fabric IPs come from
+        :meth:`_topology`, not straight from ``cluster_interface``: on a
+        switchless mesh coordination has to move to the shared Ethernet,
+        because no CX7 subnet reaches all three nodes. Off the mesh the
+        topology resolves back to ``cluster_interface`` and every value
+        here is byte-for-byte what it was before.
         """
-        iface = self.config.cluster_interface or ""
+        topo = self._topology()
+        iface = topo.coord_interface or ""
         local_fabric_ip = detect_fabric_ip(iface) or "127.0.0.1"
-        hca = build_nccl_ib_hca_whitelist()
+        # On a mesh NCCL needs every RoCE device, since each one reaches a
+        # different neighbour; elsewhere the GID-filtered local view stands.
+        hca = ",".join(topo.rdma_hcas) if topo.rdma_hcas else build_nccl_ib_hca_whitelist()
 
         # For the head, VLLM_HOST_IP is this node's fabric IP. For a worker,
         # it must be THE WORKER's fabric IP (we pass `peer_fabric_ip` when
@@ -579,6 +597,11 @@ class NvidiaBackend(EngineBackend):
             ),
         }
         env.update(self._nvfp4_serve_env())
+        # Mesh-only NCCL settings (NET_PLUGIN=none, IB_MERGE_NICS=0,
+        # IB_SUBNET_AWARE_ROUTING=1). Empty dict off the mesh, so this is a
+        # no-op for the existing setups — note SUBNET_AWARE_ROUTING is already
+        # set unconditionally above and the mesh value agrees with it.
+        env.update(topo.nccl_env())
         if hca:
             env["NCCL_IB_HCA"] = hca
         return env
@@ -941,7 +964,7 @@ class NvidiaBackend(EngineBackend):
 
         image = self._engine_image()
         cmd.extend([image, *self._serve_argv_prefix(image), serve_target])
-        cmd.extend(self._build_vllm_serve_args(tp_size=1))
+        cmd.extend(self._build_vllm_serve_args(plan=ParallelPlan()))
         cmd.extend(name_args)
         return cmd
 
@@ -1110,7 +1133,7 @@ class NvidiaBackend(EngineBackend):
         )
         return False
 
-    def _build_vllm_serve_args(self, tp_size: int) -> List[str]:
+    def _build_vllm_serve_args(self, plan: ParallelPlan) -> List[str]:
         """Assemble the positional ``vllm serve`` args after ``<model>``.
 
         ``config.extra_vllm_args`` is appended verbatim so a model's published
@@ -1142,8 +1165,20 @@ class NvidiaBackend(EngineBackend):
             kv_dtype = self._effective_kv_cache_dtype()
             if kv_dtype:
                 args.extend(["--kv-cache-dtype", kv_dtype])
-        if tp_size > 1 and wanted("--tensor-parallel-size"):
-            args.extend(["--tensor-parallel-size", str(tp_size)])
+        # Parallelism. Each axis is emitted only when it is actually > 1, so a
+        # solo serve and a plain TP launch produce byte-identical command lines
+        # to before — vLLM defaults all three to 1 anyway, and an explicit
+        # "--pipeline-parallel-size 1" would be noise in the logs operators
+        # read to check the launch.
+        if plan.tensor_parallel_size > 1 and wanted("--tensor-parallel-size"):
+            args.extend(["--tensor-parallel-size", str(plan.tensor_parallel_size)])
+        if plan.pipeline_parallel_size > 1 and wanted("--pipeline-parallel-size"):
+            args.extend(["--pipeline-parallel-size", str(plan.pipeline_parallel_size)])
+        if plan.data_parallel_size > 1 and wanted("--data-parallel-size"):
+            args.extend(["--data-parallel-size", str(plan.data_parallel_size)])
+        # Ray is what places ranks on the peer nodes, so it is required by any
+        # multi-node split, not just by TP.
+        if plan.is_distributed and wanted("--distributed-executor-backend"):
             args.extend(["--distributed-executor-backend", "ray"])
         if self.config.max_model_len and wanted("--max-model-len"):
             args.extend(["--max-model-len", str(self.config.max_model_len)])
@@ -1201,7 +1236,7 @@ class NvidiaBackend(EngineBackend):
             cmd.extend(["-e", f"{key}={value}"])
         return cmd
 
-    def _build_vllm_exec_cmd(self, tp_size: int) -> List[str]:
+    def _build_vllm_exec_cmd(self, plan: ParallelPlan) -> List[str]:
         """Build the ``docker exec`` command that launches ``vllm serve``.
 
         Runs INSIDE the already-started head Ray container. Ray picks up
@@ -1210,7 +1245,7 @@ class NvidiaBackend(EngineBackend):
         """
         head = self._head_container_name()
         inner = ["vllm", "serve", self.config.model]
-        inner.extend(self._build_vllm_serve_args(tp_size=tp_size))
+        inner.extend(self._build_vllm_serve_args(plan=plan))
 
         # Wrap the command in bash so stdout/stderr line-buffer correctly.
         # docker exec -i lets us stream logs back; -d would detach.
@@ -1299,13 +1334,30 @@ class NvidiaBackend(EngineBackend):
                 f"(rc={result.returncode}): {result.stderr.strip()}"
             )
 
+    def _transfer_ip(self, peer_ip: str) -> str:
+        """Address to push bulk data to ``peer_ip`` over.
+
+        ``peer_ip`` is the peer's coordination address. If the launch path
+        found a direct RoCE cable to this peer it recorded the far-side
+        address in ``peer_transfer_ips``; use it, so weights move at CX7 speed
+        instead of over the shared 10G Ethernet. Absent → transfer over the
+        coordination address, which is what every node did before.
+        """
+        return (getattr(self.config, "peer_transfer_ips", None) or {}).get(
+            peer_ip, peer_ip
+        )
+
     def _ensure_peer_has_model(self, peer_ip: str, peer_hf_cache: str) -> None:
-        """Distribute the model weights to a peer over the fabric if it's missing.
+        """Distribute the model weights to a peer if it's missing them.
 
         The launch only succeeds if every node can read the model from its local
         HF cache. Rather than require manual pre-placement, the head streams the
         weights to any selected peer that lacks them. Uses tar-over-ssh (the image
-        ships tar + ssh, not rsync) on the cluster fabric (``peer_ip``).
+        ships tar + ssh, not rsync).
+
+        Runs over :meth:`_transfer_ip`, not ``peer_ip``: on a mesh those differ,
+        and this is the one call path where the direct cable is worth using —
+        it moves tens of GB, while everything else here is control traffic.
         Best-effort no-op when the peer already has it, or the head doesn't.
         """
         model = self.config.model or ""
@@ -1317,7 +1369,8 @@ class NvidiaBackend(EngineBackend):
             return  # head doesn't have it either — engine will report clearly
         peer_hub = peer_hf_cache.rstrip("/") + "/hub"
         target = f"{peer_hub}/{model_dir}"
-        ssh_target = f"{self.config.ssh_user}@{peer_ip}"
+        transfer_ip = self._transfer_ip(peer_ip)
+        ssh_target = f"{self.config.ssh_user}@{transfer_ip}"
         ssh_opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10"]
 
         check = subprocess.run(
@@ -1327,7 +1380,11 @@ class NvidiaBackend(EngineBackend):
         if "present" in (check.stdout or ""):
             return  # peer already has the weights
 
-        logger.info("Distributing %s to %s over the fabric (not cached)...", model_dir, peer_ip)
+        logger.info(
+            "Distributing %s to %s (not cached)%s...",
+            model_dir, transfer_ip,
+            " — direct RoCE link" if transfer_ip != peer_ip else "",
+        )
         self._load_phase = "distributing"
         ssh_e = "ssh " + " ".join(ssh_opts)
         if shutil.which("rsync"):
@@ -1350,10 +1407,10 @@ class NvidiaBackend(EngineBackend):
             result = subprocess.run(["bash", "-lc", tar], capture_output=True, text=True, timeout=7200)
         if result.returncode != 0:
             raise NvidiaBackendError(
-                f"Failed to distribute {model_dir} to {peer_ip} "
+                f"Failed to distribute {model_dir} to {transfer_ip} "
                 f"(rc={result.returncode}): {result.stderr.strip()[:300]}"
             )
-        logger.info("Distributed %s to %s", model_dir, peer_ip)
+        logger.info("Distributed %s to %s", model_dir, transfer_ip)
 
     def _ssh_stop_peer_container(self, peer_ip: str) -> None:
         """Best-effort ``docker stop && docker rm`` on a peer's worker container.
@@ -1417,12 +1474,58 @@ class NvidiaBackend(EngineBackend):
     # Helpers
     # ------------------------------------------------------------------
 
+    def _parallel_plan(self) -> ParallelPlan:
+        """How this instance splits across head + peers, one GPU per node.
+
+        Reads the axis sizes the launch path resolved into the config
+        snapshot. A config that carries none (an older record, or a launch
+        that went through a path predating the parallelism module) falls back
+        to tensor parallelism across every node — exactly what this method
+        returned before, so nothing about the existing 2-/4-node launches
+        moves.
+        """
+        node_count = 1 + len(self.config.peer_ips)
+        plan = ParallelPlan.from_dict({
+            "tensor_parallel_size": getattr(self.config, "tensor_parallel_size", 0) or 0,
+            "pipeline_parallel_size": getattr(self.config, "pipeline_parallel_size", 0) or 0,
+            "data_parallel_size": getattr(self.config, "data_parallel_size", 0) or 0,
+            "strategy": getattr(self.config, "parallel_strategy", "") or "",
+        })
+        if plan.world_size == node_count and plan.is_distributed:
+            return plan
+        return ParallelPlan(tensor_parallel_size=node_count,
+                            strategy=Strategy.TENSOR)
+
     def _tp_size(self) -> int:
-        """Total TP = 1 local GPU + N peer GPUs. One GPU per GB10 node."""
-        return 1 + len(self.config.peer_ips)
+        """Back-compat shim — the TP factor of :meth:`_parallel_plan`."""
+        return self._parallel_plan().tensor_parallel_size
+
+    def _topology(self) -> TopologyInfo:
+        """This node's fabric wiring, detected once per backend instance.
+
+        Cached because ``_build_nccl_env`` runs once per peer during a
+        distributed launch and detection shells out to ``ip`` a handful of
+        times. Cabling does not change mid-launch.
+        """
+        if self._topology_cache is None:
+            self._topology_cache = topology_for_config(self.config)
+            logger.info(
+                "Fabric topology: %s (coordination on %s, NCCL_IB_HCA=%s)",
+                self._topology_cache.fabric.value,
+                self._topology_cache.coord_interface or "<unset>",
+                ",".join(self._topology_cache.rdma_hcas) or "<autodetect>",
+            )
+        return self._topology_cache
 
     def _head_fabric_ip(self) -> Optional[str]:
-        return detect_fabric_ip(self.config.cluster_interface or "")
+        """The head's address for Ray, SSH and the torch rendezvous.
+
+        Uses the coordination interface: on a mesh, this node's
+        ``cluster_interface`` address reaches exactly one neighbour, so it
+        cannot serve as a cluster-wide rendezvous address. Off the mesh the
+        two interfaces are the same and this is unchanged.
+        """
+        return detect_fabric_ip(self._topology().coord_interface or "")
 
     def _head_hf_cache(self) -> str:
         """Path mounted into the container at /root/.cache/huggingface.

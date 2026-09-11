@@ -14,7 +14,8 @@ name: publish-image
 #   - docker + nvidia-container-toolkit installed
 #   - runner user is in the `docker` group
 #   - for push=true: GITHUB_TOKEN has packages:write (set below); Docker Hub
-#     requires DOCKERHUB_USER + DOCKERHUB_TOKEN repo secrets (optional)
+#     Docker Hub mirroring is optional: set the DOCKERHUB_ORG repo variable
+#     plus DOCKERHUB_USER + DOCKERHUB_TOKEN secrets. Unset = GHCR only.
 #
 # The workflow does four things:
 #   1. Build the base image by running scripts/build-base-image.sh (clones
@@ -57,8 +58,12 @@ jobs:
       contents: read
       packages: write
     env:
-      REGISTRY_GHCR: ghcr.io/getainode
-      REGISTRY_DOCKERHUB: docker.io/argentos
+      # GHCR namespace follows the repository owner, so a fork publishes to
+      # its own packages with no edit and no hardcoded org to drift.
+      REGISTRY_GHCR: ghcr.io/${{ github.repository_owner }}
+      # Docker Hub mirroring is opt-in: set the DOCKERHUB_ORG variable plus the
+      # DOCKERHUB_USER / DOCKERHUB_TOKEN secrets. Empty = GHCR only.
+      REGISTRY_DOCKERHUB: ${{ vars.DOCKERHUB_ORG }}
 
     steps:
       - uses: actions/checkout@v4
@@ -142,8 +147,10 @@ jobs:
         run: |
           docker tag ainode:${AINODE_VERSION} "${REGISTRY_GHCR}/ainode:${AINODE_VERSION}"
           docker tag ainode:${AINODE_VERSION} "${REGISTRY_GHCR}/ainode:latest"
-          docker tag ainode:${AINODE_VERSION} "${REGISTRY_DOCKERHUB}/ainode:${AINODE_VERSION}"
-          docker tag ainode:${AINODE_VERSION} "${REGISTRY_DOCKERHUB}/ainode:latest"
+          if [ -n "${REGISTRY_DOCKERHUB}" ]; then
+            docker tag ainode:${AINODE_VERSION} "${REGISTRY_DOCKERHUB}/ainode:${AINODE_VERSION}"
+            docker tag ainode:${AINODE_VERSION} "${REGISTRY_DOCKERHUB}/ainode:latest"
+          fi
 
       - name: Login to GHCR
         if: steps.vars.outputs.push == 'true'
@@ -157,7 +164,7 @@ jobs:
         id: dockerhub
         if: steps.vars.outputs.push == 'true'
         run: |
-          if [ -n "${{ secrets.DOCKERHUB_USER }}" ]; then
+          if [ -n "${{ secrets.DOCKERHUB_USER }}" ] && [ -n "${REGISTRY_DOCKERHUB}" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
@@ -190,7 +197,7 @@ jobs:
         run: |
           docker push ${REGISTRY_GHCR}/ainode:${AINODE_VERSION}
           docker push ${REGISTRY_GHCR}/ainode:latest
-          if [ -n "${{ secrets.DOCKERHUB_USER }}" ]; then
+          if [ -n "${{ secrets.DOCKERHUB_USER }}" ] && [ -n "${REGISTRY_DOCKERHUB}" ]; then
             docker push ${REGISTRY_DOCKERHUB}/ainode:${AINODE_VERSION}
             docker push ${REGISTRY_DOCKERHUB}/ainode:latest
           fi

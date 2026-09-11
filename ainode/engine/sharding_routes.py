@@ -9,6 +9,7 @@ from typing import Optional
 from aiohttp import web
 
 from ainode.discovery.cluster import ClusterState
+from ainode.engine.parallelism import ParallelPlanError, Strategy, plan_for
 from ainode.engine.sharding import ShardingPlanner, ShardingStrategy, ShardingConfig
 from ainode.engine.ray_setup import get_ray_status
 
@@ -17,11 +18,22 @@ logger = logging.getLogger(__name__)
 # Module-level state for active sharding session
 _active_sharding: Optional[ShardingConfig] = None
 
+# The memory planner (sharding.py) models tensor and pipeline splits only — a
+# data-parallel replica set has different memory behaviour (a full copy per
+# node) that it does not describe, so the preview declines it rather than
+# returning a number that would be wrong.
+_SHARDING_STRATEGY_BY_AXIS = {
+    Strategy.AUTO: ShardingStrategy.AUTO,
+    Strategy.TENSOR: ShardingStrategy.TENSOR_PARALLEL,
+    Strategy.PIPELINE: ShardingStrategy.PIPELINE_PARALLEL,
+}
+
 
 def register_sharding_routes(app: web.Application) -> None:
     """Register sharding API endpoints on the aiohttp app."""
     app.router.add_get("/api/sharding/plan", handle_sharding_plan)
     app.router.add_post("/api/sharding/launch", handle_sharding_launch)
+    app.router.add_post("/api/sharding/relaunch", handle_sharding_relaunch)
     app.router.add_get("/api/sharding/status", handle_sharding_status)
 
 
@@ -37,11 +49,16 @@ async def handle_sharding_plan(request: web.Request) -> web.Response:
         return web.json_response({"error": "model parameter required"}, status=400)
 
     strategy_str = request.query.get("strategy", "auto")
+    # Normalise first, so the preview accepts the same spellings the launch
+    # route does ("tensor" from the UI, "tensor_parallel" from the docs).
     try:
-        strategy = ShardingStrategy(strategy_str)
-    except ValueError:
+        strategy = _SHARDING_STRATEGY_BY_AXIS[Strategy.parse(strategy_str)]
+    except ParallelPlanError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except KeyError:
         return web.json_response(
-            {"error": f"Invalid strategy: {strategy_str}. Use: auto, tensor_parallel, pipeline_parallel"},
+            {"error": f"The planner cannot preview {strategy_str!r} yet; "
+                      f"use auto, tensor or pipeline."},
             status=400,
         )
 
@@ -107,9 +124,15 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         except (TypeError, ValueError):
             pass
 
-    strategy_str = body.get("strategy", "tensor_parallel")
-    # We accept but don't gate on strategy here — vLLM picks TP vs PP via
-    # CLI args in the launch script; for now any min_nodes > 1 triggers TP.
+    # Parallelism axis. Previously read and ignored ("any min_nodes > 1
+    # triggers TP"), which is why the UI's Pipeline pill did nothing and why a
+    # 3-node launch would have built the unsupported TP=3. The plan itself is
+    # resolved further down, once the participating nodes are known.
+    strategy_str = body.get("strategy") or "auto"
+    try:
+        strategy = Strategy.parse(strategy_str)
+    except ParallelPlanError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
 
     cluster: ClusterState = request.app["cluster_state"]
     config: NodeConfig = request.app["config"]
@@ -182,6 +205,38 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
 
     chosen_peers = [fabric_of(n) for n in chosen]
 
+    # Resolve the split now that the node set is final. This is where a 3-node
+    # tensor-parallel request is refused — with the alternatives named, before
+    # anything is launched — instead of failing inside vLLM's engine startup.
+    try:
+        plan = plan_for(strategy, 1 + len(chosen_peers))
+    except ParallelPlanError as exc:
+        return web.json_response({
+            "error": str(exc),
+            "strategy": strategy.value,
+            "node_count": 1 + len(chosen_peers),
+        }, status=422)
+
+    # Second address list: where head and peer share a direct RoCE cable, bulk
+    # transfer (model weights) goes over it instead of the coordination
+    # Ethernet. Coordination itself stays on chosen_peers — on a mesh no single
+    # RoCE address reaches every node. Peers that announce no RoCE address, or
+    # that we have no cable to, are simply absent and transfer as before.
+    peer_transfer_ips: dict = {}
+    try:
+        from ainode.cluster.topology import detect_cx7_links, transfer_address
+
+        local_links = detect_cx7_links()
+        for node, coord_ip in zip(chosen, chosen_peers):
+            direct = transfer_address(
+                list(getattr(node, "ib_ips", []) or []), coord_ip, local_links
+            )
+            if direct and direct != coord_ip:
+                peer_transfer_ips[coord_ip] = direct
+    except Exception:
+        logger.exception("Could not resolve direct transfer addresses; "
+                         "falling back to the coordination path")
+
     # P2-2: APPEND a new instance — do NOT tear down existing ones. Each instance
     # gets its own port (8000, 8001, …), container-name token, and config SNAPSHOT
     # (never the shared app["config"], which would cross-wire instances).
@@ -224,7 +279,12 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
             overrides["gpu_memory_utilization"] = gmu
 
     inst_config = replace(config, model=model, distributed_mode="head",
-                          peer_ips=chosen_peers, api_port=port, **overrides)
+                          peer_ips=chosen_peers, peer_transfer_ips=peer_transfer_ips,
+                          parallel_strategy=plan.strategy.value,
+                          tensor_parallel_size=plan.tensor_parallel_size,
+                          pipeline_parallel_size=plan.pipeline_parallel_size,
+                          data_parallel_size=plan.data_parallel_size,
+                          api_port=port, **overrides)
     backend = get_backend(inst_config, instance_id=name_token)
     try:
         started = backend.start_distributed()
@@ -237,13 +297,21 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     manager.add(InstanceRecord(
         instance_id=instance_id, model=model, head_node_id=config.node_id or "head",
         peer_ips=chosen_peers, api_port=port,
-        tensor_parallel_size=1 + len(chosen_peers), status="starting"), backend)
+        tensor_parallel_size=plan.tensor_parallel_size,
+        pipeline_parallel_size=plan.pipeline_parallel_size,
+        data_parallel_size=plan.data_parallel_size,
+        status="starting"), backend)
 
     if is_primary:
         # Back-compat: the proxy/status path reads app["config"] + app["engine"].
         config.model = model
         config.distributed_mode = "head"
         config.peer_ips = chosen_peers
+        config.peer_transfer_ips = peer_transfer_ips
+        config.parallel_strategy = plan.strategy.value
+        config.tensor_parallel_size = plan.tensor_parallel_size
+        config.pipeline_parallel_size = plan.pipeline_parallel_size
+        config.data_parallel_size = plan.data_parallel_size
         try:
             config.save()
         except Exception:
@@ -257,9 +325,180 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         "distributed_mode": "head",
         "peer_ips": chosen_peers,
         "api_port": port,
-        "tensor_parallel_size": 1 + len(chosen_peers),
-        "strategy": strategy_str,
+        # Flat sizes stay at the top level for callers that read them today.
+        "tensor_parallel_size": plan.tensor_parallel_size,
+        "pipeline_parallel_size": plan.pipeline_parallel_size,
+        "data_parallel_size": plan.data_parallel_size,
+        # The resolved axis, not what was asked for: "auto" on three nodes
+        # comes back as "pipeline".
+        "strategy": plan.strategy.value,
+        "parallel_plan": plan.to_dict(),
     })
+
+
+async def handle_sharding_relaunch(request: web.Request) -> web.Response:
+    """POST /api/sharding/relaunch — re-run a degraded instance on the nodes
+    that are still online.
+
+    JSON body:
+        model (required): the model of the instance to relaunch
+        strategy (optional): axis to use; default auto (re-planned for the
+            smaller node set, so a TP=4 instance losing a node comes back as
+            PP=3 rather than an impossible TP=3)
+
+    An instance keeps running on the head after a member node disappears, but
+    with ranks that Ray placed on the lost node — it cannot serve. Relaunching
+    is deliberately an explicit action rather than something the head does by
+    itself: a model spread across three nodes usually does not fit on two, and
+    guessing would trade a visible outage for an OOM. This endpoint therefore
+    checks the fit first and explains a refusal instead of trying.
+    """
+    from ainode.core.config import NodeConfig
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    model = body.get("model")
+    if not model:
+        return web.json_response({"error": "model field required"}, status=400)
+
+    cluster: ClusterState = request.app["cluster_state"]
+    config: NodeConfig = request.app["config"]
+
+    manager = request.app.get("instances")
+    instance = manager.by_model(model) if manager is not None else None
+    if instance is None:
+        return web.json_response(
+            {"error": f"No instance is running for {model!r} on this node."},
+            status=404,
+        )
+
+    launched_peers = list(getattr(instance.record, "peer_ips", []) or [])
+    if not launched_peers:
+        return web.json_response(
+            {"error": f"{model!r} is a single-node instance; there is nothing "
+                      f"to relaunch across."},
+            status=409,
+        )
+
+    # Which of the nodes it launched across are still online?
+    online = {
+        (getattr(n, "fabric_ip", "") or ""): n
+        for n in cluster.members()
+        if (n.status.value if hasattr(n.status, "value") else str(n.status))
+        in ("online", "member-ready", "serving")
+    }
+    surviving = [online[ip] for ip in launched_peers if ip in online]
+    missing = [ip for ip in launched_peers if ip not in online]
+
+    if not missing:
+        return web.json_response({
+            "error": f"{model!r} is not degraded — all "
+                     f"{len(launched_peers)} peer(s) are online.",
+            "hint": "Use /api/sharding/launch to change its placement.",
+        }, status=409)
+
+    node_ids = [config.node_id or "head"] + [n.node_id for n in surviving]
+    node_count = len(node_ids)
+
+    # Two ways a relaunch can be impossible, and the caller deserves to know
+    # which. First: no split of this axis fills the surviving nodes (a TP=4
+    # instance down to 3 nodes has no valid tensor split).
+    strategy = body.get("strategy") or "auto"
+    try:
+        plan = plan_for(strategy, node_count)
+    except ParallelPlanError as exc:
+        return web.json_response({
+            "error": str(exc), "model": model,
+            "surviving_node_ids": node_ids, "missing_peer_ips": missing,
+        }, status=422)
+
+    # Second: the weights no longer fit. This is the common case and the whole
+    # reason the head does not do this by itself.
+    fit_error = _fit_check(model, surviving, cluster, config, plan)
+    if fit_error:
+        return web.json_response({
+            "error": fit_error, "model": model,
+            "surviving_node_ids": node_ids, "missing_peer_ips": missing,
+            "parallel_plan": plan.to_dict(),
+        }, status=422)
+
+    logger.info(
+        "Relaunching %s on %d surviving node(s) as %s (lost %s)",
+        model, node_count, plan.label(), ", ".join(missing),
+    )
+
+    # Delegate to the launch path so placement, transfer-address resolution and
+    # instance bookkeeping have exactly one implementation. It stops the
+    # existing instance for this model before starting the replacement.
+    class _ReqShim:
+        def __init__(self, orig, payload):
+            self._o = orig
+            self._b = payload
+
+        def __getattr__(self, k):
+            return getattr(self._o, k)
+
+        async def json(self):
+            return self._b
+
+    payload = {"model": model, "node_ids": node_ids,
+               "strategy": plan.strategy.value}
+    if body.get("gpu_memory_utilization") is not None:
+        payload["gpu_memory_utilization"] = body["gpu_memory_utilization"]
+
+    resp = await handle_sharding_launch(_ReqShim(request, payload))
+    if resp.status == 200:
+        merged = json.loads(resp.body)
+        merged["relaunched_from"] = {
+            "node_count": 1 + len(launched_peers),
+            "missing_peer_ips": missing,
+        }
+        return web.json_response(merged)
+    return resp
+
+
+def _fit_check(model, surviving_nodes, cluster, config, plan) -> str:
+    """Return a human-readable reason the model will not fit, or "".
+
+    Deliberately conservative and deliberately approximate: it uses the same
+    size heuristic the planner shows in the UI preview, so a refusal here
+    matches the number the operator already saw. It exists to catch the
+    obvious "three nodes' worth of weights onto two" case before a launch
+    burns minutes and ends in an OOM — not to be authoritative about memory.
+    """
+    from ainode.engine.sharding import MEMORY_OVERHEAD_FACTOR, estimate_model_size
+
+    local = cluster.get_node(config.node_id) if config.node_id else None
+    nodes = ([local] if local is not None else []) + list(surviving_nodes)
+    if not nodes:
+        return ""
+
+    required = estimate_model_size(model) * MEMORY_OVERHEAD_FACTOR
+    # Data parallelism keeps a full replica per node; the others divide the
+    # weights, so the per-node share is what has to fit.
+    per_node = required if plan.data_parallel_size > 1 else required / len(nodes)
+
+    def free_gb(n):
+        total = float(getattr(n, "gpu_memory_gb", 0) or 0)
+        used = float(getattr(n, "gpu_memory_used_mb", 0) or 0) / 1024.0
+        return max(0.0, total - used)
+
+    short = [n for n in nodes if free_gb(n) < per_node]
+    if not short:
+        return ""
+
+    names = ", ".join(
+        f"{getattr(n, 'node_name', n.node_id)} (~{free_gb(n):.0f} GB free)"
+        for n in short
+    )
+    return (
+        f"{model} needs ~{per_node:.0f} GB per node as {plan.label()} across "
+        f"{len(nodes)} node(s), but {names} cannot hold that. Free memory on "
+        f"those nodes, bring the missing node back, or load a smaller model."
+    )
 
 
 async def handle_sharding_status(request: web.Request) -> web.Response:

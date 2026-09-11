@@ -11,11 +11,12 @@ from ainode.core.config import NodeConfig
 from ainode.engine.backends.nvidia import NvidiaBackend, NVIDIA_VLLM_IMAGE
 from ainode.models.api_routes import catalog_recipe
 from ainode.models.registry import CURATED_CLUSTER_MODELS
+from ainode.engine.parallelism import ParallelPlan
 
 
 def args_for(**cfg_kwargs):
     cfg = NodeConfig(model="m", **cfg_kwargs)
-    return NvidiaBackend(cfg)._build_vllm_serve_args(1)
+    return NvidiaBackend(cfg)._build_vllm_serve_args(ParallelPlan())
 
 
 # --- defaults must not move (every existing model still launches as before) ---

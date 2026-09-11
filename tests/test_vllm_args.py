@@ -7,11 +7,14 @@ fp8 default has an escape hatch.
 
 from ainode.core.config import NodeConfig
 from ainode.engine.backends.nvidia import NvidiaBackend
+from ainode.engine.parallelism import ParallelPlan
 
 
 def _args(tp, **cfg):
     c = NodeConfig(node_id="t", node_name="T", **cfg)
-    return NvidiaBackend(c)._build_vllm_serve_args(tp_size=tp)
+    return NvidiaBackend(c)._build_vllm_serve_args(
+        plan=ParallelPlan(tensor_parallel_size=tp)
+    )
 
 
 def test_fp8_kv_and_tp_land():

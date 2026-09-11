@@ -714,8 +714,16 @@ const AINode = {
         status: live ? 'READY' : 'STARTING',
         // A single-node serve is SOLO even when the head advertises a
         // distributed_instance (it's configured with peers) — only badge
-        // DISTRIBUTED when there's real cross-node tensor parallelism.
-        badge: (di.tensor_parallel_size > 1) ? ('DISTRIBUTED · TP=' + di.tensor_parallel_size) : 'SOLO · TP=1',
+        // DISTRIBUTED when the model is actually split across nodes, on any
+        // axis. parallel_label comes from the server ("TP=4", "PP=3"); the
+        // fallback covers a head still running an older build.
+        badge: (self.instanceWorldSize(di) > 1)
+          ? ((di.degraded ? 'DEGRADED · ' : 'DISTRIBUTED · ')
+             + (di.parallel_label || ('TP=' + di.tensor_parallel_size)))
+          : 'SOLO · TP=1',
+        degraded: !!di.degraded,
+        missingPeers: di.missing_peer_ips || [],
+        survivingNodeIds: di.surviving_node_ids || [],
       });
     }
 
@@ -809,13 +817,24 @@ const AINode = {
 
     container.innerHTML = instances.map(function (inst, idx) {
       var nodeList = inst.nodes.map(function (n) { return self.esc(n); }).join(', ');
-      var badgeClass = inst.strategy === 'distributed' ? 'distributed' : 'single';
+      var badgeClass = inst.degraded ? 'degraded'
+        : (inst.strategy === 'distributed' ? 'distributed' : 'single');
+      // A degraded instance is still running on the head but has lost the ranks
+      // Ray placed on the node that went away — it cannot serve. Say which node
+      // is gone and offer the one action that helps.
+      var degradedNote = inst.degraded
+        ? '<div class="instance-degraded">Lost ' +
+            self.esc((inst.missingPeers || []).join(', ')) +
+            ' — this instance cannot serve until it is relaunched on the ' +
+            ((inst.survivingNodeIds || []).length || 1) + ' node(s) still online.' +
+          '</div>'
+        : '';
       return '<div class="instance-card" data-idx="' + idx + '">' +
         '<div class="instance-model">' + self.esc(inst.model) + '</div>' +
         '<div class="instance-meta">' +
         '<span class="instance-strategy ' + badgeClass + '">' + self.esc(inst.badge || inst.strategy) + '</span>' +
         '<span class="instance-nodes">' + nodeList + '</span>' +
-        '</div>' +
+        '</div>' + degradedNote +
         '<div class="instance-footer">' +
         (inst.status === 'READY'
           ? '<span class="instance-status ready">READY</span>'
@@ -825,6 +844,9 @@ const AINode = {
                 '<span style="display:inline-block;width:90px;height:5px;background:#1f2a1f;border-radius:3px;margin:0 8px;vertical-align:middle;overflow:hidden">' +
                 '<span style="display:block;height:100%;width:' + pi[1] + '%;background:#76c043;transition:width .4s"></span></span>';
             })()) +
+        (inst.degraded
+          ? '<button class="instance-relaunch" data-model="' + self.esc(inst.model) + '">RELAUNCH</button>'
+          : '') +
         '<button class="instance-delete" data-model="' + self.esc(inst.model) + '">UNLOAD</button>' +
         '</div>' +
         '</div>';
@@ -837,6 +859,41 @@ const AINode = {
         self.deleteInstance(model);
       });
     });
+
+    container.querySelectorAll('.instance-relaunch').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        self.relaunchInstance(btn.dataset.model, btn);
+      });
+    });
+  },
+
+  // Re-run a degraded instance on the nodes still online. The server re-plans
+  // the split for the smaller node set (a TP=4 instance down to 3 nodes comes
+  // back as PP=3, not an impossible TP=3) and refuses with a reason when the
+  // weights no longer fit — that refusal is the useful answer, so show it in
+  // full rather than a generic failure.
+  async relaunchInstance(model, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'RELAUNCHING...'; }
+    try {
+      var resp = await fetch('/api/sharding/relaunch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: model }),
+      });
+      var data = await resp.json().catch(function () { return {}; });
+      if (resp.ok) {
+        var how = (data.parallel_plan && data.parallel_plan.label) || '';
+        this.toast('Relaunching ' + model + (how ? ' as ' + how : ''), 'success');
+      } else {
+        this.toast(data.error || ('Relaunch failed (' + resp.status + ')'), 'error');
+      }
+    } catch (err) {
+      this.toast('Relaunch failed: ' + err, 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'RELAUNCH'; }
+      this.refresh();
+    }
   },
 
   async deleteInstance(model) {
@@ -953,7 +1010,19 @@ const AINode = {
       var strategyPill = document.querySelector('#sharding-pills .pill.active');
       var strat = strategyPill ? strategyPill.dataset.value : 'tensor';
       var stratLabel = strat.charAt(0).toUpperCase() + strat.slice(1);
+      var axis = { tensor: 'TP', pipeline: 'PP', data: 'DP' }[strat] || 'TP';
+      var split = axis + '=' + n;
       launchHint.className = 'launch-hint';
+
+      // Refuse an impossible split up front rather than letting the user press
+      // LAUNCH and read a 422. Same rule as the server (parallelism.py).
+      if (!self.strategyAllowed(strat, n)) {
+        launchHint.className = 'launch-hint warn';
+        launchHint.textContent = '⚠ Tensor needs 2, 4 or 8 nodes — no model splits '
+          + 'attention heads ' + n + ' ways. Use Pipeline across all ' + n
+          + ' nodes, Data for ' + n + ' replicas, or select fewer nodes.';
+        return;
+      }
 
       var msel = document.getElementById('launch-model');
       var opt = msel && msel.selectedIndex >= 0 ? msel.options[msel.selectedIndex] : null;
@@ -962,24 +1031,30 @@ const AINode = {
       var req = (minMem && minMem > size) ? minMem : size * 1.2;
       if (!opt || !opt.value || !req) {  // no model picked yet → plain text
         launchHint.textContent = n <= 1 ? 'Solo — runs on this node only (TP=1).'
-          : stratLabel + ' · TP=' + n + ' across ' + names + '.';
+          : stratLabel + ' · ' + split + ' across ' + names + '.';
         return;
       }
 
       var byId = {};
       (self.state.nodes || []).forEach(function (nd) { byId[nd.node_id] = nd; });
       var freeOf = function (nd) { return nd ? Math.max(0, (nd.gpu_memory_gb || 0) * (1 - (nd.gpu_memory_used_pct || 0) / 100)) : 0; };
-      var perShard = req / n;
+      // Tensor and pipeline both divide the weights across the nodes. Data
+      // parallelism does not — every node holds a FULL replica, so the
+      // per-node requirement is the whole model however many nodes are used.
+      var perShard = (strat === 'data') ? req : req / n;
       var frees = Array.prototype.map.call(active, function (d) { return freeOf(byId[d.dataset.nodeId]); });
       var minFree = frees.length ? Math.min.apply(null, frees) : 0;
       if (minFree < perShard) {
         launchHint.className = 'launch-hint warn';
         launchHint.textContent = '⚠ Needs ~' + Math.round(perShard) + ' GB/node but a selected node has only ~' +
-          Math.round(minFree) + ' GB free — unload a model to free space.';
+          Math.round(minFree) + ' GB free' +
+          (strat === 'data' ? ' — Data keeps a full copy per node; try Pipeline.'
+                            : ' — unload a model to free space.');
       } else if (n <= 1) {
         launchHint.textContent = '✓ Runs solo on ' + (names || 'this node') + ' (TP=1) — ~' + Math.round(req) + ' GB.';
       } else {
-        launchHint.textContent = '✓ ' + stratLabel + ' · TP=' + n + ' across ' + names + ' (~' + Math.round(perShard) + ' GB/node).';
+        launchHint.textContent = '✓ ' + stratLabel + ' · ' + split + ' across ' + names +
+          ' (~' + Math.round(perShard) + ' GB/node).';
       }
     }
     // (dot click handlers bound inside _renderNodeDots)
@@ -1016,11 +1091,8 @@ const AINode = {
     var N = nodes.length;
     var req = (m.min_mem && m.min_mem > size) ? m.min_mem : size * 1.2;
 
-    // Tensor is the proven strategy on this hardware.
-    var pills = document.getElementById('sharding-pills');
-    if (pills) pills.querySelectorAll('.pill').forEach(function (p) { p.classList.toggle('active', p.dataset.value === 'tensor'); });
-
-    // Smallest TP (>= proven_tp) where head + (tp-1) peers each hold req/tp.
+    // Tensor is the proven strategy on this hardware, so try it first:
+    // smallest TP (>= proven_tp) where head + (tp-1) peers each hold req/tp.
     var rec = null;
     [1, 2, 4, 8].forEach(function (tp) {
       if (rec || tp > N) return;
@@ -1029,6 +1101,24 @@ const AINode = {
       if (freeOf(head) < perShard) return;
       var okPeers = peers.filter(function (n) { return freeOf(n) >= perShard; });
       if (okPeers.length >= tp - 1) rec = { tp: tp, peers: okPeers.slice(0, tp - 1) };
+    });
+
+    // No tensor split fits. Before giving up and landing the whole model on the
+    // head, try pipeline across every node: it works at any node count (the
+    // only option on a 3-node mesh) and divides the weights the same way.
+    var strategy = 'tensor';
+    if (!rec && N > 1) {
+      var perNode = req / N;
+      if (freeOf(head) >= perNode &&
+          peers.filter(function (n) { return freeOf(n) >= perNode; }).length >= N - 1) {
+        strategy = 'pipeline';
+        rec = { tp: N, peers: peers.slice(0, N - 1) };
+      }
+    }
+
+    var pills = document.getElementById('sharding-pills');
+    if (pills) pills.querySelectorAll('.pill').forEach(function (p) {
+      p.classList.toggle('active', p.dataset.value === strategy);
     });
 
     // Set node selection; the fit-aware updater renders the hint (and survives polling).
@@ -1113,6 +1203,26 @@ const AINode = {
         });
       };
     });
+  },
+
+  // GPUs an instance occupies, across whichever axes it uses. Missing sizes
+  // read as 1, so an instance advertised by an older head still measures right.
+  instanceWorldSize(di) {
+    if (!di) return 0;
+    var tp = di.tensor_parallel_size || 1;
+    var pp = di.pipeline_parallel_size || 1;
+    var dp = di.data_parallel_size || 1;
+    return tp * pp * dp;
+  },
+
+  // Which axes a given node count can actually use. Tensor parallelism splits
+  // attention heads, and head counts are powers of two, so TP=3 has no models
+  // behind it — the server refuses it; the UI should not offer it either.
+  // Mirrors ainode/engine/parallelism.py.
+  strategyAllowed(strategy, nodeCount) {
+    if (nodeCount <= 1) return true;
+    if (strategy === 'tensor') return [1, 2, 4, 8].indexOf(nodeCount) !== -1;
+    return true;  // pipeline and data work at any node count
   },
 
   async launchInstance() {

@@ -18,7 +18,7 @@
 ARG BASE=scitrera/dgx-spark-vllm:0.17.0-t5
 FROM ${BASE}
 
-LABEL org.opencontainers.image.source="https://github.com/getainode/ainode"
+LABEL org.opencontainers.image.source="https://github.com/bmetallica/ainode"
 LABEL org.opencontainers.image.description="AINode quantization job container (vLLM base + llm-compressor)."
 
 # Pin against the base image's existing torch/transformers where possible; fall

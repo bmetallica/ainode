@@ -1558,6 +1558,46 @@ h4.chat-h { font-size: 14px; color: var(--nvidia-green); }
   border: 1px solid var(--nvidia-green-dim);
 }
 
+/* A degraded instance is still running on the head but has lost a member node,
+   so it cannot serve. Amber, not red: nothing is broken that a relaunch on the
+   surviving nodes does not fix. */
+.instance-strategy.degraded {
+  background: var(--amber-glow);
+  color: var(--amber);
+  border-color: var(--amber);
+}
+
+.instance-degraded {
+  font-size: 11px;
+  color: var(--amber);
+  line-height: 1.4;
+  margin: 6px 0 2px;
+}
+
+.instance-relaunch {
+  background: transparent;
+  border: 1px solid var(--amber);
+  color: var(--amber);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 20px;
+  margin-left: auto;
+  margin-right: 8px;
+  transition: all 0.15s ease;
+}
+
+.instance-relaunch:hover:not(:disabled) {
+  background: var(--amber-glow);
+}
+
+.instance-relaunch:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .instance-nodes {
   font-size: 11px;
   color: var(--text-muted);

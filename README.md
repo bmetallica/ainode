@@ -18,22 +18,22 @@ platform, open source ChatGPT alternative.
 </p>
 
 <p align="center">
-  <a href="https://github.com/getainode/ainode/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/getainode/ainode?display_name=tag&style=flat-square&color=76B900&label=release"></a>
-  <a href="https://github.com/getainode/ainode/blob/main/LICENSE"><img alt="license" src="https://img.shields.io/badge/license-Apache%202.0-76B900?style=flat-square"></a>
+  <a href="https://github.com/bmetallica/ainode/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/bmetallica/ainode?display_name=tag&style=flat-square&color=76B900&label=release"></a>
+  <a href="https://github.com/bmetallica/ainode/blob/main/LICENSE"><img alt="license" src="https://img.shields.io/badge/license-Apache%202.0-76B900?style=flat-square"></a>
   <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white">
   <a href="https://hub.docker.com/r/argentaios/ainode"><img alt="docker pulls" src="https://img.shields.io/docker/pulls/argentaios/ainode?style=flat-square&logo=docker&logoColor=white&label=dockerhub&color=2496ED"></a>
-  <a href="https://github.com/orgs/getainode/packages/container/package/ainode"><img alt="ghcr" src="https://img.shields.io/badge/ghcr-getainode%2Fainode-24292e?style=flat-square&logo=github"></a>
+  <a href="https://github.com/users/bmetallica/packages/container/package/ainode"><img alt="ghcr" src="https://img.shields.io/badge/ghcr-bmetallica%2Fainode-24292e?style=flat-square&logo=github"></a>
   <img alt="CUDA" src="https://img.shields.io/badge/CUDA-13-76B900?style=flat-square&logo=nvidia&logoColor=white">
   <img alt="vLLM" src="https://img.shields.io/badge/vLLM-0.19-7C3AED?style=flat-square">
   <img alt="Ray" src="https://img.shields.io/badge/Ray-2.54-028CF3?style=flat-square">
-  <a href="https://github.com/getainode/ainode/stargazers"><img alt="stars" src="https://img.shields.io/github/stars/getainode/ainode?style=flat-square&color=FFD700"></a>
-  <a href="https://releasebot.io/updates/getainode/ainode"><img alt="Release Bot" src="https://releasebot.io/Full.svg" height="20"></a>
+  <a href="https://github.com/bmetallica/ainode/stargazers"><img alt="stars" src="https://img.shields.io/github/stars/bmetallica/ainode?style=flat-square&color=FFD700"></a>
+  <a href="https://releasebot.io/updates/bmetallica/ainode"><img alt="Release Bot" src="https://releasebot.io/Full.svg" height="20"></a>
 </p>
 
 <p align="center">
-  <a href="https://ainode.dev">ainode.dev</a>
+  <a href="https://github.com/bmetallica/ainode">github</a>
   &nbsp;·&nbsp;
-  <a href="https://docs.ainode.dev">docs</a>
+  <a href="https://github.com/bmetallica/ainode#readme">docs</a>
   &nbsp;·&nbsp;
   <a href="#getting-started--step-by-step">Getting Started</a>
   &nbsp;·&nbsp;
@@ -60,7 +60,7 @@ One `docker pull`, one systemd unit per box, done. No host Python venv,
 no source-built vLLM, no fragile runtime wiring.
 
 ```bash
-curl -fsSL https://ainode.dev/install | bash
+curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh | bash
 ```
 
 ---
@@ -136,12 +136,12 @@ current member list with per-node role, address, and last-seen.
 1. **Install Docker** + NVIDIA container toolkit on your Linux box.
 2. **Pull the image** and wire up the systemd unit:
    ```bash
-   curl -fsSL https://ainode.dev/install | bash
+   curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh | bash
    ```
    That one-liner:
    ```
    # resolves the highest numeric GHCR tag (never a floating :latest)
-   docker pull ghcr.io/getainode/ainode:<latest-release>
+   docker pull ghcr.io/bmetallica/ainode:<latest-release>
    # pins it to ~/.ainode/image.env and installs a swappable systemd unit
    systemctl enable --now ainode.service
    ```
@@ -160,7 +160,7 @@ images — GHCR is canonical (what the installer uses), Docker Hub is a
 public mirror:
 
 ```bash
-docker pull ghcr.io/getainode/ainode:latest      # canonical (always newest)
+docker pull ghcr.io/bmetallica/ainode:latest      # canonical (always newest)
 docker pull argentaios/ainode:latest             # Docker Hub mirror
 # pin a release instead: …/ainode:0.5.2
 ```
@@ -316,7 +316,7 @@ really running on our hardware.
 - **Four-node cluster** (3× DGX Spark + 1× ASUS GX10) — 487 GB
   aggregated VRAM, all four discovered automatically via UDP, topology
   visible in the browser UI. Verified April 2026.
-- **One-container-per-node install** — `curl -fsSL https://ainode.dev/install | bash -s -- --job worker`
+- **One-container-per-node install** — `curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh | bash -s -- --job worker`
   installs in seconds with no model required.
 - **`ainode role`** CLI sets master/worker/solo instantly.
 - **Worker nodes start immediately** — no model download, no engine
@@ -509,7 +509,7 @@ ainode logs -f               # Tail the engine log
 
 Releases ship through a **tag-triggered pipeline**: `git tag vX.Y.Z` →
 CI on a self-hosted Spark runner builds and pushes
-`ghcr.io/getainode/ainode:X.Y.Z`. To upgrade a node in place:
+`ghcr.io/bmetallica/ainode:X.Y.Z`. To upgrade a node in place:
 
 ```bash
 ainode update

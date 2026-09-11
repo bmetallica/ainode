@@ -8,6 +8,7 @@ patched backend so nothing actually launches.
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import patch
 
 import pytest
@@ -19,12 +20,13 @@ from ainode.engine.sharding_routes import handle_sharding_launch
 import ainode.engine.backends as backends
 
 
-def _member(node_id, fabric_ip, peer_ip="192.168.0.99"):
+def _member(node_id, fabric_ip, peer_ip="192.168.0.99", ib_ips=None):
     return ClusterNode(
         node_id=node_id, node_name=f"host-{node_id}", gpu_name="NVIDIA GB10",
         gpu_memory_gb=128.0, unified_memory=True, model="", status=NodeStatus.ONLINE,
         api_port=8000, web_port=3000, last_seen=0.0,
         distributed_mode="member", peer_ip=peer_ip, fabric_ip=fabric_ip,
+        ib_ips=list(ib_ips or []),
     )
 
 
@@ -201,3 +203,160 @@ def test_distributed_instance_resolves_peers_and_model():
     assert "memberid" in di["peer_node_ids"]                      # fabric IP → node_id
     assert di["tensor_parallel_size"] == 2
     assert "Spark-1-DGX" in di["member_names"] and "host-memberid" in di["member_names"]
+
+
+# ---------------------------------------------------------------------------
+# Part B — a direct RoCE cable is used for weights, never for coordination
+# ---------------------------------------------------------------------------
+
+
+def _cx7_link(cidr):
+    from ainode.cluster.topology import CX7Link
+
+    return CX7Link(hca="rocep1s0f1", netdev="enp1s0f1np1",
+                   ipv4=cidr.split("/")[0], cidr=cidr)
+
+
+def test_direct_link_peer_gets_a_transfer_address():
+    """Head sits on 192.168.177.0/24; the peer announces an address there, so
+    weights go over the cable while Ray stays on the coordination IP."""
+    with patch("ainode.cluster.topology.detect_cx7_links",
+               return_value=[_cx7_link("192.168.177.11/24")]):
+        config, resp = _run(
+            {"model": "m", "node_ids": ["head", "m1"]},
+            [_member("m1", fabric_ip="10.0.0.12",
+                     ib_ips=["192.168.177.12", "192.168.197.12"])],
+        )
+    assert resp.status == 200
+    assert config.peer_ips == ["10.0.0.12"]  # coordination unchanged
+    launched = _FakeBackend.last["config"]
+    assert launched.peer_transfer_ips == {"10.0.0.12": "192.168.177.12"}
+
+
+def test_peer_without_a_shared_subnet_gets_no_transfer_address():
+    with patch("ainode.cluster.topology.detect_cx7_links",
+               return_value=[_cx7_link("192.168.177.11/24")]):
+        config, resp = _run(
+            {"model": "m", "node_ids": ["head", "m1"]},
+            [_member("m1", fabric_ip="10.0.0.13", ib_ips=["192.168.197.13"])],
+        )
+    assert resp.status == 200
+    assert _FakeBackend.last["config"].peer_transfer_ips == {}
+
+
+def test_peer_from_an_older_build_gets_no_transfer_address():
+    with patch("ainode.cluster.topology.detect_cx7_links",
+               return_value=[_cx7_link("192.168.177.11/24")]):
+        config, resp = _run(
+            {"model": "m", "node_ids": ["head", "m1"]},
+            [_member("m1", fabric_ip="10.0.0.12")],  # announces no ib_ips
+        )
+    assert resp.status == 200
+    assert _FakeBackend.last["config"].peer_transfer_ips == {}
+
+
+def test_transfer_resolution_failure_does_not_block_the_launch():
+    """Address selection is an optimisation. If it raises, the launch must
+    still proceed over the coordination path."""
+    with patch("ainode.cluster.topology.detect_cx7_links",
+               side_effect=OSError("sysfs exploded")):
+        config, resp = _run(
+            {"model": "m", "node_ids": ["head", "m1"]},
+            [_member("m1", fabric_ip="10.0.0.12", ib_ips=["192.168.177.12"])],
+        )
+    assert resp.status == 200
+    assert _FakeBackend.last["launched"] is True
+    assert _FakeBackend.last["config"].peer_transfer_ips == {}
+
+
+# ---------------------------------------------------------------------------
+# Part C — the strategy is honoured instead of always building TP
+# ---------------------------------------------------------------------------
+
+
+def _members(n):
+    """n member nodes, so the cluster has n+1 counting the head."""
+    return [_member(f"m{i}", fabric_ip=f"10.0.0.{12 + i}") for i in range(n)]
+
+
+def _ids(n):
+    return ["head"] + [f"m{i}" for i in range(n)]
+
+
+def test_two_nodes_still_launch_tensor_parallel():
+    """Regression guard: the existing 2-node setups must be untouched."""
+    config, resp = _run({"model": "m", "node_ids": _ids(1)}, _members(1))
+    assert resp.status == 200
+    body = json.loads(resp.body)
+    assert body["tensor_parallel_size"] == 2
+    assert body["pipeline_parallel_size"] == 1
+    assert body["strategy"] == "tensor"
+    assert _FakeBackend.last["config"].tensor_parallel_size == 2
+
+
+def test_four_nodes_still_launch_tensor_parallel():
+    config, resp = _run({"model": "m", "node_ids": _ids(3)}, _members(3))
+    assert resp.status == 200
+    assert json.loads(resp.body)["tensor_parallel_size"] == 4
+
+
+def test_three_nodes_auto_resolves_to_pipeline():
+    """TP=3 has no models behind it, so auto must pick pipeline."""
+    config, resp = _run({"model": "m", "node_ids": _ids(2)}, _members(2))
+    assert resp.status == 200
+    body = json.loads(resp.body)
+    assert body["strategy"] == "pipeline"
+    assert body["pipeline_parallel_size"] == 3
+    assert body["tensor_parallel_size"] == 1
+    assert body["parallel_plan"]["label"] == "PP=3"
+
+
+def test_three_nodes_explicit_tensor_is_refused_before_launching():
+    config, resp = _run(
+        {"model": "m", "node_ids": _ids(2), "strategy": "tensor"}, _members(2)
+    )
+    assert resp.status == 422
+    body = json.loads(resp.body)
+    assert "pipeline" in body["error"]
+    assert body["node_count"] == 3
+    # Nothing was started — the point of validating before the backend runs.
+    assert _FakeBackend.last.get("launched") is not True
+
+
+def test_three_nodes_explicit_data_parallel():
+    config, resp = _run(
+        {"model": "m", "node_ids": _ids(2), "strategy": "data"}, _members(2)
+    )
+    assert resp.status == 200
+    body = json.loads(resp.body)
+    assert body["data_parallel_size"] == 3
+    assert body["tensor_parallel_size"] == 1
+    assert _FakeBackend.last["config"].parallel_strategy == "data"
+
+
+def test_docs_spelling_of_the_strategy_is_accepted():
+    """The UI posts "tensor", the API docs say "tensor_parallel"; both have
+    been sent for releases and neither was ever acted on."""
+    config, resp = _run(
+        {"model": "m", "node_ids": _ids(1), "strategy": "tensor_parallel"},
+        _members(1),
+    )
+    assert resp.status == 200
+    assert json.loads(resp.body)["tensor_parallel_size"] == 2
+
+
+def test_unknown_strategy_is_a_400():
+    config, resp = _run(
+        {"model": "m", "node_ids": _ids(1), "strategy": "megatron"}, _members(1)
+    )
+    assert resp.status == 400
+    assert "tensor, pipeline, data, auto" in json.loads(resp.body)["error"]
+
+
+def test_instance_record_carries_every_axis():
+    config, resp = _run({"model": "m", "node_ids": _ids(2)}, _members(2))
+    assert resp.status == 200
+    cfg = _FakeBackend.last["config"]
+    assert (cfg.tensor_parallel_size, cfg.pipeline_parallel_size,
+            cfg.data_parallel_size) == (1, 3, 1)
+    assert cfg.parallel_strategy == "pipeline"

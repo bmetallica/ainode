@@ -10,4 +10,4 @@ except PackageNotFoundError:  # pragma: no cover - running from an uninstalled s
     __version__ = "0.0.0+unknown"
 
 __author__ = "Argentos AI"
-__url__ = "https://ainode.dev"
+__url__ = "https://github.com/bmetallica/ainode"

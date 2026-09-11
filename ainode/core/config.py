@@ -6,6 +6,14 @@ from pathlib import Path
 from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional
 
+# Registry this build pulls and updates itself from. One constant rather than a
+# repo string repeated across the systemd unit renderer, the update check and
+# the installer — a fork publishing its own image sets $AINODE_GHCR_REPO (or
+# changes this default) in one place. Kept in sync with the same-named variable
+# in scripts/install.sh.
+AINODE_GHCR_REPO = os.environ.get("AINODE_GHCR_REPO") or "ghcr.io/bmetallica/ainode"
+AINODE_PROJECT_URL = "https://github.com/bmetallica/ainode"
+
 AINODE_HOME = Path(os.environ.get("AINODE_HOME", Path.home() / ".ainode"))
 CONFIG_FILE = AINODE_HOME / "config.json"
 MODELS_DIR = AINODE_HOME / "models"
@@ -26,7 +34,11 @@ class NodeConfig:
     host: str = "0.0.0.0"
     api_port: int = 8000
     web_port: int = 3000
-    discovery_port: int = 5678
+    # 5679, matching scripts/install.sh and the docs. The code default used to
+    # be 5678, so a node installed by hand (no install.sh) would not see nodes
+    # installed by it. Real installs always carry an explicit value in
+    # config.json, so this only affects hand-rolled ones.
+    discovery_port: int = 5679
 
     # Engine
     engine_strategy: str = "pip"  # "pip" | "docker"
@@ -113,14 +125,48 @@ class NodeConfig:
     #               directly on this box. Expected to announce itself via
     #               UDP discovery so the head's UI sees it.
     distributed_mode: str = "solo"  # "solo" | "head" | "member"
-    # IPs of peer workers (on the cluster_interface subnet) when distributed.
-    # Used only when distributed_mode="head".
+    # Coordination addresses of peer workers when distributed — what Ray, SSH
+    # and the torch rendezvous use. Used only when distributed_mode="head".
     peer_ips: List[str] = field(default_factory=list)
+    # Optional per-peer address for BULK TRANSFER (model weights), keyed by the
+    # peer_ips entry. Resolved at launch from the peers' announced RoCE
+    # addresses: where head and peer share a direct cable, the weights go over
+    # it instead of the shared Ethernet. A peer missing here transfers over its
+    # peer_ips address, which is what every node did before.
+    peer_transfer_ips: Dict[str, str] = field(default_factory=dict)
+    # How the model is split across the member nodes, resolved at launch from
+    # the requested strategy and the node count (see engine/parallelism.py) and
+    # snapshotted here so the backend can emit the right vLLM flags.
+    #
+    # All zero = "not resolved", which the backends read as tensor-parallel
+    # across every node — what they computed from peer_ips before these fields
+    # existed, so an old config.json or a launch path that never sets them
+    # behaves exactly as it did. A 3-node launch cannot use that fallback (no
+    # model supports TP=3), so it always carries an explicit plan.
+    parallel_strategy: str = ""  # "" | tensor | pipeline | data
+    tensor_parallel_size: int = 0
+    pipeline_parallel_size: int = 0
+    data_parallel_size: int = 0
+
     # SSH user for head-to-worker passwordless login (eugr launcher uses it).
     ssh_user: str = "ubuntu"
     # Interface NCCL/Ray/Gloo bind to (e.g. "enp1s0f0np0" for DGX Spark direct
     # connect, or the dedicated cluster-switch NIC).
+    #
+    # On a direct-attach pair or a QSFP-switched cluster this one interface is
+    # both the coordination path and the RDMA path, because every node shares
+    # the subnet. On a switchless 3-node mesh that is no longer true — each CX7
+    # port is a private link to a different neighbour — so the two roles split
+    # across the fields below. See ainode/cluster/topology.py.
     cluster_interface: str = "eno1"
+    # Interface for coordination only: Ray, UDP discovery, SSH. Empty = detect
+    # (mesh -> the shared 10G Ethernet; otherwise cluster_interface, i.e. the
+    # current behaviour). Set it explicitly to override detection.
+    coord_interface: str = ""
+    # RoCE devices for NCCL_IB_HCA, e.g. ["rocep1s0f0", "roceP2p1s0f0"]. Empty =
+    # detect (mesh -> all four active devices; otherwise the backend's existing
+    # subnet-filtered detection). Set it explicitly to override detection.
+    rdma_hcas: List[str] = field(default_factory=list)
 
     # Storage paths (override defaults)
     datasets_dir: Optional[str] = None

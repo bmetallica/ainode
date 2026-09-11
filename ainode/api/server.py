@@ -211,13 +211,30 @@ def _head_instances(config) -> list:
     if not peer_ips:
         return []
     iid = f"{config.node_id or 'head'}:{config.model}"
+
+    # The split this head is actually running. A config that carries no
+    # resolved sizes (an older config.json, or a systemd-path launch that
+    # never went through /api/sharding/launch) reads as tensor-parallel across
+    # every node — what this advertised before the other axes existed.
+    from ainode.engine.parallelism import ParallelPlan
+
+    plan = ParallelPlan.from_dict({
+        "tensor_parallel_size": getattr(config, "tensor_parallel_size", 0) or 0,
+        "pipeline_parallel_size": getattr(config, "pipeline_parallel_size", 0) or 0,
+        "data_parallel_size": getattr(config, "data_parallel_size", 0) or 0,
+    })
+    if plan.world_size != 1 + len(peer_ips) or not plan.is_distributed:
+        plan = ParallelPlan(tensor_parallel_size=1 + len(peer_ips))
+
     return [InstanceRecord(
         instance_id=iid,
         model=config.model or "",
         head_node_id=config.node_id or "unknown",
         peer_ips=peer_ips,
         api_port=config.api_port,
-        tensor_parallel_size=1 + len(peer_ips),
+        tensor_parallel_size=plan.tensor_parallel_size,
+        pipeline_parallel_size=plan.pipeline_parallel_size,
+        data_parallel_size=plan.data_parallel_size,
         status="serving",
     ).to_dict()]
 
@@ -229,12 +246,27 @@ def _build_announcement(config: NodeConfig, engine=None) -> NodeAnnouncement:
     gpu_memory_gb = round(gpu.memory_total_mb / 1024, 1) if gpu else 0.0
     unified_memory = gpu.unified_memory if gpu else False
 
-    # This node's fabric IP, so a head can launch us over the cluster fabric
+    # This node's address for a head to reach us on: SSH, Ray, model transfer
     # (BUG D fix — not the mgmt-LAN UDP source address).
+    #
+    # Taken from the COORDINATION interface, which off a mesh is
+    # cluster_interface, i.e. unchanged. On a switchless mesh it has to be the
+    # shared Ethernet: a node's CX7 addresses each reach exactly one neighbour,
+    # so announcing one would leave the third node unable to reach us at all.
+    # Part B adds the per-link IB addresses alongside this, for bulk transfer.
     fabric_ip = ""
+    ib_ips: list = []
     try:
         from ainode.cluster.hca_discovery import detect_fabric_ip
-        fabric_ip = detect_fabric_ip(getattr(config, "cluster_interface", "") or "") or ""
+        from ainode.cluster.topology import (
+            detect_cx7_links,
+            local_ib_ips,
+            topology_for_config,
+        )
+        fabric_ip = detect_fabric_ip(topology_for_config(config).coord_interface) or ""
+        # The RoCE link addresses, so a head with a cable to us can push model
+        # weights over it instead of the shared Ethernet (see transfer_address).
+        ib_ips = local_ib_ips(detect_cx7_links())
     except Exception:
         pass
 
@@ -281,6 +313,7 @@ def _build_announcement(config: NodeConfig, engine=None) -> NodeAnnouncement:
         distributed_instance_id=distributed_instance_id,
         distributed_peers=distributed_peers,
         fabric_ip=fabric_ip,
+        ib_ips=ib_ips,
         instances=(_head_instances(config) if (distributed_mode == "head" and engine_ready) else []),
     )
 
@@ -1031,6 +1064,8 @@ async def handle_cluster_resources(request: web.Request) -> web.Response:
     # advertises the instances it heads. Resolve each instance's peer FABRIC IPs
     # (BUG D) back to member node ids/names. `distributed_instance` (singular)
     # stays = the first one, for one release of back-compat.
+    from ainode.discovery.instance import InstanceRecord
+
     by_fabric = {
         (getattr(m, "fabric_ip", "") or ""): m
         for m in cluster.members() if getattr(m, "fabric_ip", "")
@@ -1040,8 +1075,15 @@ async def handle_cluster_resources(request: web.Request) -> web.Response:
         iid = inst.get("instance_id", "") or ""
         peers = list(inst.get("peer_ips", []) or [])
         peer_node_ids, member_names = [], [head.node_name]
+        # A peer_ip with no online member behind it is a node that has gone
+        # away since this instance launched. The instance is still *running* on
+        # the head, but its ranks are incomplete — vLLM loses the ranks Ray
+        # placed there — so it is reported degraded rather than healthy.
+        missing_peer_ips = []
         for ip in peers:
             m = by_fabric.get(ip)
+            if m is None:
+                missing_peer_ips.append(ip)
             peer_node_ids.append(m.node_id if m else ip)
             member_names.append(m.node_name if m else ip)
         # model can be stale ("") if the head started idle; it's authoritative in
@@ -1055,6 +1097,20 @@ async def handle_cluster_resources(request: web.Request) -> web.Response:
             "peer_node_ids": peer_node_ids,
             "member_names": member_names,
             "tensor_parallel_size": inst.get("tensor_parallel_size") or (1 + len(peers)),
+            # PP/DP default to 1, so an instance advertised by a node running an
+            # older build reads as the tensor-parallel split it actually is.
+            "pipeline_parallel_size": inst.get("pipeline_parallel_size") or 1,
+            "data_parallel_size": inst.get("data_parallel_size") or 1,
+            # Ready-made badge text ("PP=3", "TP=2 · PP=2") so the UI does not
+            # re-derive the label from three sizes in three places.
+            "parallel_label": InstanceRecord.from_dict(inst).parallel_label(),
+            # Peers this instance was launched across that are no longer online,
+            # and the node_ids that ARE — what a relaunch would run on.
+            "missing_peer_ips": missing_peer_ips,
+            "degraded": bool(missing_peer_ips),
+            "surviving_node_ids": [head.node_id] + [
+                by_fabric[ip].node_id for ip in peers if ip in by_fabric
+            ],
             "model": model,
             "status": inst.get("status", "serving"),
         }
@@ -1082,6 +1138,9 @@ async def handle_cluster_resources(request: web.Request) -> web.Response:
             "node_id": n.node_id,
             "hostname": n.node_name,
             "fabric_ip": getattr(n, "fabric_ip", "") or "",
+            # RoCE link addresses, so an operator can see which peers the head
+            # has a direct cable to (bulk transfer path — see topology.py).
+            "ib_ips": list(getattr(n, "ib_ips", []) or []),
             "vram_gb": round(float(n.gpu_memory_gb or 0), 1),
             "gpus": 1,
             "gpu_name": n.gpu_name,
@@ -1375,6 +1434,9 @@ PATCHABLE_CONFIG_FIELDS = {
     "cluster_role",
     "cluster_id",
     "master_address",
+    "cluster_interface",
+    "coord_interface",
+    "rdma_hcas",
     "datasets_dir",
     "training_dir",
     "hf_cache_dir",
@@ -1433,7 +1495,9 @@ async def handle_set_model(request: web.Request) -> web.Response:
     return web.json_response({"status": "restarting", "model": model})
 
 
-AINODE_GHCR_REPO = "ghcr.io/getainode/ainode"
+# Re-exported from core.config so the update check, the systemd unit and the
+# installer cannot drift apart. Importers of this name keep working.
+from ainode.core.config import AINODE_GHCR_REPO  # noqa: E402
 
 
 def _fetch_latest_ghcr_tag() -> Optional[str]:
@@ -1445,10 +1509,13 @@ def _fetch_latest_ghcr_tag() -> Optional[str]:
     import urllib.request
     import json as _json
 
-    token_url = "https://ghcr.io/token?service=ghcr.io&scope=repository:getainode/ainode:pull"
+    repo_path = AINODE_GHCR_REPO.split("/", 1)[-1] if "/" in AINODE_GHCR_REPO else AINODE_GHCR_REPO
+    token_url = (
+        f"https://ghcr.io/token?service=ghcr.io&scope=repository:{repo_path}:pull"
+    )
     with urllib.request.urlopen(token_url, timeout=5) as r:
         token = _json.loads(r.read())["token"]
-    tags_url = "https://ghcr.io/v2/getainode/ainode/tags/list"
+    tags_url = f"https://ghcr.io/v2/{repo_path}/tags/list"
     req = urllib.request.Request(tags_url, headers={"Authorization": f"Bearer {token}"})
     with urllib.request.urlopen(req, timeout=5) as r:
         data = _json.loads(r.read())
@@ -1604,8 +1671,8 @@ async def handle_engine_update(request: web.Request) -> web.Response:
             "message": (
                 "Image pulled and pinned, but this node's systemd unit predates "
                 "the swappable-image unit and will not pick it up. Migrate it on "
-                "the host (re-run the installer: curl -fsSL https://ainode.dev/"
-                "install | bash) to boot the new image."
+                "the host (re-run the installer: curl -fsSL "
+                "https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh | bash) to boot the new image."
             ),
         })
 

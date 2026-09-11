@@ -6,7 +6,7 @@
 #   AINode's OWN container is a lean Python-only orchestrator. It does NOT
 #   embed CUDA, vLLM, or NCCL. The inference engine runs in a SEPARATE
 #   container (`nvcr.io/nvidia/vllm:26.02-py3` for the NVIDIA backend;
-#   `ghcr.io/getainode/ainode-base` for the eugr backend — built via
+#   `ghcr.io/bmetallica/ainode-base` for the eugr backend — built via
 #   scripts/build-base-image.sh + the legacy Dockerfile path).
 #
 # Build:
@@ -15,11 +15,11 @@
 # Target image size: ~500-800 MB (python:3.12-slim is ~120 MB, + docker-cli
 # + iproute2 + Python deps).
 #
-# Published at ghcr.io/getainode/ainode:<version> (mirrored to argentos/ainode).
+# Published at ghcr.io/bmetallica/ainode:<version>.
 
 FROM python:3.12-slim AS ainode
 
-LABEL org.opencontainers.image.source="https://github.com/getainode/ainode"
+LABEL org.opencontainers.image.source="https://github.com/bmetallica/ainode"
 LABEL org.opencontainers.image.description="AINode — local AI platform orchestrator (slim Python container; spawns NVIDIA vLLM engine in a separate container)."
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 

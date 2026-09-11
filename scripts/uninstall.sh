@@ -2,7 +2,7 @@
 # AINode uninstaller.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/getainode/ainode/main/scripts/uninstall.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/uninstall.sh | bash
 #   scripts/uninstall.sh              # keep data (models, training runs)
 #   scripts/uninstall.sh --purge      # also delete ~/.ainode (DESTRUCTIVE)
 #
@@ -79,7 +79,7 @@ if command -v docker >/dev/null 2>&1; then
     # 4. Remove AINode images — all tags on GHCR and Docker Hub mirror
     # ---------------------------------------------------------------------------
     log "Removing AINode images (this may take a moment)"
-    for repo in "ghcr.io/getainode/ainode" "argentaios/ainode"; do
+    for repo in "ghcr.io/bmetallica/ainode"; do
         # List all local tags for this repo and remove each
         while IFS= read -r img; do
             [ -z "$img" ] && continue
@@ -93,7 +93,7 @@ if command -v docker >/dev/null 2>&1; then
         [ -z "$img" ] && continue
         log "  Removing $img"
         docker rmi "$img" 2>/dev/null || true
-    done < <(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep "^ghcr.io/getainode/ainode-base:" || true)
+    done < <(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep "^ghcr.io/bmetallica/ainode-base:" || true)
 else
     warn "docker not found — skipping container/image cleanup"
 fi
@@ -133,5 +133,5 @@ printf '    \033[1;32m  AINode uninstalled.\033[0m\n'
 printf '    \033[1;32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n'
 printf '\n'
 printf '    To reinstall:\n'
-printf '      curl -fsSL https://ainode.dev/install | bash\n'
+printf '      curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh | bash\n'
 printf '\n'

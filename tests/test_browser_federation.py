@@ -12,6 +12,7 @@ from ainode.core.config import NodeConfig
 from ainode.discovery.broadcast import NodeStatus
 from ainode.discovery.cluster import ClusterNode, ClusterState
 from ainode.engine.backends.nvidia import NvidiaBackend
+from ainode.engine.parallelism import ParallelPlan
 
 
 def _node(nid, model="", fabric="", status=NodeStatus.ONLINE, api_port=8000):
@@ -44,7 +45,7 @@ def test_default_gpu_mem_util_lowered():
 def test_gpu_mem_util_reaches_serve_args():
     b = NvidiaBackend(__import__("dataclasses").replace(
         NodeConfig(node_id="n"), gpu_memory_utilization=0.3))
-    args = b._build_vllm_serve_args(tp_size=1)
+    args = b._build_vllm_serve_args(plan=ParallelPlan())
     i = args.index("--gpu-memory-utilization")
     assert args[i + 1] == "0.3"
 
