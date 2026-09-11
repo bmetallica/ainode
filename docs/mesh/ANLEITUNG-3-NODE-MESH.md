@@ -205,9 +205,19 @@ Arbeitsverzeichnis heraus:
 ssh Spark1
 git clone https://github.com/bmetallica/ainode
 cd ainode
-scripts/build-base-image.sh                            # baut ainode-base (dauert)
-docker build -f scripts/Dockerfile.ainode -t ainode:dev .
+scripts/build-base-image.sh                            # Engine-Image, ~15-25 min
+docker build -f scripts/Dockerfile.ainode -t ainode:dev .    # der Punkt am Ende ist der Build-Context
 ```
+
+Es entstehen **zwei** Images mit unterschiedlichen Aufgaben:
+
+| Image | Was es ist |
+|---|---|
+| `vllm-node:latest` (+ `ghcr.io/bmetallica/ainode-base:*`) | die **Engine** — CUDA, vLLM, NCCL. Startet AINode zur Laufzeit als eigenen Container. |
+| `ainode:dev` | der **Orchestrator** — schlankes Python, Web-UI, API. Das ist, was als Dienst läuft. |
+
+Der Orchestrator baut *nicht* auf dem Engine-Image auf; er startet es nur. Der
+zweite Build dauert deshalb nur wenige Minuten.
 
 `git clone` eines öffentlichen Repos braucht **kein** GitHub-Konto und kein
 `gh`. `build-base-image.sh` klont zusätzlich `eugr/spark-vllm-docker` — auch
