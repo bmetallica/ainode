@@ -10,12 +10,12 @@ the normal `install.sh` path works unchanged.
 Requires a self-hosted runner labelled `[self-hosted, dgx-spark, aarch64]` with
 docker + nvidia-container-toolkit, and the runner user in the `docker` group.
 
-```bash
-# Build only, no push — proves the runner works.
-gh workflow run publish-image.yml -f push=false
+Start it from the browser (repository → **Actions** → *publish-image* → **Run
+workflow**) or from the CLI — `gh` is a convenience, not a requirement:
 
-# Build and push to ghcr.io/<owner>/ainode.
-gh workflow run publish-image.yml -f push=true
+```bash
+gh workflow run publish-image.yml -f push=false   # build only, proves the runner works
+gh workflow run publish-image.yml -f push=true    # build and push
 ```
 
 A `v*` tag push (e.g. `v0.5.7`) builds and pushes automatically.
@@ -47,15 +47,22 @@ An empty list on a repository that has had pushes means the gate is still shut.
 `tests.yml` then runs `ruff` and `pytest` on every pull request and on pushes to
 `main`; `publish-image.yml` stays manual / tag-triggered.
 
-## Option B — build locally on one Spark
+## Option B — build locally on one Spark (no GitHub account needed)
 
-No CI, no registry. Useful for trying a branch on real hardware.
+No CI, no registry, no account — `git clone` of a public repository and the
+public base it pulls need neither. Clone first: the build runs out of the
+working tree.
 
 ```bash
-scripts/build-base-image.sh
+git clone https://github.com/bmetallica/ainode && cd ainode
+scripts/build-base-image.sh                            # also clones eugr's repo
 docker build -f scripts/Dockerfile.ainode -t ainode:dev .
 AINODE_IMAGE=ainode:dev bash scripts/install.sh
 ```
+
+`install.sh` checks for a locally present image before reaching for a registry,
+so `ainode:dev` installs without a `docker pull` that could only fail — it would
+resolve to `docker.io/library/ainode`.
 
 `AINODE_IMAGE` is written to `~/.ainode/image.env`, which the systemd unit reads,
 so the node keeps booting that image across restarts.

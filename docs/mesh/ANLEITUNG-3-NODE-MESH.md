@@ -192,71 +192,118 @@ ohnehin selbst über die Direktlinks (siehe Schritt 9).
 
 ## Schritt 6 — Image bereitstellen (einmalig)
 
-Dieser Fork veröffentlicht sein **eigenes** Image. Vor der ersten Installation
-muss eines existieren. Zwei Wege — Details in
-[`BOOTSTRAP.md`](BOOTSTRAP.md):
+Dieser Fork veröffentlicht sein **eigenes** Image, und unter
+`ghcr.io/bmetallica/ainode` liegt noch keines. Genau eines der beiden Verfahren
+reicht — **Weg B braucht kein GitHub-Konto und keine Registry.**
 
-**A) Über die CI** (braucht einen self-hosted Runner mit den Labels
-`[self-hosted, dgx-spark, aarch64]`):
+### Weg B — lokal auf Spark1 bauen (empfohlen für den Anfang)
 
-```bash
-gh workflow run publish-image.yml -f push=true
-```
-
-Danach **das GHCR-Package auf public stellen**: GitHub → Packages → `ainode` →
-Package settings → Change visibility. Der Installer löst Tags anonym auf.
-
-**B) Lokal auf einem Spark bauen** (kein Registry nötig):
+Das Repo muss dafür **zuerst geklont** sein — der Bau läuft aus dem
+Arbeitsverzeichnis heraus:
 
 ```bash
-scripts/build-base-image.sh
+ssh Spark1
+git clone https://github.com/bmetallica/ainode
+cd ainode
+scripts/build-base-image.sh                            # baut ainode-base (dauert)
 docker build -f scripts/Dockerfile.ainode -t ainode:dev .
 ```
 
-Dann das Image auf die anderen beiden bringen:
+`git clone` eines öffentlichen Repos braucht **kein** GitHub-Konto und kein
+`gh`. `build-base-image.sh` klont zusätzlich `eugr/spark-vllm-docker` — auch
+öffentlich, auch ohne Konto.
+
+Dann das fertige Image auf die anderen beiden bringen:
 
 ```bash
 docker save ainode:dev | ssh Spark2 docker load
 docker save ainode:dev | ssh Spark3 docker load
 ```
 
+Installiert wird in Schritt 7 mit `AINODE_IMAGE=ainode:dev`. Der Installer
+erkennt ein lokal vorhandenes Image und zieht dann nichts aus einer Registry.
+
+### Weg A — über die CI veröffentlichen
+
+Lohnt sich, sobald du regelmäßig neue Stände ausrollst. Voraussetzungen: ein
+self-hosted Runner mit den Labels `[self-hosted, dgx-spark, aarch64]`, und die
+Actions müssen im Repo einmalig freigeschaltet sein (siehe
+[`BOOTSTRAP.md`](BOOTSTRAP.md)).
+
+Starten geht **wahlweise** über die Weboberfläche oder die CLI — `gh` ist nur
+bequemer, nicht nötig:
+
+* **Browser:** Repo → *Actions* → *publish-image* → *Run workflow* → `push: true`
+* **CLI:** `gh workflow run publish-image.yml -f push=true`
+
+Danach **das GHCR-Package auf public stellen** — Repo → *Packages* → `ainode` →
+*Package settings* → *Change visibility*. Der Installer löst Tags anonym auf
+und käme sonst nicht an das Image.
+
+Ab dann genügt auf jedem Knoten der normale Installer ohne `AINODE_IMAGE`.
+
+> Für Weg A brauchst du ein GitHub-Konto — es ist ja dein Fork. Für Weg B
+> nicht.
+
 ---
 
 ## Schritt 7 — Installation, pro Knoten einzeln
 
-`INSTALLER` steht für:
-`https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh`
+Das Installer-Skript zuerst herunterladen, dann ausführen. Über eine Pipe
+(`curl … | bash`) lassen sich weder Flags noch Umgebungsvariablen sauber
+mitgeben — deshalb der Umweg über eine Datei.
+
+**Auf allen drei** zuerst:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh \
+  -o /tmp/ainode-install.sh
+```
+
+Hast du Weg B genommen, hängst du bei jedem der folgenden Befehle
+`AINODE_IMAGE=ainode:dev` davor. Bei Weg A lässt du es weg.
 
 ### Spark1 — der Head (`192.168.1.2`)
 
 ```bash
-curl -fsSL $INSTALLER | bash
+AINODE_IMAGE=ainode:dev bash /tmp/ainode-install.sh
 ```
 
-**Ohne `--job`.** Der Head wird als `solo` installiert und erst beim Start eines
-verteilten Modells zum Head — das macht die Weboberfläche in Schritt 9. So
-startet der Knoten auch dann sauber, wenn einer der anderen aus ist.
+**Ohne `--job`.** Der Head wird als `solo` installiert und erst beim Start
+eines verteilten Modells zum Head — das macht die Weboberfläche in Schritt 10.
+So startet der Knoten auch dann sauber, wenn einer der anderen aus ist.
 
-Bei einem lokal gebauten Image (Weg B):
+Hast du auf Spark1 nach Weg B gebaut, liegt das Repo dort ohnehin schon; dann
+geht auch direkt:
+
 ```bash
-AINODE_IMAGE=ainode:dev bash -c "$(curl -fsSL $INSTALLER)"
+cd ~/ainode && AINODE_IMAGE=ainode:dev bash scripts/install.sh
 ```
 
 ### Spark2 — Member (`192.168.1.3`)
 
 ```bash
-curl -fsSL $INSTALLER | bash -s -- --job worker
+AINODE_IMAGE=ainode:dev bash /tmp/ainode-install.sh --job worker
 ```
 
 ### Spark3 — Member (`192.168.1.4`)
 
 ```bash
-curl -fsSL $INSTALLER | bash -s -- --job worker
+AINODE_IMAGE=ainode:dev bash /tmp/ainode-install.sh --job worker
 ```
 
 `--job worker` setzt `distributed_mode: "member"`: kein eigenes Modell, kein
 eigener Engine-Start. Der Knoten meldet sich per UDP-Discovery und wartet
 darauf, dass der Head ihm einen Rang zuweist.
+
+**Erfolg** auf jedem Knoten:
+
+```bash
+systemctl status ainode --no-pager | head -5
+curl -s localhost:3000/api/health
+```
+
+Der Dienst läuft, und `/api/health` antwortet.
 
 ---
 
