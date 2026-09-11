@@ -18,7 +18,12 @@ EUGR_COMMIT="${EUGR_COMMIT:-c026c92bd0c1236f947ac212565b15a33ba1b4e7}"
 EUGR_SHORT="${EUGR_COMMIT:0:7}"
 
 # AINode version coupling (kept in sync with pyproject.toml).
-AINODE_VERSION="${AINODE_VERSION:-0.4.0}"
+# Read from pyproject rather than carrying a second copy that goes stale — the
+# 0.4.0 default outlived five releases and tagged base images with a version
+# that had not existed for months.
+_PYPROJECT="$(dirname "$(dirname "$(realpath "${BASH_SOURCE[0]}")")")/pyproject.toml"
+AINODE_VERSION="${AINODE_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$_PYPROJECT" | head -1)}"
+AINODE_VERSION="${AINODE_VERSION:-0.0.0}"
 
 REGISTRY="${REGISTRY:-ghcr.io/bmetallica}"
 BASE_NAME="${BASE_NAME:-ainode-base}"
@@ -164,9 +169,17 @@ VERSION_TAG="$REGISTRY/$BASE_NAME:${AINODE_VERSION}-${EUGR_SHORT}"
 
 docker tag "vllm-node:${EUGR_SHORT}" "$COMMIT_TAG"
 docker tag "vllm-node:${EUGR_SHORT}" "$VERSION_TAG"
+# launch-cluster.sh defaults to IMAGE_NAME="vllm-node", i.e. vllm-node:latest,
+# and AINode's eugr backend passes no -t. Building only vllm-node:<commit>
+# therefore left the launcher looking for an image that does not exist, and it
+# fails in verify_cluster_image_consistency with "Could not inspect image".
+# Upstream's own build-and-copy.sh defaults to the untagged name, so this
+# restores the contract the launcher expects rather than inventing one.
+docker tag "vllm-node:${EUGR_SHORT}" "vllm-node:latest"
 echo "==> Tagged:"
 echo "    $COMMIT_TAG"
 echo "    $VERSION_TAG"
+echo "    vllm-node:latest          (what launch-cluster.sh looks for)"
 
 if [ "$PUSH" = "true" ]; then
     echo "==> Pushing"
