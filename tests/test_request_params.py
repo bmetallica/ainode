@@ -366,3 +366,103 @@ class TestDeviceNameValidation:
         from ainode.engine.backends.eugr import _is_safe_path_arg
 
         assert _is_safe_path_arg(path)
+
+
+# ---------------------------------------------------------------------------
+# Per-load overrides reach the distributed path too
+# ---------------------------------------------------------------------------
+
+
+class TestDistributedLaunchHonoursOverrides:
+    """The solo path accepted max_model_len, extra_vllm_args and friends; the
+    distributed path silently dropped everything but gpu_memory_utilization —
+    so the launch that most needs a batching flag could not carry one."""
+
+    def _launched_config(self, body):
+        import ainode.engine.backends as backends_mod
+        from ainode.core.config import NodeConfig
+        from ainode.discovery.broadcast import NodeAnnouncement, NodeStatus
+        from ainode.discovery.cluster import ClusterNode, ClusterState
+        from ainode.engine.sharding_routes import handle_sharding_launch
+
+        captured = {}
+
+        class _FB:
+            def __init__(self, config, on_ready=None, instance_id=""):
+                captured["config"] = config
+                self.config = config
+
+            def is_running(self):
+                return False
+
+            def stop(self):
+                pass
+
+            def start_distributed(self):
+                return True
+
+        config = NodeConfig(node_id="head")
+        config.save = lambda *a, **k: None
+        cluster = ClusterState(local_announcement=NodeAnnouncement(
+            node_id="head", node_name="head", gpu_name="GB10", gpu_memory_gb=128.0,
+            unified_memory=True, model="", status="starting", api_port=8000,
+            web_port=3000, distributed_mode="head",
+        ))
+        cluster.add_node(ClusterNode(
+            node_id="m1", node_name="m1", gpu_name="GB10", gpu_memory_gb=128.0,
+            unified_memory=True, model="", status=NodeStatus.ONLINE, api_port=8000,
+            web_port=3000, last_seen=0.0, distributed_mode="member",
+            fabric_ip="192.168.1.3",
+        ))
+        app = {"cluster_state": cluster, "config": config, "engine": None}
+
+        class _Req:
+            def __init__(self):
+                self.app = app
+
+            async def json(self):
+                return body
+
+        with patch.object(backends_mod, "get_backend", _FB):
+            resp = asyncio.run(handle_sharding_launch(_Req()))
+        return captured.get("config"), resp
+
+    def test_max_model_len_reaches_the_backend(self):
+        cfg, resp = self._launched_config(
+            {"model": "m", "node_ids": ["head", "m1"], "max_model_len": 32768}
+        )
+        assert resp.status == 200
+        assert cfg.max_model_len == 32768
+
+    def test_extra_vllm_args_reach_the_backend(self):
+        cfg, resp = self._launched_config({
+            "model": "m", "node_ids": ["head", "m1"],
+            "extra_vllm_args": ["--max-num-seqs", "32"],
+        })
+        assert resp.status == 200
+        assert cfg.extra_vllm_args == ["--max-num-seqs", "32"]
+
+    def test_shell_style_extra_args_are_split(self):
+        cfg, resp = self._launched_config({
+            "model": "m", "node_ids": ["head", "m1"],
+            "extra_vllm_args": "--max-num-batched-tokens 8192",
+        })
+        assert resp.status == 200
+        assert cfg.extra_vllm_args == ["--max-num-batched-tokens", "8192"]
+
+    def test_malformed_extra_args_are_a_400_not_a_silent_drop(self):
+        """A typo here otherwise surfaces as a container that dies unexplained."""
+        _cfg, resp = self._launched_config({
+            "model": "m", "node_ids": ["head", "m1"],
+            "extra_vllm_args": {"not": "a list"},
+        })
+        assert resp.status == 400
+        assert "extra_vllm_args" in json.loads(resp.body)["error"]
+
+    def test_gpu_memory_utilization_still_works(self):
+        cfg, resp = self._launched_config({
+            "model": "m", "node_ids": ["head", "m1"],
+            "gpu_memory_utilization": 0.85,
+        })
+        assert resp.status == 200
+        assert cfg.gpu_memory_utilization == 0.85

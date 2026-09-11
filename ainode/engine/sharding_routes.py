@@ -277,7 +277,17 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     # #launch-gmu box the solo path uses). Without this the distributed backend
     # always renders the shared NodeConfig default (0.5), silently dropping the
     # value the user typed for a TP>1 launch. Ignore junk / out-of-range input.
-    overrides: dict = {}
+    # The same per-load knobs the solo path accepts — context length, KV dtype,
+    # quantisation, extra vLLM flags, engine image. A distributed launch used to
+    # drop all of them and honour only gpu_memory_utilization, so the launch
+    # that most needs a batching flag or a context limit was the one that could
+    # not carry them.
+    from ainode.models.api_routes import parse_load_overrides
+
+    overrides, err = parse_load_overrides(body)
+    if err is not None:
+        return err
+
     gmu_raw = body.get("gpu_memory_utilization")
     if gmu_raw is not None:
         try:

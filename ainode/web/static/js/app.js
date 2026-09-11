@@ -1249,6 +1249,28 @@ const AINode = {
     var gmu = gmuInput && gmuInput.value !== '' ? parseFloat(gmuInput.value) : null;
     if (gmu != null && isNaN(gmu)) gmu = null;
 
+    // Advanced: concurrency and context. --max-num-seqs has no config field of
+    // its own, so it rides along in extra_vllm_args with anything the operator
+    // typed. Empty inputs are omitted entirely rather than sent as 0/"".
+    var advanced = {};
+    var numField = function (id) {
+      var el = document.getElementById(id);
+      if (!el || el.value === '') return null;
+      var n = parseInt(el.value, 10);
+      return isNaN(n) ? null : n;
+    };
+    var maxLen = numField('launch-max-len');
+    if (maxLen != null) advanced.max_model_len = maxLen;
+
+    var extraArgs = [];
+    var maxSeqs = numField('launch-max-seqs');
+    if (maxSeqs != null) extraArgs.push('--max-num-seqs', String(maxSeqs));
+    var freeForm = document.getElementById('launch-extra-args');
+    if (freeForm && freeForm.value.trim()) {
+      freeForm.value.trim().split(/\s+/).forEach(function (tok) { extraArgs.push(tok); });
+    }
+    if (extraArgs.length) advanced.extra_vllm_args = extraArgs;
+
     var launchBtn = document.getElementById('launch-btn');
     if (launchBtn) { launchBtn.disabled = true; launchBtn.textContent = 'LAUNCHING...'; }
 
@@ -1259,6 +1281,7 @@ const AINode = {
         endpoint = '/api/sharding/launch';
         body = { model: model, strategy: strategy, node_ids: nodeIds };
         if (gmu != null) body.gpu_memory_utilization = gmu;
+        Object.assign(body, advanced);
       } else {
         // Single node launch — route to the CHOSEN node via the cluster load
         // route (node_id == this node dispatches locally), instead of always
@@ -1267,6 +1290,7 @@ const AINode = {
         var target = nodeIds[0] || (this.state.status && this.state.status.node_id);
         body = { model: model, node_id: target };
         if (gmu != null) body.gpu_memory_utilization = gmu;
+        Object.assign(body, advanced);
       }
       var resp = await fetch(endpoint, {
         method: 'POST',
