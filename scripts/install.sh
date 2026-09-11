@@ -122,12 +122,20 @@ fi
 # Derive the banner version from the pinned tag when not otherwise set.
 [ -n "$AINODE_VERSION" ] || AINODE_VERSION="${AINODE_IMAGE##*:}"
 
-log "Pulling $AINODE_IMAGE (AINode orchestrator; slim — ~500 MB)"
-# A missing image is the expected first-run state for a fork that has not
-# published yet, and docker's own "manifest unknown" says nothing about how to
-# fix it. Name the two ways forward instead.
-if ! docker pull "$AINODE_IMAGE"; then
-    die "Could not pull $AINODE_IMAGE.\n  If this registry has no published image yet, either:\n    - run the publish-image workflow on a self-hosted aarch64 runner, or\n    - build locally and install against it:\n        scripts/build-base-image.sh && docker build -f scripts/Dockerfile.ainode -t ainode:dev .\n        AINODE_IMAGE=ainode:dev bash scripts/install.sh\n  To install from a different registry: AINODE_GHCR_REPO=ghcr.io/<owner>/ainode bash scripts/install.sh"
+# A locally built image is a legitimate source and has no registry to pull
+# from — `docker pull ainode:dev` would resolve to docker.io/library/ainode and
+# fail. Check for it first, so `AINODE_IMAGE=ainode:dev bash install.sh` works
+# without any registry, GitHub account or network access.
+if docker image inspect "$AINODE_IMAGE" >/dev/null 2>&1; then
+    log "Using local image $AINODE_IMAGE (already present — not pulling)"
+else
+    log "Pulling $AINODE_IMAGE (AINode orchestrator; slim — ~500 MB)"
+    # A missing image is the expected first-run state for a fork that has not
+    # published yet, and docker's own "manifest unknown" says nothing about how
+    # to fix it. Name the two ways forward instead.
+    if ! docker pull "$AINODE_IMAGE"; then
+        die "Could not pull $AINODE_IMAGE.\n  If this registry has no published image yet, either:\n    - build it locally on this node and install against it (no GitHub needed):\n        git clone https://github.com/bmetallica/ainode && cd ainode\n        scripts/build-base-image.sh\n        docker build -f scripts/Dockerfile.ainode -t ainode:dev .\n        AINODE_IMAGE=ainode:dev bash scripts/install.sh\n    - or publish one via the publish-image workflow on a self-hosted aarch64 runner.\n  To install from a different registry: AINODE_GHCR_REPO=ghcr.io/<owner>/ainode bash scripts/install.sh"
+    fi
 fi
 
 # Pin the image for the systemd unit's EnvironmentFile so `ainode update` can
