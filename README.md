@@ -82,7 +82,8 @@ The network heuristics and the 3-node parallelism constraints are adapted from
 `autodiscover.sh`, `launch-cluster.sh` and `docs/NETWORKING.md` document this
 hardware. Borrowed logic is marked at each site; there are no verbatim copies.
 
-Step-by-step setup for that hardware, in German:
+Step-by-step setup for the reference cluster (`ai-vkv`, three Sparks in a ring),
+in German, with that cluster's real addresses:
 [`docs/mesh/ANLEITUNG-3-NODE-MESH.md`](docs/mesh/ANLEITUNG-3-NODE-MESH.md).
 
 Background on what was changed and why: [`docs/mesh/PHASE1-ANALYSE.md`](docs/mesh/PHASE1-ANALYSE.md)
