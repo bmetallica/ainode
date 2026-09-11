@@ -58,6 +58,21 @@ Versions follow [Semantic Versioning](https://semver.org/).
   "manifest unknown".
 
 ### Fixed
+- **The eugr launcher is in the orchestrator image again.** `EugrBackend`
+  shells out to `/opt/spark-vllm-docker/launch-cluster.sh` for both solo and
+  distributed serves. It was present while this image was `FROM ainode-base`;
+  since the orchestrator and engine images were split it was not, so the
+  default backend failed every launch with *"eugr launcher missing at
+  /opt/spark-vllm-docker/launch-cluster.sh"*. The image now fetches it at the
+  same commit `build-base-image.sh` builds the engine from — the two hand each
+  other a `.env` and a launch script, so a drifted pin would be a wrong-shape
+  contract rather than a clean failure — and verifies the fetch instead of
+  assuming it.
+- **The Embeddings tab is no longer a button that can only fail.**
+  `sentence-transformers` is an optional extra and the image installed none, so
+  a Load raised an install hint. The image now builds with `[embeddings]`;
+  `--build-arg AINODE_EXTRAS=""` keeps the lean orchestrator for anyone who
+  does not want torch in it.
 - **A solo launch on the eugr backend works again.** `start_solo()` spawned
   `vllm` as a subprocess of AINode's own container, which has been
   `python:3.12-slim` since the orchestrator and engine images were split — so
@@ -74,6 +89,23 @@ Versions follow [Semantic Versioning](https://semver.org/).
   script, without which the new UI fields were inert on that backend.
 
 ### Added
+- **The launch panel covers the full per-model configuration.** The *Advanced*
+  section now carries concurrent requests (`--max-num-seqs`), max context, KV
+  cache precision, API alias(es), quantization, engine image, free-form vLLM
+  flags and trust-remote-code — the set the API already accepted but only
+  `curl` could reach. KV precision offers `auto` explicitly, because fp8
+  corrupts vision models on GB10 and that is not guessable from the UI.
+- **A Security section in Config.** Enable or disable authentication, create
+  named API keys, revoke them individually. A new key is shown once in a
+  blocking panel with a copy button — only its hash is stored — and the copy
+  falls back to select-and-Ctrl+C, since a LAN node on plain http has no
+  `navigator.clipboard`. The section states that auth is off by default, which
+  is the single most important fact about a shared cluster.
+- **Embedding models survive a restart.** They live in the orchestrator
+  process, so a restart dropped them and a RAG pipeline broke silently until
+  someone noticed and clicked Load again. They are now recorded in a manifest
+  and replayed on boot, the way served LLM instances already were. One model
+  that no longer resolves is logged and skipped rather than blocking the rest.
 - **Concurrency controls in the launch panel.** An *Advanced* section exposes
   concurrent requests (`--max-num-seqs`), max context and free-form vLLM flags,
   with a note that the KV cache — memory fraction × context × concurrency — is

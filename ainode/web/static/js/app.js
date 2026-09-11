@@ -1271,6 +1271,27 @@ const AINode = {
     }
     if (extraArgs.length) advanced.extra_vllm_args = extraArgs;
 
+    // Text and select fields: an empty one is omitted so the catalog recipe's value
+    // survives. Sending "" would override a proven setting with nothing.
+    var textField = function (id) {
+      var el = document.getElementById(id);
+      return el && el.value.trim() ? el.value.trim() : null;
+    };
+    var kvDtype = textField('launch-kv-dtype');
+    if (kvDtype) advanced.kv_cache_dtype = kvDtype;
+    var quant = textField('launch-quantization');
+    if (quant) advanced.quantization = quant;
+    var img = textField('launch-engine-image');
+    if (img) advanced.engine_image = img;
+    var served = textField('launch-served-name');
+    if (served) {
+      advanced.served_model_name = served.split(',')
+        .map(function (n) { return n.trim(); })
+        .filter(function (n) { return n; });
+    }
+    var trc = document.getElementById('launch-trust-remote-code');
+    if (trc && trc.checked) advanced.trust_remote_code = true;
+
     var launchBtn = document.getElementById('launch-btn');
     if (launchBtn) { launchBtn.disabled = true; launchBtn.textContent = 'LAUNCHING...'; }
 
@@ -4776,6 +4797,7 @@ const AINode = {
       case 'node':        return this.renderConfigNode();
       case 'storage':     return this.renderConfigStorage();
       case 'training':    return this.renderConfigTrainingDefaults();
+      case 'security':    return this.renderConfigSecurity();
       case 'network':     return this.renderConfigNetwork();
       case 'about':       return this.renderConfigAbout();
     }
@@ -4795,6 +4817,157 @@ const AINode = {
     self.state.configData.secrets = results[0];
     self.state.configData.cluster = results[1];
     self.state.configData.config = results[2];
+  },
+
+  // ----- Security -----------------------------------------------------------
+
+  async renderConfigSecurity() {
+    var mount = this._configMount();
+    if (!mount) return;
+    mount.innerHTML = '<div class="config-empty">Loading security settings…</div>';
+    var data = await this.fetchJSON('/api/auth/status');
+    if (!data) {
+      mount.innerHTML = '<div class="config-empty">Unable to load auth status.</div>';
+      return;
+    }
+    var self = this;
+    var on = !!data.enabled;
+    var keys = data.keys || [];
+
+    var html = '';
+    html += '<h2 class="config-section-title">Security</h2>';
+    html += '<p class="config-section-desc">API keys guard every endpoint except the health check and the onboarding flow. ' +
+            '<strong>Authentication is off by default</strong>, which means anyone who can reach this node on the network can load and unload models, read the config, and change cluster settings. ' +
+            'Turn it on whenever more than one person uses this cluster, or whenever it is reachable beyond a trusted LAN.</p>';
+
+    html += '<div class="config-card">';
+    html += '<h3 class="config-card-title">Status</h3>';
+    html += '<div class="config-row">';
+    html += '  <div><span class="config-auth-state ' + (on ? 'on' : 'off') + '">' +
+            (on ? 'ENABLED' : 'DISABLED') + '</span>' +
+            '<span class="config-auth-count">' + keys.length + ' key' + (keys.length === 1 ? '' : 's') + '</span></div>';
+    html += '  <button class="config-btn' + (on ? ' danger' : '') + '" id="cfg-auth-toggle">' +
+            (on ? 'Disable' : 'Enable') + '</button>';
+    html += '</div>';
+    if (!on) {
+      html += '<p class="config-card-desc">Enabling generates a first key and shows it once.</p>';
+    }
+    html += '</div>';
+
+    if (on) {
+      html += '<div class="config-card">';
+      html += '<h3 class="config-card-title">API keys</h3>';
+      html += '<p class="config-card-desc">A key is shown once, at creation — only its hash is stored, so it cannot be recovered. Give each person their own so one can be revoked without disturbing the others.</p>';
+      if (!keys.length) {
+        html += '<div class="config-empty">No keys. Create one below, or nobody can reach the API.</div>';
+      } else {
+        keys.forEach(function (k) {
+          var when = k.created_at ? new Date(k.created_at * 1000).toLocaleString() : '';
+          html += '<div class="config-secret-row">';
+          html += '  <div class="config-secret-main"><div class="config-secret-label-row">';
+          html += '    <span class="config-secret-name">' + self.esc(k.name || '(unnamed)') + '</span>';
+          html += '    <span class="config-secret-mask mono">' + self.esc(k.id || '') + '</span>';
+          html += '  </div>' + (when ? '<div class="config-key-when">created ' + self.esc(when) + '</div>' : '') + '</div>';
+          html += '  <span></span>';
+          html += '  <button class="config-icon-btn danger" data-revoke="' + self.esc(k.id || '') + '">Revoke</button>';
+          html += '</div>';
+        });
+      }
+      html += '<div class="config-add-custom">';
+      html += '  <input class="form-input" id="cfg-key-name" placeholder="label, e.g. anna\'s laptop">';
+      html += '  <button class="config-btn" id="cfg-key-add">+ Create key</button>';
+      html += '</div>';
+      html += '</div>';
+
+      html += '<div class="config-card">';
+      html += '<h3 class="config-card-title">Using a key</h3>';
+      html += '<p class="config-card-desc">Any OpenAI-compatible client works — point it at this node and pass the key as the API key.</p>';
+      html += '<pre class="config-code mono">curl ' + self.esc(location.origin.replace(/:\d+$/, ':8000')) +
+              '/v1/chat/completions \\\n  -H "Authorization: Bearer &lt;your-key&gt;" \\\n' +
+              '  -H "Content-Type: application/json" \\\n  -d \'{"model":"...","messages":[...]}\'</pre>';
+      html += '</div>';
+    }
+
+    mount.innerHTML = html;
+
+    var toggle = document.getElementById('cfg-auth-toggle');
+    if (toggle) {
+      toggle.addEventListener('click', async function () {
+        if (on) {
+          if (!confirm('Disable authentication? Every endpoint becomes reachable without a key.')) return;
+          await fetch('/api/auth/disable', { method: 'POST' });
+          self.toast('Authentication disabled', 'info');
+          self.renderConfigSecurity();
+          return;
+        }
+        var resp = await fetch('/api/auth/enable', { method: 'POST' });
+        var body = await resp.json().catch(function () { return {}; });
+        if (body.api_key) self._showOneTimeKey(body.api_key);
+        self.toast('Authentication enabled', 'success');
+        self.renderConfigSecurity();
+      });
+    }
+
+    var addKey = document.getElementById('cfg-key-add');
+    if (addKey) {
+      addKey.addEventListener('click', async function () {
+        var nameEl = document.getElementById('cfg-key-name');
+        var resp = await fetch('/api/auth/keys', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: nameEl ? nameEl.value : '' }),
+        });
+        var body = await resp.json().catch(function () { return {}; });
+        if (body.api_key) self._showOneTimeKey(body.api_key);
+        self.renderConfigSecurity();
+      });
+    }
+
+    mount.querySelectorAll('[data-revoke]').forEach(function (btn) {
+      btn.addEventListener('click', async function () {
+        var id = btn.dataset.revoke;
+        if (!confirm('Revoke key ' + id + '? Any client using it stops working immediately.')) return;
+        await fetch('/api/auth/keys/' + encodeURIComponent(id), { method: 'DELETE' });
+        self.toast('Revoked ' + id, 'info');
+        self.renderConfigSecurity();
+      });
+    });
+  },
+
+  // A key exists in plaintext exactly once, in this response. Show it in a
+  // blocking panel with a copy button rather than a toast that scrolls away.
+  _showOneTimeKey(key) {
+    var self = this;
+    var wrap = document.createElement('div');
+    wrap.className = 'onetime-key-backdrop';
+    wrap.innerHTML =
+      '<div class="onetime-key">' +
+      '  <h3>Your new API key</h3>' +
+      '  <p>Copy it now — it is stored only as a hash and cannot be shown again.</p>' +
+      '  <div class="onetime-key-value mono" id="onetime-key-value">' + self.esc(key) + '</div>' +
+      '  <div class="onetime-key-actions">' +
+      '    <button class="config-btn" id="onetime-key-copy">Copy</button>' +
+      '    <button class="config-btn" id="onetime-key-done">Done</button>' +
+      '  </div>' +
+      '</div>';
+    document.body.appendChild(wrap);
+    var copy = wrap.querySelector('#onetime-key-copy');
+    copy.addEventListener('click', function () {
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(key).then(function () { copy.textContent = 'Copied'; });
+      } else {
+        // Clipboard API needs a secure context; a LAN node on plain http has none.
+        var v = document.getElementById('onetime-key-value');
+        var r = document.createRange();
+        r.selectNodeContents(v);
+        window.getSelection().removeAllRanges();
+        window.getSelection().addRange(r);
+        copy.textContent = 'Selected — press Ctrl+C';
+      }
+    });
+    wrap.querySelector('#onetime-key-done').addEventListener('click', function () {
+      wrap.remove();
+    });
   },
 
   // ----- Credentials --------------------------------------------------------

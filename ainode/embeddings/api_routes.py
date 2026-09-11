@@ -161,6 +161,10 @@ async def handle_load_embedding_model(request: web.Request) -> web.Response:
         logger.exception("failed to load embedding model %s", model_id)
         return _error(f"failed to load: {exc}", code="server_error", status=500)
 
+    # Record it so a restart brings it back. An embedding model backing a RAG
+    # pipeline is expected to stay available the way a served LLM does, and LLM
+    # instances are already replayed on boot.
+    manager.save_manifest()
     return web.json_response(
         {"ok": True, "model_id": model_id, "status": "loaded", "model": meta}
     )
@@ -172,6 +176,8 @@ async def handle_unload_embedding_model(request: web.Request) -> web.Response:
     if not model_id:
         return _error("model_id required")
     unloaded = manager.unload(model_id)
+    if unloaded:
+        manager.save_manifest()   # an unload must not come back on the next boot
     return web.json_response(
         {
             "ok": unloaded,

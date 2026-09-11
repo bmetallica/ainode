@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -88,6 +89,58 @@ class EmbeddingManager:
         self._models: Dict[str, Any] = {}
         self._metadata: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.RLock()
+
+    # -- persistence ----------------------------------------------------------
+    #
+    # Loaded models live in this process, so a restart loses them. An embedding
+    # model backing a RAG pipeline is expected to be there the way a served LLM
+    # is — and LLM instances are already replayed on boot. Without this, every
+    # `systemctl restart ainode` silently breaks retrieval until somebody
+    # notices and clicks Load again.
+
+    @staticmethod
+    def _manifest_path():
+        from ainode.core.config import AINODE_HOME
+
+        return AINODE_HOME / "embeddings.json"
+
+    def save_manifest(self) -> None:
+        """Record which models are loaded, for replay on the next boot."""
+        try:
+            path = self._manifest_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with self._lock:
+                loaded = sorted(self._models.keys())
+            path.write_text(json.dumps({"models": loaded}))
+        except Exception:
+            logger.exception("Could not write the embedding manifest")
+
+    def load_manifest(self) -> List[str]:
+        """Model ids recorded by the last :meth:`save_manifest`."""
+        try:
+            path = self._manifest_path()
+            if not path.exists():
+                return []
+            data = json.loads(path.read_text())
+            return [str(m) for m in (data.get("models") or []) if str(m).strip()]
+        except Exception:
+            logger.exception("Could not read the embedding manifest")
+            return []
+
+    def replay(self) -> None:
+        """Re-load every model from the manifest. Best effort, one at a time.
+
+        A failure is logged and skipped rather than aborting the rest: one
+        model that no longer resolves must not keep the others unloaded.
+        """
+        for model_id in self.load_manifest():
+            if self.is_loaded(model_id):
+                continue
+            try:
+                self.load(model_id)
+                logger.info("Replayed embedding model %s", model_id)
+            except Exception as exc:
+                logger.warning("Could not replay embedding model %s: %s", model_id, exc)
 
     # -- catalog --------------------------------------------------------------
 

@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import time
 from dataclasses import dataclass, field, asdict
 
 from aiohttp import web
@@ -42,13 +43,23 @@ class AuthConfig:
             return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
         return cls()
 
-    def generate_key(self) -> dict:
+    def generate_key(self, name: str = "") -> dict:
+        """Mint a key. The plaintext is returned ONCE and never stored.
+
+        ``name`` is a label so an operator can tell keys apart when revoking
+        one — "anna's laptop" rather than a hex id. Optional and free-form.
+        """
         key = secrets.token_hex(16)
         key_id = secrets.token_hex(4)
         key_hash = _hash_key(key)
-        self.api_keys.append({"id": key_id, "key_hash": key_hash})
+        self.api_keys.append({
+            "id": key_id,
+            "key_hash": key_hash,
+            "name": str(name or "").strip(),
+            "created_at": time.time(),
+        })
         self.save()
-        return {"id": key_id, "key": key}
+        return {"id": key_id, "key": key, "name": str(name or "").strip()}
 
     def revoke_key(self, key_id: str) -> bool:
         before = len(self.api_keys)

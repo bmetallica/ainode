@@ -25,8 +25,22 @@ cd "$REPO_ROOT"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)"
 TAG="${1:-$VERSION}"
 
+# The image bakes in eugr's launcher, which must match the commit the ENGINE
+# image was built from — they hand each other a .env and a launch script.
+# Read it from the one place it is defined rather than repeating the SHA.
+EUGR_COMMIT="$(sed -n 's/^EUGR_COMMIT="\${EUGR_COMMIT:-\(.*\)}"/\1/p' \
+    scripts/build-base-image.sh | head -1)"
+if [ -z "$EUGR_COMMIT" ]; then
+    echo "!! could not read EUGR_COMMIT from scripts/build-base-image.sh" >&2
+    echo "   The launcher pin would silently fall back to the Dockerfile default." >&2
+    exit 1
+fi
+
 echo "==> Building orchestrator image ainode:${TAG} (context: $REPO_ROOT)"
-docker build -f scripts/Dockerfile.ainode -t "ainode:${TAG}" .
+echo "    eugr launcher pinned to ${EUGR_COMMIT:0:7}"
+docker build -f scripts/Dockerfile.ainode \
+    --build-arg "EUGR_COMMIT=${EUGR_COMMIT}" \
+    -t "ainode:${TAG}" .
 
 # Also tag :dev when building the release version — the installer examples and
 # the mesh guide both use ainode:dev, and having it point at the latest local

@@ -335,6 +335,16 @@ async def _on_startup(app: web.Application) -> None:
         logger.info("start-clean: skipping persisted-instance replay")
     else:
         try:
+            # Embedding models are replayed too — they are in-process, so a
+            # restart drops them, and a RAG pipeline breaks silently until
+            # someone notices and clicks Load again.
+            try:
+                emb = app.get("embedding_manager")
+                if emb is not None:
+                    asyncio.get_event_loop().run_in_executor(None, emb.replay)
+            except Exception:
+                logger.exception("embedding replay could not be scheduled")
+
             from ainode.models.api_routes import replay_instances_on_startup
             app["_instance_replay_task"] = asyncio.get_event_loop().create_task(
                 replay_instances_on_startup(app)
