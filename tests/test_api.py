@@ -8,6 +8,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from ainode.api.server import create_app, _build_announcement, _client_max_bytes
 from ainode.core.config import NodeConfig
+from ainode.core.config import AINODE_GHCR_REPO
 
 
 @pytest.fixture
@@ -238,15 +239,15 @@ async def test_engine_update_pulls_numeric_tag_and_writes_env(client, tmp_path, 
         data = await resp.json()
         assert data["status"] == "updating"
         assert data["target"] == "0.5.0"
-        assert data["image"] == "ghcr.io/getainode/ainode:0.5.0"
+        assert data["image"] == f"{AINODE_GHCR_REPO}:0.5.0"
 
     # image.env pinned to the numeric tag.
     image_env = tmp_path / "image.env"
-    assert image_env.read_text().strip() == "AINODE_IMAGE=ghcr.io/getainode/ainode:0.5.0"
+    assert image_env.read_text().strip() == f"AINODE_IMAGE={AINODE_GHCR_REPO}:0.5.0"
 
     # docker pull targeted the numeric tag — never a floating :latest.
     pull_cmds = [c.args[0] for c in mrun.call_args_list if c.args and "pull" in c.args[0]]
-    assert any("ghcr.io/getainode/ainode:0.5.0" in cmd for cmd in pull_cmds)
+    assert any(f"{AINODE_GHCR_REPO}:0.5.0" in cmd for cmd in pull_cmds)
     assert not any("ainode:latest" in " ".join(cmd) for cmd in pull_cmds)
 
 
@@ -266,7 +267,7 @@ async def test_engine_update_uses_requested_version(client, tmp_path, monkeypatc
         mfetch.assert_not_called()
 
     image_env = tmp_path / "image.env"
-    assert image_env.read_text().strip() == "AINODE_IMAGE=ghcr.io/getainode/ainode:0.6.1"
+    assert image_env.read_text().strip() == f"AINODE_IMAGE={AINODE_GHCR_REPO}:0.6.1"
 
 
 @pytest.mark.asyncio
@@ -318,7 +319,7 @@ async def test_engine_update_skips_stop_when_unit_not_swappable(client, tmp_path
 
     # Image was still pulled + pinned (readies the node for a later migration)...
     image_env = tmp_path / "image.env"
-    assert image_env.read_text().strip() == "AINODE_IMAGE=ghcr.io/getainode/ainode:0.5.0"
+    assert image_env.read_text().strip() == f"AINODE_IMAGE={AINODE_GHCR_REPO}:0.5.0"
     # ...but `docker stop ainode` was NEVER called.
     stop_cmds = [
         c.args[0] for c in mrun.call_args_list

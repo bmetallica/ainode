@@ -6,11 +6,10 @@
 
 AINode — Turn any NVIDIA GPU into a local AI platform. Inference + fine-tuning in your browser. One command to start, automatic clustering.
 
-- **Product repo:** https://github.com/getainode/ainode
-- **Marketing site repo:** https://github.com/getainode/ainode.dev
-- **Live site:** https://ainode.dev
+- **Product repo:** https://github.com/bmetallica/ainode (fork of getainode/ainode)
+- **Upstream:** https://github.com/getainode/ainode — `git remote upstream`, fetch-only
 - **Powered by:** argentos.ai
-- **Public docs:** https://docs.ainode.dev (repo: /tmp/ainode-docs → github.com/getainode/ainode-docs)
+- **Docs:** this repo — README.md plus `docs/`. No hosted docs site for the fork.
 - **License:** Apache 2.0
 
 ## Tech Stack
@@ -25,19 +24,19 @@ AINode — Turn any NVIDIA GPU into a local AI platform. Inference + fine-tuning
 
 ## Distribution
 
-AINode ships as a single container image: `ghcr.io/getainode/ainode:<version>`
-(mirrored on Docker Hub as `argentos/ainode`). End users only ever
-`docker pull` — no host venv, no vLLM source build. Our CI builds on a
+AINode ships as a single container image: `ghcr.io/bmetallica/ainode:<version>`
+(Docker Hub mirroring is opt-in — set the `DOCKERHUB_ORG` repo variable). End
+users only ever `docker pull` — no host venv, no vLLM source build. Our CI builds on a
 self-hosted aarch64 runner (a Spark) via `.github/workflows/publish-image.yml`.
 
 ## Key Commands
 
 ```bash
 # End-user install (one node):
-curl -fsSL https://ainode.dev/install | bash
+curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh | bash
 
 # Distributed (head + peers, SSH bootstrap):
-AINODE_PEERS="10.0.0.2,10.0.0.3" curl -fsSL https://ainode.dev/install | bash
+AINODE_PEERS="10.0.0.2,10.0.0.3" curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh | bash
 
 # Dev (inside repo):
 pip install -e ".[dev]"              # tests + ruff

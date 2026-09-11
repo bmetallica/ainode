@@ -61,10 +61,10 @@ dev = [
 ainode = "ainode.cli.main:main"
 
 [project.urls]
-Homepage = "https://ainode.dev"
-Documentation = "https://ainode.dev/docs"
-Repository = "https://github.com/getainode/ainode"
-"Bug Tracker" = "https://github.com/getainode/ainode/issues"
+Homepage = "https://github.com/bmetallica/ainode"
+Documentation = "https://github.com/bmetallica/ainode#readme"
+Repository = "https://github.com/bmetallica/ainode"
+"Bug Tracker" = "https://github.com/bmetallica/ainode/issues"
 "Powered By" = "https://argentos.ai"
 
 [tool.setuptools.packages.find]

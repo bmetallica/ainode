@@ -459,7 +459,7 @@ def cmd_models(args):
     console.print(table)
     console.print()
     console.print("  Set model:  [bold]ainode config --model <name>[/bold]")
-    console.print("  Full list:  [link=https://ainode.dev/models]https://ainode.dev/models[/link]")
+    console.print("  Full list:  [bold]ainode models[/bold] or the MODELS tab in the web UI")
     console.print()
 
 
@@ -624,7 +624,7 @@ def cmd_service(args):
                 "  The systemd unit is managed on the host — there is no systemd bus here."
             )
             console.print("  To (re)install or migrate the unit on this node, re-run the installer:")
-            console.print("    [bold]curl -fsSL https://ainode.dev/install | bash[/bold]")
+            console.print("    [bold]curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh | bash[/bold]")
             console.print("  (idempotent — it re-renders the unit and preserves your config.json).")
             console.print("  Powered by argentos.ai")
             return

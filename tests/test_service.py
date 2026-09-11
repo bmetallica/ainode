@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 
 from ainode.service import systemd
+from ainode.core.config import AINODE_GHCR_REPO, AINODE_PROJECT_URL
 
 
 class TestUnitFileGeneration:
@@ -15,7 +16,7 @@ class TestUnitFileGeneration:
         content = systemd.generate_unit_file(user_mode=False)
         assert "WantedBy=multi-user.target" in content
         assert "docker run" in content
-        assert "ghcr.io/getainode/ainode" in content
+        assert AINODE_GHCR_REPO in content
         assert "NVIDIA_VISIBLE_DEVICES=all" in content
         assert "After=network.target docker.service" in content
         assert "Restart=always" in content
@@ -49,7 +50,7 @@ class TestUnitFileGeneration:
     def test_unit_has_description(self):
         content = systemd.generate_unit_file()
         assert "Description=AINode" in content
-        assert "Documentation=https://ainode.dev" in content
+        assert f"Documentation={AINODE_PROJECT_URL}" in content
 
     def test_unit_has_swappable_image_mechanism(self):
         """Image is swappable without re-rendering: env default + optional file."""
@@ -57,7 +58,7 @@ class TestUnitFileGeneration:
         # ExecStart references the systemd variable, not a literal tag.
         assert "${AINODE_IMAGE}" in content
         # Pinned Environment default is a concrete image ref.
-        assert "Environment=AINODE_IMAGE=ghcr.io/getainode/ainode:" in content
+        assert f"Environment=AINODE_IMAGE={AINODE_GHCR_REPO}:" in content
         # Optional (-prefixed) override file, rendered AFTER the Environment line.
         assert "EnvironmentFile=-" in content
         assert "image.env" in content
@@ -111,7 +112,7 @@ class TestInstallService:
             assert unit_path.exists()
             content = unit_path.read_text()
             assert "docker run" in content
-            assert "ghcr.io/getainode/ainode" in content
+            assert AINODE_GHCR_REPO in content
             mock_ctl.assert_called_once_with(["daemon-reload"], user_mode=False)
 
     def test_install_seeds_image_env(self, tmp_path, monkeypatch):
@@ -126,7 +127,7 @@ class TestInstallService:
 
             image_env = home / "image.env"
             assert image_env.exists()
-            assert image_env.read_text().startswith("AINODE_IMAGE=ghcr.io/getainode/ainode:")
+            assert image_env.read_text().startswith(f"AINODE_IMAGE={AINODE_GHCR_REPO}:")
 
     def test_install_no_overwrite_without_force(self, tmp_path, monkeypatch):
         """An existing unit is left untouched unless force=True."""

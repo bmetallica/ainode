@@ -19,7 +19,7 @@
 
 services:
   ainode:
-    image: ghcr.io/getainode/ainode:latest
+    image: ghcr.io/bmetallica/ainode:latest
     container_name: ainode
     # host networking keeps discovery (UDP 5679) + API (3000/8000) identical
     # to the production unit; bridge networking loses the UDP broadcasts.

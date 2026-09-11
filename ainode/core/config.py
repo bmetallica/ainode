@@ -6,6 +6,14 @@ from pathlib import Path
 from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional
 
+# Registry this build pulls and updates itself from. One constant rather than a
+# repo string repeated across the systemd unit renderer, the update check and
+# the installer — a fork publishing its own image sets $AINODE_GHCR_REPO (or
+# changes this default) in one place. Kept in sync with the same-named variable
+# in scripts/install.sh.
+AINODE_GHCR_REPO = os.environ.get("AINODE_GHCR_REPO") or "ghcr.io/bmetallica/ainode"
+AINODE_PROJECT_URL = "https://github.com/bmetallica/ainode"
+
 AINODE_HOME = Path(os.environ.get("AINODE_HOME", Path.home() / ".ainode"))
 CONFIG_FILE = AINODE_HOME / "config.json"
 MODELS_DIR = AINODE_HOME / "models"

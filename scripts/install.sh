@@ -2,10 +2,10 @@
 # AINode installer — v0.4.1 container-native.
 #
 # Usage:
-#   curl -fsSL https://ainode.dev/install | bash
-#   curl -fsSL https://ainode.dev/install | bash -s -- --job master
-#   curl -fsSL https://ainode.dev/install | bash -s -- --job worker
-#   AINODE_PEERS="10.0.0.2,10.0.0.3" curl -fsSL https://ainode.dev/install | bash -s -- --job master
+#   curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh | bash -s -- --job master
+#   curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh | bash -s -- --job worker
+#   AINODE_PEERS="10.0.0.2,10.0.0.3" curl -fsSL .../install.sh | bash -s -- --job master
 #
 # --job master  Head node: runs the inference engine, serves the web UI,
 #               manages the cluster. Set a model via the web UI after install.
@@ -20,6 +20,10 @@ set -euo pipefail
 # the caller pins them explicitly). Leaving these empty is the signal to resolve.
 AINODE_VERSION="${AINODE_VERSION:-}"
 AINODE_IMAGE="${AINODE_IMAGE:-}"
+# Registry this install pulls AINode from. One variable rather than a repo name
+# repeated through the tag resolver, the pull and the systemd unit — a fork that
+# publishes its own image changes this line and nothing else.
+AINODE_GHCR_REPO="${AINODE_GHCR_REPO:-ghcr.io/bmetallica/ainode}"
 # NVIDIA official vLLM engine image — pre-pulled so first dashboard launch
 # doesn't hit a 5–10 min download. Override with AINODE_NVIDIA_IMAGE=skip to
 # suppress, or a custom tag for testing.
@@ -64,11 +68,12 @@ die() { printf "\033[1;31mXX\033[0m %s\n" "$*" >&2; exit 1; }
 # tag on success; returns non-zero if resolution fails (caller falls back).
 resolve_latest_tag() {
     local token tags
-    token=$(curl -fsSL "https://ghcr.io/token?service=ghcr.io&scope=repository:getainode/ainode:pull" 2>/dev/null \
+    local path="${AINODE_GHCR_REPO#ghcr.io/}"
+    token=$(curl -fsSL "https://ghcr.io/token?service=ghcr.io&scope=repository:${path}:pull" 2>/dev/null \
         | sed -E 's/.*"token":"([^"]+)".*/\1/') || return 1
     [ -n "$token" ] || return 1
     tags=$(curl -fsSL -H "Authorization: Bearer $token" \
-        "https://ghcr.io/v2/getainode/ainode/tags/list" 2>/dev/null) || return 1
+        "https://ghcr.io/v2/${path}/tags/list" 2>/dev/null) || return 1
     echo "$tags" | tr ',' '\n' \
         | grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' | tr -d '"' \
         | sort -t. -k1,1n -k2,2n -k3,3n | tail -1
@@ -107,10 +112,10 @@ mkdir -p "$AINODE_HOME"/{models,logs,datasets,training}
 if [ -z "$AINODE_IMAGE" ]; then
     if RESOLVED_TAG="$(resolve_latest_tag)" && [ -n "$RESOLVED_TAG" ]; then
         AINODE_VERSION="$RESOLVED_TAG"
-        AINODE_IMAGE="ghcr.io/getainode/ainode:${RESOLVED_TAG}"
+        AINODE_IMAGE="${AINODE_GHCR_REPO}:${RESOLVED_TAG}"
         log "Resolved latest GHCR tag: $RESOLVED_TAG"
     else
-        AINODE_IMAGE="ghcr.io/getainode/ainode:latest"
+        AINODE_IMAGE="${AINODE_GHCR_REPO}:latest"
         warn "Could not resolve latest GHCR tag — falling back to :latest"
     fi
 fi
@@ -118,7 +123,12 @@ fi
 [ -n "$AINODE_VERSION" ] || AINODE_VERSION="${AINODE_IMAGE##*:}"
 
 log "Pulling $AINODE_IMAGE (AINode orchestrator; slim — ~500 MB)"
-docker pull "$AINODE_IMAGE"
+# A missing image is the expected first-run state for a fork that has not
+# published yet, and docker's own "manifest unknown" says nothing about how to
+# fix it. Name the two ways forward instead.
+if ! docker pull "$AINODE_IMAGE"; then
+    die "Could not pull $AINODE_IMAGE.\n  If this registry has no published image yet, either:\n    - run the publish-image workflow on a self-hosted aarch64 runner, or\n    - build locally and install against it:\n        scripts/build-base-image.sh && docker build -f scripts/Dockerfile.ainode -t ainode:dev .\n        AINODE_IMAGE=ainode:dev bash scripts/install.sh\n  To install from a different registry: AINODE_GHCR_REPO=ghcr.io/<owner>/ainode bash scripts/install.sh"
+fi
 
 # Pin the image for the systemd unit's EnvironmentFile so `ainode update` can
 # swap it later without re-rendering the unit. Written atomically (temp+rename)
@@ -293,7 +303,7 @@ EXEC_START="/usr/bin/docker run --rm --name ainode \
 cat > /tmp/ainode.service << UNIT
 [Unit]
 Description=AINode — Local AI inference platform
-Documentation=https://ainode.dev
+Documentation=https://github.com/bmetallica/ainode
 After=network.target docker.service nvidia-persistenced.service
 Wants=docker.service nvidia-persistenced.service
 Requires=docker.service
@@ -343,18 +353,22 @@ $WRAPPER_SUDO tee "$WRAPPER_PATH" >/dev/null <<WRAPPER
 #!/usr/bin/env bash
 # AINode host wrapper — installed by install.sh. Not user-editable.
 set -euo pipefail
-AINODE_IMAGE="\${AINODE_IMAGE:-ghcr.io/getainode/ainode:latest}"
+# Baked in from the installer's AINODE_GHCR_REPO so the wrapper and the
+# install agree on the registry without the operator having to set it again.
+AINODE_GHCR_REPO="\${AINODE_GHCR_REPO:-${AINODE_GHCR_REPO}}"
+AINODE_IMAGE="\${AINODE_IMAGE:-\${AINODE_GHCR_REPO}:latest}"
 AINODE_HOME="\${AINODE_HOME:-\$HOME/.ainode}"
 AINODE_SERVICE="ainode.service"
 
 # Resolve the highest numeric GHCR tag anonymously (public image).
 resolve_latest_tag() {
     local token tags
-    token=\$(curl -fsSL "https://ghcr.io/token?service=ghcr.io&scope=repository:getainode/ainode:pull" 2>/dev/null \\
+    local path="\${AINODE_GHCR_REPO#ghcr.io/}"
+    token=\$(curl -fsSL "https://ghcr.io/token?service=ghcr.io&scope=repository:\${path}:pull" 2>/dev/null \\
         | sed -E 's/.*"token":"([^"]+)".*/\\1/') || return 1
     [ -n "\$token" ] || return 1
     tags=\$(curl -fsSL -H "Authorization: Bearer \$token" \\
-        "https://ghcr.io/v2/getainode/ainode/tags/list" 2>/dev/null) || return 1
+        "https://ghcr.io/v2/\${path}/tags/list" 2>/dev/null) || return 1
     echo "\$tags" | tr ',' '\\n' \\
         | grep -oE '"[0-9]+\\.[0-9]+\\.[0-9]+"' | tr -d '"' \\
         | sort -t. -k1,1n -k2,2n -k3,3n | tail -1
@@ -380,7 +394,7 @@ case "\${1:-}" in
             TARGET_VERSION="\$(resolve_latest_tag || true)"
         fi
         if [ -n "\$TARGET_VERSION" ]; then
-            PULL_IMAGE="ghcr.io/getainode/ainode:\$TARGET_VERSION"
+            PULL_IMAGE="\${AINODE_GHCR_REPO}:\$TARGET_VERSION"
         else
             PULL_IMAGE="\$AINODE_IMAGE"
             echo "!! Could not resolve a version — pulling \$PULL_IMAGE"

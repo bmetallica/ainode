@@ -1495,7 +1495,9 @@ async def handle_set_model(request: web.Request) -> web.Response:
     return web.json_response({"status": "restarting", "model": model})
 
 
-AINODE_GHCR_REPO = "ghcr.io/getainode/ainode"
+# Re-exported from core.config so the update check, the systemd unit and the
+# installer cannot drift apart. Importers of this name keep working.
+from ainode.core.config import AINODE_GHCR_REPO  # noqa: E402
 
 
 def _fetch_latest_ghcr_tag() -> Optional[str]:
@@ -1507,10 +1509,13 @@ def _fetch_latest_ghcr_tag() -> Optional[str]:
     import urllib.request
     import json as _json
 
-    token_url = "https://ghcr.io/token?service=ghcr.io&scope=repository:getainode/ainode:pull"
+    repo_path = AINODE_GHCR_REPO.split("/", 1)[-1] if "/" in AINODE_GHCR_REPO else AINODE_GHCR_REPO
+    token_url = (
+        f"https://ghcr.io/token?service=ghcr.io&scope=repository:{repo_path}:pull"
+    )
     with urllib.request.urlopen(token_url, timeout=5) as r:
         token = _json.loads(r.read())["token"]
-    tags_url = "https://ghcr.io/v2/getainode/ainode/tags/list"
+    tags_url = f"https://ghcr.io/v2/{repo_path}/tags/list"
     req = urllib.request.Request(tags_url, headers={"Authorization": f"Bearer {token}"})
     with urllib.request.urlopen(req, timeout=5) as r:
         data = _json.loads(r.read())
@@ -1666,8 +1671,8 @@ async def handle_engine_update(request: web.Request) -> web.Response:
             "message": (
                 "Image pulled and pinned, but this node's systemd unit predates "
                 "the swappable-image unit and will not pick it up. Migrate it on "
-                "the host (re-run the installer: curl -fsSL https://ainode.dev/"
-                "install | bash) to boot the new image."
+                "the host (re-run the installer: curl -fsSL "
+                "https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh | bash) to boot the new image."
             ),
         })
 

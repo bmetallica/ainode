@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build ghcr.io/getainode/ainode-base from eugr/spark-vllm-docker at a pinned
+# Build ghcr.io/bmetallica/ainode-base from eugr/spark-vllm-docker at a pinned
 # commit. This is the "base image" that Dockerfile.ainode extends.
 #
 # End users never run this — only our CI runner (or maintainers rebuilding
@@ -20,7 +20,7 @@ EUGR_SHORT="${EUGR_COMMIT:0:7}"
 # AINode version coupling (kept in sync with pyproject.toml).
 AINODE_VERSION="${AINODE_VERSION:-0.4.0}"
 
-REGISTRY="${REGISTRY:-ghcr.io/getainode}"
+REGISTRY="${REGISTRY:-ghcr.io/bmetallica}"
 BASE_NAME="${BASE_NAME:-ainode-base}"
 
 PUSH="false"

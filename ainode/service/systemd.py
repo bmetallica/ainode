@@ -25,13 +25,15 @@ USER_UNIT_DIR = Path.home() / ".config" / "systemd" / "user"
 # image (env override for testing pre-release tags). Republished to GHCR per release.
 from ainode import __version__ as _AINODE_VERSION  # noqa: E402
 
+from ainode.core.config import AINODE_GHCR_REPO, AINODE_PROJECT_URL  # noqa: E402
+
 AINODE_IMAGE_TAG = os.environ.get("AINODE_IMAGE_TAG") or _AINODE_VERSION
-AINODE_IMAGE = f"ghcr.io/getainode/ainode:{AINODE_IMAGE_TAG}"
+AINODE_IMAGE = f"{AINODE_GHCR_REPO}:{AINODE_IMAGE_TAG}"
 
 UNIT_FILE_TEMPLATE = """\
 [Unit]
 Description=AINode — Local AI inference platform
-Documentation=https://ainode.dev
+Documentation={project_url}
 After=network.target docker.service nvidia-persistenced.service
 Wants=docker.service nvidia-persistenced.service
 Requires=docker.service
@@ -134,7 +136,7 @@ def generate_unit_file(user_mode: bool = False) -> str:
     """Generate the systemd unit file content.
 
     Renders ``DOCKER_RUN_CMD`` as the ExecStart so the service is literally
-    ``docker run ... ghcr.io/getainode/ainode:<ver>``. No more host venv.
+    ``docker run ... $AINODE_GHCR_REPO:<ver>``. No more host venv.
     """
     wanted_by = "default.target" if user_mode else "multi-user.target"
     ainode_home = _ainode_home()
@@ -152,6 +154,7 @@ def generate_unit_file(user_mode: bool = False) -> str:
         home=home,
         wanted_by=wanted_by,
         image=AINODE_IMAGE,
+        project_url=AINODE_PROJECT_URL,
     )
 
 

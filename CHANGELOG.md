@@ -46,6 +46,17 @@ Versions follow [Semantic Versioning](https://semver.org/).
   longer fitting — instead of launching into an OOM. The head never does this by
   itself: a model spread over three nodes usually does not fit on two.
 
+- **The fork is self-contained** — image, installer, updater, CI and links all
+  resolve to this repository instead of upstream. `AINODE_GHCR_REPO` in
+  `ainode/core/config.py` and the same-named variable in `scripts/install.sh`
+  are the only two places a registry is named; the publish workflow derives its
+  GHCR namespace from the repository owner, so a further fork needs no edit.
+  Docker Hub mirroring is now opt-in behind the `DOCKERHUB_ORG` repo variable
+  rather than pinned to an org this repo cannot push to. `docs/mesh/BOOTSTRAP.md`
+  covers getting the first image published, and `install.sh` now explains what
+  to do when the registry has none yet instead of surfacing docker's bare
+  "manifest unknown".
+
 ### Fixed
 - **A node going offline no longer takes the head down with it** — a head
   configured across three Sparks with one powered off crashed on boot
