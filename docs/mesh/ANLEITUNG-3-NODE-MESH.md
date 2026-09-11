@@ -206,7 +206,7 @@ ssh Spark1
 git clone https://github.com/bmetallica/ainode
 cd ainode
 scripts/build-base-image.sh                            # Engine-Image, ~15-25 min
-docker build -f scripts/Dockerfile.ainode -t ainode:dev .    # der Punkt am Ende ist der Build-Context
+scripts/build-ainode-image.sh                          # Orchestrator, wenige Minuten
 ```
 
 Es entstehen **zwei** Images mit unterschiedlichen Aufgaben:

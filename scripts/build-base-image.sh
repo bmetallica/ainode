@@ -187,5 +187,5 @@ if [ "$PUSH" = "true" ]; then
     docker push "$VERSION_TAG"
 fi
 
-echo "==> Done. To build the ainode layer:"
-echo "    docker build -f scripts/Dockerfile.ainode -t ainode:${AINODE_VERSION} ."
+echo "==> Done. To build the orchestrator image:"
+echo "    scripts/build-ainode-image.sh"
