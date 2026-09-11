@@ -148,7 +148,7 @@
           <div class="pill-group" id="sharding-pills">
             <button class="pill active" data-value="tensor" title="Splits every layer across nodes. Needs 2, 4 or 8 nodes.">Tensor</button>
             <button class="pill" data-value="pipeline" title="Gives each node a slice of the layers. Works with any node count — the option for 3 nodes.">Pipeline</button>
-            <button class="pill" data-value="data" title="A full model replica per node. For a model that already fits one node; buys concurrency, not capacity.">Data</button>
+            <button class="pill" data-value="data" title="A full model replica per node. For a model that already fits one node; buys concurrency, not capacity. Least-tested path on this hardware.">Data</button>
           </div>
           <label class="form-label">Nodes (★ = head; click to add)</label>
           <div class="node-selector" id="node-selector">
