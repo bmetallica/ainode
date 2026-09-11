@@ -13,6 +13,7 @@ pointer to the spec.
 
 from __future__ import annotations
 
+import os
 from typing import List, Tuple
 
 _TARGET_SPEC_DOC = (
@@ -54,6 +55,9 @@ def fabric_report() -> Tuple[str, List[Tuple[str, str]], List[str]]:
             f"{link.netdev or '<no netdev>'} {link.cidr or '<no ipv4>'}",
         ))
 
+    nccl = _nccl_version()
+    rows.append(("NCCL version", nccl or "<unknown>"))
+
     warnings: List[str] = []
     verdict = "ok"
 
@@ -77,6 +81,15 @@ def fabric_report() -> Tuple[str, List[Tuple[str, str]], List[str]]:
             f"Mesh coordination is running over wireless ({topo.coord_interface}). "
             "Works, but cable the 10G port for predictable cluster formation."
         )
+    if topo.is_mesh and not _nccl_supports_subnet_aware_routing(nccl):
+        verdict = "warn"
+        warnings.append(
+            f"NCCL {nccl or 'version unknown'} predates v2.30.7, which is where "
+            "NCCL_IB_SUBNET_AWARE_ROUTING was added. On a mesh that setting is "
+            "what makes NCCL pick the HCA whose subnet reaches the peer; below "
+            "2.30.7 it is silently ignored and the ring will not route. Rebuild "
+            "the base image with AINODE_NCCL_TAG=v2.30.7-1 or newer."
+        )
     if topo.is_mesh and len(topo.rdma_hcas) < 4:
         verdict = "warn"
         warnings.append(
@@ -85,6 +98,44 @@ def fabric_report() -> Tuple[str, List[Tuple[str, str]], List[str]]:
         )
 
     return verdict, rows, warnings
+
+
+def _nccl_version() -> str:
+    """Best-effort NCCL version of the engine image, or "".
+
+    Read from the package the base image installs rather than from a running
+    container, so it works before anything is launched.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["docker", "run", "--rm", "--entrypoint", "/bin/sh",
+             os.environ.get("AINODE_ENGINE_IMAGE", "vllm-node"),
+             "-c", "dpkg-query -W -f='${Version}' libnccl2 2>/dev/null || true"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        return ""
+    return (out.stdout or "").strip() if out.returncode == 0 else ""
+
+
+def _nccl_supports_subnet_aware_routing(version: str) -> bool:
+    """True unless the version is known to predate v2.30.7.
+
+    Unknown reads as supported: doctor should not cry wolf on a node where the
+    engine image is simply not pulled yet. The floor comes from NCCL's own
+    source — NCCL_PARAM(IbSubnetAwareRouting, …) appears in v2.30.7-1 and not
+    in 2.28.x, 2.29.x or 2.30.3.
+    """
+    import re as _re
+
+    if not version:
+        return True
+    m = _re.match(r"(\d+)\.(\d+)\.(\d+)", version)
+    if not m:
+        return True
+    return tuple(int(g) for g in m.groups()) >= (2, 30, 7)
 
 
 def cmd_doctor(args) -> None:

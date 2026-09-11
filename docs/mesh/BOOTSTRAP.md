@@ -71,6 +71,62 @@ To put the same image on the other nodes, `docker save` it and `docker load` on
 each — or point them at a registry you control with
 `AINODE_GHCR_REPO=<registry>/<owner>/ainode`.
 
+## NCCL version floor — required for the mesh
+
+`scripts/build-base-image.sh` pins the NCCL that goes into the base image.
+**`NCCL_IB_SUBNET_AWARE_ROUTING` exists only from NCCL `v2.30.7-1` onward**
+(`src/transport/net_ib/connect.cc`, `NCCL_PARAM(IbSubnetAwareRouting, …)`); it
+is absent from 2.28.x, 2.29.x and 2.30.3.
+
+That parameter is what makes a switchless ring work — each CX7 port reaches a
+different neighbour, so NCCL has to choose the HCA whose subnet reaches the
+peer. Below the floor AINode sets the variable, NCCL ignores it, and the
+failure looks like a hang rather than a misconfiguration.
+
+The default pin is `v2.30.7-1`. The parameter defaults to `0`, so a switched
+cluster behaves exactly as it did on the previous 2.28.3 pin — this is a floor,
+not a mesh-only build. Override if you need to:
+
+```bash
+AINODE_NCCL_TAG=v2.31.2-1 scripts/build-base-image.sh
+```
+
+`ainode doctor` reports the running NCCL version and warns when a mesh is
+detected below the floor.
+
+> Upstream's published `ghcr.io/getainode/ainode-base:*` images were built
+> before this pin and carry NCCL 2.28.3 — usable on a switched cluster, **not**
+> on a mesh. A mesh needs a base image built here.
+
+## If the base build fails on a dependency conflict
+
+`build-and-copy.sh` fetches its vLLM wheel from eugr's **rolling**
+`prebuilt-vllm-current` release, so the pinned `EUGR_COMMIT` does not pin the
+wheel. A bad nightly there fails the build with something like:
+
+```
+Because quack-kernels==0.6.4 depends on nvidia-cutlass-dsl==4.6.2
+and vllm==… depends on nvidia-cutlass-dsl[cu13]==4.7.0, …
+we can conclude that your requirements are unsatisfiable.
+```
+
+That is upstream's wheel, not this repo. Options, in order of preference:
+
+1. **Wait and retry.** The tag is republished regularly; a broken closure is
+   usually corrected within a day.
+2. **Reuse a cached wheel set.** `build-and-copy.sh` keeps previously
+   downloaded wheels; a build that succeeded before can be repeated without a
+   fresh download. Check `~/.cache` for the wheel dir the script prints.
+3. **Force the resolution** with a uv override, accepting that the combination
+   is untested:
+   ```bash
+   docker build -f scripts/Dockerfile.ainode ... \
+     --build-arg UV_OVERRIDE="nvidia-cutlass-dsl==4.7.0"
+   ```
+   Only do this if you are prepared to verify the resulting engine actually
+   generates tokens — a forced pin can produce an image that loads and then
+   fails in a kernel.
+
 ## Where the registry is configured
 
 One constant per language, not a string scattered across files:
