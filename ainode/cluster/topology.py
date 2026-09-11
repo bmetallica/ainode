@@ -75,6 +75,13 @@ MESH_COORD_CANDIDATES = ("enP7s7", "wlP9s9")
 #
 # Values verified upstream in eugr/spark-vllm-docker (autodiscover.sh mesh
 # branch + the 3-node nccl-tests invocation in docs/NETWORKING.md).
+#
+# REQUIRES NCCL >= v2.30.7-1. NCCL_IB_SUBNET_AWARE_ROUTING is defined in
+# src/transport/net_ib/connect.cc from that tag onward and is absent from
+# 2.28.x, 2.29.x and 2.30.3 — below it, NCCL parses nothing and silently
+# ignores the setting, so the ring does not route and the failure looks like a
+# hang rather than a misconfiguration. scripts/build-base-image.sh pins the
+# floor (AINODE_NCCL_TAG); `ainode doctor` reports the running version.
 MESH_NCCL_ENV: Dict[str, str] = {
     "NCCL_NET_PLUGIN": "none",
     "NCCL_IB_SUBNET_AWARE_ROUTING": "1",

@@ -728,3 +728,72 @@ class TestAnnouncedParallelPlan:
         ))[0])
         assert record.parallel_label() == "PP=3"
         assert record.world_size == 3
+
+
+class TestNcclVersionFloor:
+    """NCCL_IB_SUBNET_AWARE_ROUTING is defined from NCCL v2.30.7-1 onward
+    (src/transport/net_ib/connect.cc) and is absent from 2.28.x, 2.29.x and
+    2.30.3. Below the floor AINode sets the variable and NCCL ignores it, so a
+    mesh silently fails to route — doctor has to say so."""
+
+    @pytest.mark.parametrize("version", ["2.30.7-1", "2.31.2-1", "2.30.7", "3.0.0-1"])
+    def test_supported_versions_pass(self, version):
+        from ainode.cli.doctor import _nccl_supports_subnet_aware_routing
+
+        assert _nccl_supports_subnet_aware_routing(version)
+
+    @pytest.mark.parametrize(
+        "version", ["2.28.3-1", "2.28.9-1", "2.29.7-1", "2.30.3-1", "2.27.5-1"]
+    )
+    def test_versions_below_the_floor_fail(self, version):
+        from ainode.cli.doctor import _nccl_supports_subnet_aware_routing
+
+        assert not _nccl_supports_subnet_aware_routing(version)
+
+    @pytest.mark.parametrize("version", ["", "unknown", None])
+    def test_unknown_reads_as_supported(self, version):
+        """No engine image pulled yet is not a reason to cry wolf."""
+        from ainode.cli.doctor import _nccl_supports_subnet_aware_routing
+
+        assert _nccl_supports_subnet_aware_routing(version or "")
+
+    def test_doctor_warns_on_a_mesh_with_old_nccl(self, sysfs, monkeypatch):
+        from ainode.cli import doctor
+
+        _wire_mesh(sysfs)
+        monkeypatch.setattr(
+            "ainode.core.config.NodeConfig.load", classmethod(lambda cls: _config())
+        )
+        monkeypatch.setattr(doctor, "_nccl_version", lambda: "2.28.3-1")
+        with mock.patch("subprocess.run", side_effect=_fake_ip):
+            verdict, rows, warnings = doctor.fabric_report()
+        assert verdict == "warn"
+        assert any("2.30.7" in w for w in warnings)
+        assert dict(rows)["NCCL version"] == "2.28.3-1"
+
+    def test_doctor_is_quiet_on_a_mesh_with_new_nccl(self, sysfs, monkeypatch):
+        from ainode.cli import doctor
+
+        _wire_mesh(sysfs)
+        monkeypatch.setattr(
+            "ainode.core.config.NodeConfig.load", classmethod(lambda cls: _config())
+        )
+        monkeypatch.setattr(doctor, "_nccl_version", lambda: "2.30.7-1")
+        with mock.patch("subprocess.run", side_effect=_fake_ip):
+            verdict, _rows, warnings = doctor.fabric_report()
+        assert verdict == "ok"
+        assert warnings == []
+
+    def test_old_nccl_off_the_mesh_is_not_flagged(self, sysfs, monkeypatch):
+        """A switched cluster never reads the parameter, so 2.28.3 is fine."""
+        from ainode.cli import doctor
+
+        _wire_direct(sysfs)
+        monkeypatch.setattr(
+            "ainode.core.config.NodeConfig.load", classmethod(lambda cls: _config())
+        )
+        monkeypatch.setattr(doctor, "_nccl_version", lambda: "2.28.3-1")
+        with mock.patch("subprocess.run", side_effect=_fake_ip):
+            verdict, _rows, warnings = doctor.fabric_report()
+        assert verdict == "ok"
+        assert warnings == []
