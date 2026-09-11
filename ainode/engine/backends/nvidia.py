@@ -670,25 +670,12 @@ class NvidiaBackend(EngineBackend):
     MODELS_MOUNT = "/ainode-models"
 
     def _host_path(self, container_path: str) -> str:
-        """Translate a path under AINODE_HOME (this orchestrator's *container*
-        view) to the equivalent *host* path, so a docker ``-v`` SOURCE resolves
-        on the host daemon — not to a stray root-owned dir.
+        """Translate a container path to the host's view — see
+        :func:`ainode.core.config.host_path`. Kept as a method because callers
+        and tests reach it through the backend."""
+        from ainode.core.config import host_path
 
-        AINode runs inside a container that bind-mounts a host dir at AINODE_HOME
-        (the systemd unit: ``-v <host>/.ainode:/root/.ainode``). When we then spawn
-        the vLLM container we pass ``-v <our-path>:...`` to the SAME host daemon,
-        which reads the SOURCE literally — so it must be the host path, not ours.
-        The unit sets ``AINODE_HOST_HOME`` to the host dir it mounted. No-op when
-        unset (AINode running directly on the host, where the two paths coincide).
-        """
-        host_home = os.environ.get("AINODE_HOST_HOME")
-        if not host_home:
-            return container_path
-        from ainode.core.config import AINODE_HOME
-        home = str(AINODE_HOME)
-        if container_path == home or container_path.startswith(home + os.sep):
-            return host_home.rstrip("/") + container_path[len(home):]
-        return container_path
+        return host_path(container_path)
 
     def _local_model_dir(self) -> Optional[str]:
         """This model's on-disk weight dir (flat ``org--name`` layout written by

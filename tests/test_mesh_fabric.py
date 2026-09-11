@@ -797,3 +797,71 @@ class TestNcclVersionFloor:
             verdict, _rows, warnings = doctor.fabric_report()
         assert verdict == "ok"
         assert warnings == []
+
+
+class TestEugrEngineMountPaths:
+    """The -v SOURCE goes to the host daemon and the serve script runs inside
+    the engine container. Confusing the two views silently mounts an empty
+    directory and points --download-dir at a path that does not exist there."""
+
+    def _launch(self, sysfs_wired, tmp_path, monkeypatch, **cfg):
+        from ainode.engine.backends.eugr import EugrBackend
+
+        launcher = tmp_path / "launch-cluster.sh"
+        launcher.write_text("#!/bin/bash\n")
+        monkeypatch.setattr("ainode.engine.backends.eugr.EUGR_LAUNCHER", launcher)
+        monkeypatch.setattr("ainode.engine.backends.eugr.EUGR_ENV_FILE",
+                            tmp_path / "eugr.env")
+        backend = EugrBackend(_config(**cfg))
+        captured = {}
+
+        class _P:
+            def __init__(self, *a, **k):
+                captured["env"] = k.get("env", {})
+                self.stdout = None
+
+            def poll(self):
+                return None
+
+        with mock.patch("subprocess.Popen", _P), \
+             mock.patch.object(EugrBackend, "_write_eugr_env", lambda self: None), \
+             mock.patch.object(EugrBackend, "_write_distributed_launch_script",
+                               lambda self: tmp_path / "s.sh"), \
+             mock.patch.object(EugrBackend, "_distribute_model_to_peers",
+                               lambda self: None), \
+             mock.patch.object(EugrBackend, "_publish_nccl_init_script",
+                               lambda self: None), \
+             mock.patch("subprocess.run", side_effect=_fake_ip), \
+             mock.patch("threading.Thread"):
+            backend.start_distributed()
+        return captured["env"].get("VLLM_SPARK_EXTRA_DOCKER_ARGS", "")
+
+    def test_mount_source_is_the_host_path(self, sysfs, tmp_path, monkeypatch):
+        _wire_mesh(sysfs)
+        monkeypatch.setenv("AINODE_HOST_HOME", "/home/admin/.ainode")
+        monkeypatch.setattr("ainode.core.config.AINODE_HOME",
+                            __import__("pathlib").Path("/root/.ainode"))
+        args = self._launch(sysfs, tmp_path, monkeypatch,
+                            models_dir="/root/.ainode/models")
+        assert "/home/admin/.ainode/models:/models" in args
+        assert "/root/.ainode/models:/models" not in args
+
+    def test_mount_source_untouched_outside_a_container(self, sysfs, tmp_path, monkeypatch):
+        _wire_mesh(sysfs)
+        monkeypatch.delenv("AINODE_HOST_HOME", raising=False)
+        args = self._launch(sysfs, tmp_path, monkeypatch,
+                            models_dir="/srv/models")
+        assert "/srv/models:/models" in args
+
+    def test_serve_script_uses_the_container_mount_target(self, tmp_path, monkeypatch):
+        from ainode.engine.backends.eugr import EugrBackend
+
+        monkeypatch.setattr("ainode.engine.backends.eugr.EUGR_LAUNCHER",
+                            tmp_path / "launch-cluster.sh")
+        monkeypatch.setattr("ainode.engine.backends.eugr.detect_gpu", lambda: None)
+        config = _config(peer_ips=["10.0.0.12"], models_dir="/root/.ainode/models")
+        script = EugrBackend(config)._write_distributed_launch_script().read_text()
+        # /models is where the launcher mounts it in every engine container;
+        # AINode's own view of models_dir does not exist there.
+        assert "--download-dir /models" in script
+        assert "/root/.ainode/models" not in script

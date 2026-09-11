@@ -15,6 +15,29 @@ AINODE_GHCR_REPO = os.environ.get("AINODE_GHCR_REPO") or "ghcr.io/bmetallica/ain
 AINODE_PROJECT_URL = "https://github.com/bmetallica/ainode"
 
 AINODE_HOME = Path(os.environ.get("AINODE_HOME", Path.home() / ".ainode"))
+
+
+def host_path(container_path: str) -> str:
+    """Translate a path under AINODE_HOME from this container's view to the host's.
+
+    AINode runs inside a container that bind-mounts a host directory at
+    AINODE_HOME (the systemd unit: ``-v <host>/.ainode:/root/.ainode``). When it
+    then spawns an engine container it hands ``-v <source>:<target>`` to the
+    SAME host daemon, which reads the source literally — so the source has to be
+    the host path. Passing our own view mounts whatever happens to live at
+    ``/root/.ainode`` on the host instead: root's home, not the installing
+    user's, usually empty.
+
+    The unit sets ``AINODE_HOST_HOME`` to the directory it mounted. No-op when
+    unset, i.e. when AINode runs directly on the host and the two coincide.
+    """
+    host_home = os.environ.get("AINODE_HOST_HOME")
+    if not host_home:
+        return container_path
+    home = str(AINODE_HOME)
+    if container_path == home or container_path.startswith(home + os.sep):
+        return host_home.rstrip("/") + container_path[len(home):]
+    return container_path
 CONFIG_FILE = AINODE_HOME / "config.json"
 MODELS_DIR = AINODE_HOME / "models"
 LOGS_DIR = AINODE_HOME / "logs"

@@ -40,14 +40,25 @@ from ainode.cluster.topology import (
     is_safe_device_name,
     topology_for_config,
 )
-from ainode.core.config import LOGS_DIR, NodeConfig
+from ainode.core.config import LOGS_DIR, NodeConfig, host_path
 from ainode.core.gpu import detect_gpu
 from ainode.engine.backends.base import EngineBackend
+from ainode.engine.distribute import (
+    DistributionError,
+    ensure_peer_has_dir,
+    hf_cache_dir_name,
+)
 from ainode.engine.parallelism import ParallelPlan, Strategy
 
 logger = logging.getLogger(__name__)
 
 # Path to eugr's launcher inside the unified image. See scripts/Dockerfile.ainode.
+# Where the host's models_dir is mounted inside every engine container. The
+# launcher passes one VLLM_SPARK_EXTRA_DOCKER_ARGS to every node, so this path
+# is the same everywhere and is the only one the serve script can reference —
+# AINode's own view of models_dir does not exist in that container.
+ENGINE_MODELS_DIR = "/models"
+
 EUGR_LAUNCHER = Path("/opt/spark-vllm-docker/launch-cluster.sh")
 EUGR_ENV_FILE = Path("/opt/spark-vllm-docker/.env")
 
@@ -178,6 +189,7 @@ class EugrBackend(EngineBackend):
 
         self._write_eugr_env()
         launch_script = self._write_distributed_launch_script()
+        self._distribute_model_to_peers()
 
         # Bug 3 fix: publish per-node shim to shared storage so every peer's
         # vllm_node can mount + exec it as --entrypoint. Returns None if the
@@ -187,14 +199,19 @@ class EugrBackend(EngineBackend):
 
         cmd = [str(EUGR_LAUNCHER), "--launch-script", str(launch_script)]
         models_dir = self.config.models_dir or "/root/.ainode/models"
-        if not _is_safe_path_arg(models_dir):
+        # The SOURCE of a -v goes to the host daemon, which reads it literally.
+        # Passing our own container view mounted whatever sat at
+        # /root/.ainode/models on the host — root's home, not the installing
+        # user's, and usually empty. See core.config.host_path.
+        models_dir_host = host_path(models_dir)
+        if not _is_safe_path_arg(models_dir_host):
             raise EugrBackendError(
-                f"Refusing to pass models_dir {models_dir!r} to the launcher: it "
+                f"Refusing to pass models_dir {models_dir_host!r} to the launcher: it "
                 f"is expanded unquoted into the docker run arguments, so "
                 f"whitespace or a shell metacharacter there injects docker "
                 f"flags rather than naming a directory."
             )
-        extra_docker_args = ["-v", f"{models_dir}:/models"]
+        extra_docker_args = ["-v", f"{models_dir_host}:{ENGINE_MODELS_DIR}"]
         if shim_container_path is not None:
             # Mount the shared dir read-only and replace the vllm_node
             # container's default entrypoint with the shim. The shim detects
@@ -621,6 +638,67 @@ class EugrBackend(EngineBackend):
     # Distributed (eugr) wiring
     # ------------------------------------------------------------------
 
+    def _transfer_ip(self, peer_ip: str) -> str:
+        """Address to push bulk data to ``peer_ip`` over.
+
+        ``peer_ip`` is the peer's coordination address. Where the launch path
+        found a direct RoCE cable it recorded the far side in
+        ``peer_transfer_ips``; absent, the coordination address is used, which
+        is what every node did before.
+        """
+        return (getattr(self.config, "peer_transfer_ips", None) or {}).get(
+            peer_ip, peer_ip
+        )
+
+    def _distribute_model_to_peers(self) -> None:
+        """Make sure every peer can read the model from its own local disk.
+
+        The launcher mounts each node's own ``models_dir`` into that node's
+        engine container, so a rank whose host lacks the weights would download
+        them from Hugging Face independently — N copies pulled over the WAN
+        instead of one copy moved over the fabric, and N chances to be rate
+        limited mid-launch.
+
+        Best-effort: a peer that cannot be reached is left alone and the launch
+        proceeds, because the head cannot know whether that peer already has
+        the weights through some other route. A transfer that starts and fails
+        does abort — a half-copied checkpoint is worse than none.
+        """
+        model = (self.config.model or "").strip()
+        if not model:
+            return
+        models_dir = self.config.models_dir or "/root/.ainode/models"
+        # HF_HOME is set to models_dir (see _build_env), so the cache lands in
+        # models_dir/hub/models--org--name — the layout registry.py scans.
+        hub = str(Path(models_dir) / "hub")
+        dir_name = hf_cache_dir_name(model)
+
+        for peer_ip in self.config.peer_ips:
+            transfer_ip = self._transfer_ip(peer_ip)
+            try:
+                placed = ensure_peer_has_dir(
+                    ssh_user=self.config.ssh_user,
+                    transfer_ip=transfer_ip,
+                    source_parent=hub,
+                    dir_name=dir_name,
+                    target_parent=hub,
+                    label="direct RoCE link" if transfer_ip != peer_ip else "",
+                )
+            except DistributionError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Could not check or copy %s to %s; continuing — the peer may "
+                    "already have it by another route", dir_name, transfer_ip,
+                )
+                continue
+            if not placed:
+                logger.info(
+                    "%s is not in %s on this node; leaving each rank to fetch it",
+                    dir_name, hub,
+                )
+                return
+
     def _parallel_plan(self) -> ParallelPlan:
         """How this instance splits across head + peers, one GPU per node.
 
@@ -820,7 +898,7 @@ vllm serve {self.config.model} \\
     --host 0.0.0.0 --port {self.config.api_port} \\
     --distributed-executor-backend ray \\
 {parallel_lines}    --gpu-memory-utilization {self.config.gpu_memory_utilization} \\
-{dtype_line}{extra}    --download-dir {self.config.models_dir or '/models'}
+{dtype_line}{extra}    --download-dir {ENGINE_MODELS_DIR}
 """
         target = EUGR_LAUNCHER.parent / "examples" / "ainode-distributed.sh"
         target.parent.mkdir(parents=True, exist_ok=True)
