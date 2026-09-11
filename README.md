@@ -82,6 +82,9 @@ The network heuristics and the 3-node parallelism constraints are adapted from
 `autodiscover.sh`, `launch-cluster.sh` and `docs/NETWORKING.md` document this
 hardware. Borrowed logic is marked at each site; there are no verbatim copies.
 
+Step-by-step setup for that hardware, in German:
+[`docs/mesh/ANLEITUNG-3-NODE-MESH.md`](docs/mesh/ANLEITUNG-3-NODE-MESH.md).
+
 Background on what was changed and why: [`docs/mesh/PHASE1-ANALYSE.md`](docs/mesh/PHASE1-ANALYSE.md)
 (an audit of the original code before any of it was touched — German) and
 [`docs/mesh/BOOTSTRAP.md`](docs/mesh/BOOTSTRAP.md) (publishing this fork's image).
