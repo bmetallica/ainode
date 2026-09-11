@@ -92,22 +92,30 @@ ssh Spark2 ping -c2 10.100.34.1   # Spark2 -> Spark3 über Port 0
 
 ## Schritt 2 — Netzkonfiguration
 
-**Nichts zu tun.** NVIDIA Sync hat die Interfaces bereits korrekt vergeben
-(siehe oben). Diesen Schritt gibt es hier nur, damit die Nummerierung mit der
-allgemeinen Fassung übereinstimmt.
+**Nichts zu tun.** NVIDIA Sync hat die Interfaces korrekt vergeben — dieser
+Schritt existiert nur, damit die Nummerierung nicht springt.
 
-Falls du die Konfiguration später einmal von Hand nachbauen musst, steht das
-Schema im Anhang am Ende dieser Datei.
+Die Regeln, nach denen es korrekt ist, stehen hier trotzdem: an ihnen erkennst
+du eine kaputte Konfiguration, ohne die Adressen nachschlagen zu müssen.
 
-Eine Kontrolle lohnt sich trotzdem — **auf allen drei**:
+1. **Steckung:** Port 0 eines Sparks an Port 1 des nächsten, im Kreis.
+2. Jedes der vier CX7-Interfaces pro Knoten liegt in einem **eigenen** Subnetz.
+3. Die beiden Enden **eines Kabels** teilen sich ein Subnetz.
+4. MTU 9000 auf allen vier.
+5. `enP7s7` bleibt unangetastet.
+
+Regel 2 ist die, die am ehesten kippt, und AINode wie NCCL stolpern beide
+darüber. Kontrolle — **auf allen drei**:
 
 ```bash
 ip -br -4 addr show | grep -E 'enp1s0f|enP2p1s0f'
 ```
 
-**Erfolg:** vier Zeilen, vier verschiedene `10.100.3x`-Netze. Tauchte ein Netz
-zweimal auf, wäre das ein Fehler: zwei Interfaces im selben Subnetz zerlegen
-das Routing und die Autoerkennung.
+**Erfolg:** vier Zeilen, vier verschiedene `10.100.3x`-Netze, MTU 9000.
+Taucht ein Netz zweimal auf, ist das der Fehler.
+
+Musst du die Konfiguration je neu erzeugen, ist `nvidia-sync` der Weg — nicht
+eine handgeschriebene Netplan-Datei. Die Werte stehen in der Tabelle oben.
 
 ---
 
@@ -465,62 +473,3 @@ journalctl -u ainode -n 100                                       # Dienst selbs
   Schritt 11.
 
 ---
-
-## Anhang — Netzschema von Hand nachbauen
-
-Nur nötig, falls die Konfiguration von NVIDIA Sync einmal verloren geht. Die
-Regeln, aus denen sich alles ableitet:
-
-1. **Steckung:** Port 0 eines Sparks an Port 1 des nächsten, im Kreis.
-2. Jedes der vier CX7-Interfaces pro Knoten bekommt ein **eigenes** Subnetz.
-3. Die beiden Enden eines Kabels teilen sich ein Subnetz.
-4. MTU 9000 auf allen vier.
-5. `enP7s7` bleibt unangetastet.
-
-Für diesen Cluster, `/etc/netplan/40-cx7.yaml` — Werte aus der Tabelle oben:
-
-**Spark1**
-```yaml
-network:
-  version: 2
-  ethernets:
-    enp1s0f0np0:   {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.36.1/24]}
-    enP2p1s0f0np0: {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.37.1/24]}
-    enp1s0f1np1:   {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.32.2/24]}
-    enP2p1s0f1np1: {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.33.2/24]}
-```
-
-**Spark2**
-```yaml
-network:
-  version: 2
-  ethernets:
-    enp1s0f0np0:   {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.34.2/24]}
-    enP2p1s0f0np0: {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.35.2/24]}
-    enp1s0f1np1:   {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.36.2/24]}
-    enP2p1s0f1np1: {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.37.2/24]}
-```
-
-**Spark3**
-```yaml
-network:
-  version: 2
-  ethernets:
-    enp1s0f0np0:   {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.32.1/24]}
-    enP2p1s0f0np0: {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.33.1/24]}
-    enp1s0f1np1:   {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.34.1/24]}
-    enP2p1s0f1np1: {dhcp4: no, dhcp6: no, link-local: [], mtu: 9000, addresses: [10.100.35.1/24]}
-```
-
-```bash
-sudo chmod 600 /etc/netplan/40-cx7.yaml
-sudo netplan apply
-```
-
-Prüfe die tatsächliche Präfixlänge, bevor du das übernimmst — NVIDIA Sync setzt
-für Punkt-zu-Punkt-Links teils `/30` statt `/24`. Beides funktioniert, solange
-Regel 2 und 3 gelten:
-
-```bash
-ip -br -4 addr show enp1s0f0np0
-```
