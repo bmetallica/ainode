@@ -1558,6 +1558,42 @@ h4.chat-h { font-size: 14px; color: var(--nvidia-green); }
   border: 1px solid var(--nvidia-green-dim);
 }
 
+.launch-advanced {
+  margin: 10px 0 4px;
+  border-top: 1px solid var(--border, #263026);
+  padding-top: 8px;
+}
+
+.launch-advanced > summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  list-style: none;
+  padding: 4px 0;
+}
+
+.launch-advanced > summary::before {
+  content: '▸ ';
+}
+
+.launch-advanced[open] > summary::before {
+  content: '▾ ';
+}
+
+.launch-advanced > summary:hover {
+  color: var(--nvidia-green-dim);
+}
+
+.launch-advanced-note {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  margin: 6px 0 10px;
+}
+
 /* A degraded instance is still running on the head but has lost a member node,
    so it cannot serve. Amber, not red: nothing is broken that a relaunch on the
    surviving nodes does not fix. */

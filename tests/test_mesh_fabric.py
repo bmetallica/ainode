@@ -865,3 +865,52 @@ class TestEugrEngineMountPaths:
         # AINode's own view of models_dir does not exist there.
         assert "--download-dir /models" in script
         assert "/root/.ainode/models" not in script
+
+
+class TestSoloLaunchScript:
+    """Solo runs through the launcher too, but with a single rank there is
+    nothing to place and nothing to split."""
+
+    def _script(self, tmp_path, monkeypatch, solo, **cfg):
+        from ainode.engine.backends.eugr import EugrBackend
+        from ainode.engine.parallelism import ParallelPlan
+
+        monkeypatch.setattr("ainode.engine.backends.eugr.EUGR_LAUNCHER",
+                            tmp_path / "launch-cluster.sh")
+        monkeypatch.setattr("ainode.engine.backends.eugr.detect_gpu", lambda: None)
+        backend = EugrBackend(_config(**cfg))
+        plan = ParallelPlan() if solo else backend._parallel_plan()
+        return backend._write_launch_script(plan, solo=solo).read_text()
+
+    def test_solo_omits_ray_and_the_parallel_flags(self, tmp_path, monkeypatch):
+        script = self._script(tmp_path, monkeypatch, solo=True, peer_ips=[])
+        assert "--distributed-executor-backend" not in script
+        assert "--tensor-parallel-size" not in script
+        assert "--pipeline-parallel-size" not in script
+        assert "vllm serve" in script
+        assert "--download-dir /models" in script
+
+    def test_distributed_still_carries_both(self, tmp_path, monkeypatch):
+        script = self._script(tmp_path, monkeypatch, solo=False,
+                              peer_ips=["10.0.0.12"])
+        assert "--distributed-executor-backend ray" in script
+        assert "--tensor-parallel-size 2" in script
+
+    def test_extra_vllm_args_reach_the_script(self, tmp_path, monkeypatch):
+        """The UI's Advanced fields were inert on this backend without this."""
+        script = self._script(tmp_path, monkeypatch, solo=True, peer_ips=[],
+                              extra_vllm_args=["--max-num-seqs", "32"])
+        assert "--max-num-seqs" in script
+        assert "32" in script
+
+    def test_solo_and_distributed_use_different_files(self, tmp_path, monkeypatch):
+        from ainode.engine.backends.eugr import EugrBackend
+        from ainode.engine.parallelism import ParallelPlan
+
+        monkeypatch.setattr("ainode.engine.backends.eugr.EUGR_LAUNCHER",
+                            tmp_path / "launch-cluster.sh")
+        monkeypatch.setattr("ainode.engine.backends.eugr.detect_gpu", lambda: None)
+        backend = EugrBackend(_config(peer_ips=["10.0.0.12"]))
+        solo = backend._write_launch_script(ParallelPlan(), solo=True)
+        dist = backend._write_launch_script(backend._parallel_plan())
+        assert solo != dist        # a solo launch must not clobber a running one

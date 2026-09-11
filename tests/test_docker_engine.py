@@ -116,22 +116,30 @@ def test_tp_size_one_plus_peers():
     assert de.DockerEngine(_cfg(peer_ips=["a", "b", "c"]))._tp_size() == 4
 
 
-def test_start_solo_launches_subprocess():
+def test_start_solo_goes_through_the_launcher():
+    """AINode's own container is python:3.12-slim — no CUDA, no vLLM, no NCCL.
+    Spawning `vllm` there failed with "[Errno 2] No such file or directory:
+    'vllm'". Solo now runs the engine in its own container via the launcher,
+    the same one the distributed path uses."""
     engine = de.DockerEngine(_cfg())
     with patch("ainode.engine.backends.eugr.subprocess.Popen") as popen, \
          patch("ainode.engine.backends.eugr.detect_gpu", return_value=None), \
+         patch.object(type(engine), "_write_launch_script",
+                      lambda self, plan, solo=False: Path("/tmp/ainode-solo.sh")), \
+         patch.object(type(engine), "_launcher_env", lambda self, **kw: {}), \
+         patch("ainode.engine.backends.eugr.EUGR_LAUNCHER", Path("/tmp/launch-cluster.sh")), \
+         patch("pathlib.Path.exists", lambda self: True), \
          patch("ainode.engine.backends.eugr.shutil.which", return_value=None):
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
         popen.return_value = mock_proc
         assert engine.start_solo() is True
-        # start_solo may also probe `ip addr` to resolve the cluster interface;
-        # assert the vLLM serve launch specifically rather than total call-count.
-        vllm_calls = [c for c in popen.call_args_list if c[0][0][:2] == ["vllm", "serve"]]
-        assert len(vllm_calls) == 1
-        invoked_cmd = vllm_calls[0][0][0]
-        assert invoked_cmd[:2] == ["vllm", "serve"]
 
+        invoked = popen.call_args_list[0][0][0]
+        assert invoked[0].endswith("launch-cluster.sh")
+        assert "--solo" in invoked           # no peer discovery, no Ray
+        assert "--launch-script" in invoked
+        assert "vllm" not in invoked         # never spawned in this container
 
 def test_is_running_requires_live_process():
     engine = de.DockerEngine(_cfg())

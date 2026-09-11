@@ -488,6 +488,76 @@ async def replay_instances_on_startup(app) -> None:
 
 # -- Handlers ------------------------------------------------------------------
 
+def parse_load_overrides(body: dict):
+    """Per-load config overrides from a request body.
+
+    Returns ``(overrides, error_response)``; exactly one is meaningful. These
+    apply to the per-instance config SNAPSHOT only, never the shared app
+    config, so stacked models can differ in context length, KV dtype, quant and
+    engine flags without cross-wiring.
+
+    Shared by the solo load path and the distributed launch path. It used to
+    live inline in the solo one, so a distributed launch silently dropped every
+    knob except gpu_memory_utilization — you could not set a context length or
+    a batching flag on the launch that needs them most.
+
+    Malformed values are rejected with a 400 rather than dropped: a typo in
+    extra_vllm_args otherwise surfaces as a container that dies with no
+    explanation.
+    """
+    overrides: dict = {}
+    smn = body.get("served_model_name")
+    if isinstance(smn, str):
+        smn = [smn]
+    if isinstance(smn, list) and smn:
+        overrides["served_model_name"] = [str(s) for s in smn if str(s).strip()]
+    if body.get("max_model_len") is not None:
+        try:
+            overrides["max_model_len"] = int(body["max_model_len"])
+        except (TypeError, ValueError):
+            pass
+    for k in ("kv_cache_dtype", "quantization"):
+        if body.get(k) is not None:
+            overrides[k] = body[k]
+    if "kv_cache_dtype" in overrides:
+        # Mark provenance so the multimodal fp8→auto safety downgrade
+        # (nvidia.py _effective_kv_cache_dtype) is skipped: an EXPLICIT fp8 KV
+        # request on a VLM is honored, giving the user a way to opt back in.
+        overrides["kv_cache_dtype_explicit"] = True
+    if body.get("trust_remote_code") is not None:
+        overrides["trust_remote_code"] = bool(body["trust_remote_code"])
+    # Recipe passthrough: extra vLLM flags + the engine image to run them on.
+    # Rejected (400) rather than silently dropped when malformed — a typo here
+    # otherwise surfaces as a container that dies with no explanation.
+    if body.get("extra_vllm_args") is not None:
+        raw = body["extra_vllm_args"]
+        if isinstance(raw, str):
+            raw = shlex.split(raw)
+        if not isinstance(raw, list) or not all(isinstance(a, (str, int, float)) for a in raw):
+            return None, web.json_response(
+                {"error": "extra_vllm_args must be a list of strings "
+                          "(e.g. [\"--moe-backend\", \"marlin\"]) or a shell-style string"},
+                status=400)
+        overrides["extra_vllm_args"] = [str(a) for a in raw]
+    if body.get("extra_env") is not None:
+        raw = body["extra_env"]
+        if not isinstance(raw, dict) or not all(
+                isinstance(k, str) and k and isinstance(v, (str, int, float, bool))
+                for k, v in raw.items()):
+            return None, web.json_response(
+                {"error": "extra_env must be an object of NAME -> value "
+                          "(e.g. {\"VLLM_NVFP4_GEMM_BACKEND\": \"flashinfer-b12x\"})"},
+                status=400)
+        overrides["extra_env"] = {k: str(v) for k, v in raw.items()}
+    if body.get("engine_image") is not None:
+        img = str(body["engine_image"]).strip()
+        if " " in img:
+            return None, web.json_response({"error": "engine_image must be a single image ref"},
+                                     status=400)
+        overrides["engine_image"] = img
+    return overrides, None
+
+
 async def handle_model_load(request: web.Request) -> web.Response:
     """POST /api/models/load — launch a model on this engine.
 
@@ -535,59 +605,9 @@ async def handle_model_load(request: web.Request) -> web.Response:
         except (TypeError, ValueError):
             gmu = None
 
-    # Per-load config overrides applied to the per-instance snapshot only (NOT the
-    # shared app config). served_model_name = API alias(es); the rest let stacked
-    # models differ in context length / KV dtype / quant without cross-wiring.
-    overrides: dict = {}
-    smn = body.get("served_model_name")
-    if isinstance(smn, str):
-        smn = [smn]
-    if isinstance(smn, list) and smn:
-        overrides["served_model_name"] = [str(s) for s in smn if str(s).strip()]
-    if body.get("max_model_len") is not None:
-        try:
-            overrides["max_model_len"] = int(body["max_model_len"])
-        except (TypeError, ValueError):
-            pass
-    for k in ("kv_cache_dtype", "quantization"):
-        if body.get(k) is not None:
-            overrides[k] = body[k]
-    if "kv_cache_dtype" in overrides:
-        # Mark provenance so the multimodal fp8→auto safety downgrade
-        # (nvidia.py _effective_kv_cache_dtype) is skipped: an EXPLICIT fp8 KV
-        # request on a VLM is honored, giving the user a way to opt back in.
-        overrides["kv_cache_dtype_explicit"] = True
-    if body.get("trust_remote_code") is not None:
-        overrides["trust_remote_code"] = bool(body["trust_remote_code"])
-    # Recipe passthrough: extra vLLM flags + the engine image to run them on.
-    # Rejected (400) rather than silently dropped when malformed — a typo here
-    # otherwise surfaces as a container that dies with no explanation.
-    if body.get("extra_vllm_args") is not None:
-        raw = body["extra_vllm_args"]
-        if isinstance(raw, str):
-            raw = shlex.split(raw)
-        if not isinstance(raw, list) or not all(isinstance(a, (str, int, float)) for a in raw):
-            return web.json_response(
-                {"error": "extra_vllm_args must be a list of strings "
-                          "(e.g. [\"--moe-backend\", \"marlin\"]) or a shell-style string"},
-                status=400)
-        overrides["extra_vllm_args"] = [str(a) for a in raw]
-    if body.get("extra_env") is not None:
-        raw = body["extra_env"]
-        if not isinstance(raw, dict) or not all(
-                isinstance(k, str) and k and isinstance(v, (str, int, float, bool))
-                for k, v in raw.items()):
-            return web.json_response(
-                {"error": "extra_env must be an object of NAME -> value "
-                          "(e.g. {\"VLLM_NVFP4_GEMM_BACKEND\": \"flashinfer-b12x\"})"},
-                status=400)
-        overrides["extra_env"] = {k: str(v) for k, v in raw.items()}
-    if body.get("engine_image") is not None:
-        img = str(body["engine_image"]).strip()
-        if " " in img:
-            return web.json_response({"error": "engine_image must be a single image ref"},
-                                     status=400)
-        overrides["engine_image"] = img
+    overrides, err = parse_load_overrides(body)
+    if err is not None:
+        return err
 
     # Curated models carry their proven recipe — apply it as DEFAULTS so a bare
     # {"model": "..."} load (i.e. clicking it in the dashboard) launches with the

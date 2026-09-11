@@ -4,8 +4,8 @@ via eugr/spark-vllm-docker's launch-cluster.sh.
 Running *inside* the container (which is how the image ships — systemd on the
 host runs ``docker run ... ainode`` once), this backend handles two modes:
 
-* ``start_solo()`` — a single vLLM process on this host only. Direct
-  ``vllm serve`` ``Popen``. Used when ``config.distributed_mode == "solo"``.
+* ``start_solo()`` — one engine container on this host, via the launcher's
+  ``--solo`` mode. Used when ``config.distributed_mode == "solo"``.
 * ``start_distributed()`` — shells out to ``/opt/spark-vllm-docker/launch-
   cluster.sh`` (baked into the image) to SSH-orchestrate peer workers and
   form a Ray cluster across nodes. Used when ``config.distributed_mode ==
@@ -145,14 +145,32 @@ class EugrBackend(EngineBackend):
         )
 
     def start_solo(self) -> bool:
-        """Spawn a single-node ``vllm serve`` subprocess."""
+        """Run a single-node ``vllm serve`` in an engine container.
+
+        Goes through the launcher in ``--solo`` mode rather than spawning
+        ``vllm`` directly. The direct spawn is a leftover from the unified
+        image: AINode's own container is now ``python:3.12-slim`` with no CUDA,
+        no vLLM and no NCCL, so ``Popen(["vllm", ...])`` there fails with
+        ``[Errno 2] No such file or directory: 'vllm'``. The engine lives in
+        its own container — the same one the distributed path uses.
+
+        ``--solo`` skips peer discovery and Ray; the container runs with
+        ``--network host``, so the engine binds ``api_port`` on the host
+        directly and no port mapping is needed.
+        """
         if self.is_running():
             return True
+        if not EUGR_LAUNCHER.exists():
+            raise EugrBackendError(
+                f"eugr launcher missing at {EUGR_LAUNCHER}. Is this running "
+                "inside the ainode image?"
+            )
 
-        cmd = self._build_solo_cmd()
-        env = self._build_env()
+        launch_script = self._write_launch_script(ParallelPlan(), solo=True)
+        cmd = [str(EUGR_LAUNCHER), "--solo", "--launch-script", str(launch_script)]
+        env = self._launcher_env()
 
-        logger.info("Starting solo vLLM: %s", " ".join(cmd))
+        logger.info("Starting solo vLLM via the launcher: %s", " ".join(cmd))
         self._process = subprocess.Popen(
             cmd,
             env=env,
@@ -160,6 +178,7 @@ class EugrBackend(EngineBackend):
             stderr=subprocess.STDOUT,
             bufsize=1,
             universal_newlines=True,
+            cwd=str(EUGR_LAUNCHER.parent),
         )
         self._log_thread = threading.Thread(
             target=self._stream_logs, args=(self._process, self._log_file), daemon=True
@@ -198,31 +217,7 @@ class EugrBackend(EngineBackend):
         shim_container_path = self._publish_nccl_init_script()
 
         cmd = [str(EUGR_LAUNCHER), "--launch-script", str(launch_script)]
-        models_dir = self.config.models_dir or "/root/.ainode/models"
-        # The SOURCE of a -v goes to the host daemon, which reads it literally.
-        # Passing our own container view mounted whatever sat at
-        # /root/.ainode/models on the host — root's home, not the installing
-        # user's, and usually empty. See core.config.host_path.
-        models_dir_host = host_path(models_dir)
-        if not _is_safe_path_arg(models_dir_host):
-            raise EugrBackendError(
-                f"Refusing to pass models_dir {models_dir_host!r} to the launcher: it "
-                f"is expanded unquoted into the docker run arguments, so "
-                f"whitespace or a shell metacharacter there injects docker "
-                f"flags rather than naming a directory."
-            )
-        extra_docker_args = ["-v", f"{models_dir_host}:{ENGINE_MODELS_DIR}"]
-        if shim_container_path is not None:
-            # Mount the shared dir read-only and replace the vllm_node
-            # container's default entrypoint with the shim. The shim detects
-            # local HCAs, exports NCCL_IB_HCA, and execs the original CMD
-            # (typically ``sleep infinity`` from eugr's launcher).
-            extra_docker_args.extend([
-                "-v", "/mnt/shared-models:/mnt/shared-models:ro",
-                "--entrypoint", shim_container_path,
-            ])
-        env = self._build_env()
-        env["VLLM_SPARK_EXTRA_DOCKER_ARGS"] = " ".join(extra_docker_args)
+        env = self._launcher_env(shim_container_path=shim_container_path)
 
         logger.info(
             "Starting distributed vLLM: %s across %d peers via eugr launcher",
@@ -638,6 +633,41 @@ class EugrBackend(EngineBackend):
     # Distributed (eugr) wiring
     # ------------------------------------------------------------------
 
+    def _launcher_env(self, shim_container_path: Optional[str] = None) -> dict:
+        """Environment for a ``launch-cluster.sh`` invocation.
+
+        Shared by the solo and distributed paths: both spawn the same engine
+        container and both need the model directory mounted at the same place.
+        ``VLLM_SPARK_EXTRA_DOCKER_ARGS`` is appended to the launcher's
+        ``DOCKER_ARGS`` and expanded unquoted, hence the path check.
+        """
+        models_dir = self.config.models_dir or "/root/.ainode/models"
+        # The SOURCE of a -v goes to the host daemon, which reads it literally.
+        # Passing our own container view mounted whatever sat at
+        # /root/.ainode/models on the host — root's home, not the installing
+        # user's, and usually empty. See core.config.host_path.
+        models_dir_host = host_path(models_dir)
+        if not _is_safe_path_arg(models_dir_host):
+            raise EugrBackendError(
+                f"Refusing to pass models_dir {models_dir_host!r} to the launcher: it "
+                f"is expanded unquoted into the docker run arguments, so "
+                f"whitespace or a shell metacharacter there injects docker "
+                f"flags rather than naming a directory."
+            )
+        extra_docker_args = ["-v", f"{models_dir_host}:{ENGINE_MODELS_DIR}"]
+        if shim_container_path is not None:
+            # Mount the shared dir read-only and replace the vllm_node
+            # container's default entrypoint with the shim. The shim detects
+            # local HCAs, exports NCCL_IB_HCA, and execs the original CMD
+            # (typically ``sleep infinity`` from eugr's launcher).
+            extra_docker_args.extend([
+                "-v", "/mnt/shared-models:/mnt/shared-models:ro",
+                "--entrypoint", shim_container_path,
+            ])
+        env = self._build_env()
+        env["VLLM_SPARK_EXTRA_DOCKER_ARGS"] = " ".join(extra_docker_args)
+        return env
+
     def _transfer_ip(self, peer_ip: str) -> str:
         """Address to push bulk data to ``peer_ip`` over.
 
@@ -850,7 +880,17 @@ class EugrBackend(EngineBackend):
         EUGR_ENV_FILE.write_text("\n".join(lines) + "\n")
 
     def _write_distributed_launch_script(self) -> Path:
-        """Emit a ``vllm serve`` script for eugr to execute inside the container."""
+        """Back-compat alias — the distributed script for the current plan."""
+        return self._write_launch_script(self._parallel_plan())
+
+    def _write_launch_script(self, plan: ParallelPlan, solo: bool = False) -> Path:
+        """Emit a ``vllm serve`` script for eugr to execute inside the container.
+
+        One writer for both paths. ``solo`` drops the Ray executor and the
+        parallelism flags: with a single rank there is nothing to place and
+        nothing to split, and the launcher would otherwise read the flags and
+        size a node list from them.
+        """
         gpu = detect_gpu()
         dtype_line = ""
         if gpu and gpu.unified_memory:
@@ -885,22 +925,32 @@ class EugrBackend(EngineBackend):
         # launch-cluster.sh), so they have to appear here verbatim and not only
         # in the env. Previously this hardcoded "--pipeline-parallel-size 1",
         # which is why the UI's Pipeline pill could never do anything.
-        plan = self._parallel_plan()
-        parallel_lines = f"    --tensor-parallel-size {plan.tensor_parallel_size} \\\n"
-        parallel_lines += f"    --pipeline-parallel-size {plan.pipeline_parallel_size} \\\n"
-        if plan.data_parallel_size > 1:
-            parallel_lines += f"    --data-parallel-size {plan.data_parallel_size} \\\n"
+        parallel_lines = ""
+        executor_line = ""
+        if not solo:
+            parallel_lines = f"    --tensor-parallel-size {plan.tensor_parallel_size} \\\n"
+            parallel_lines += f"    --pipeline-parallel-size {plan.pipeline_parallel_size} \\\n"
+            if plan.data_parallel_size > 1:
+                parallel_lines += f"    --data-parallel-size {plan.data_parallel_size} \\\n"
+            executor_line = "    --distributed-executor-backend ray \\\n"
+
+        # Recipe passthrough, same as the solo/nvidia paths: a model whose
+        # published recipe needs flags AINode does not model must be able to
+        # carry them here too, or the UI's Advanced fields are inert on this
+        # backend.
+        for arg in (getattr(self.config, "extra_vllm_args", None) or []):
+            extra += f"    {arg} \\\n"
 
         script = f"""#!/bin/bash
-# Auto-generated by ainode EugrBackend.start_distributed. Do not edit.
+# Auto-generated by ainode EugrBackend. Do not edit.
 {env_init_hook}
 vllm serve {self.config.model} \\
     --host 0.0.0.0 --port {self.config.api_port} \\
-    --distributed-executor-backend ray \\
-{parallel_lines}    --gpu-memory-utilization {self.config.gpu_memory_utilization} \\
+{executor_line}{parallel_lines}    --gpu-memory-utilization {self.config.gpu_memory_utilization} \\
 {dtype_line}{extra}    --download-dir {ENGINE_MODELS_DIR}
 """
-        target = EUGR_LAUNCHER.parent / "examples" / "ainode-distributed.sh"
+        name = "ainode-solo.sh" if solo else "ainode-distributed.sh"
+        target = EUGR_LAUNCHER.parent / "examples" / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(script)
         target.chmod(0o755)

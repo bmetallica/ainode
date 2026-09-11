@@ -18,6 +18,8 @@ Parent: `../../AGENTS.md` · State / "why" / history: Obsidian Vault → `Titani
 - **`--gpu-memory-utilization` target `0.85`** (config default is `0.9`).
 - `--kv-cache-dtype fp8` is required for long context (32k+) or it OOMs.
 
+- **Never spawn `vllm` from AINode's own process.** The orchestrator container is `python:3.12-slim` — no CUDA, no vLLM, no NCCL — so `Popen(["vllm", ...])` fails with `[Errno 2] No such file or directory: 'vllm'`. Both backends run the engine in its own container: eugr through `launch-cluster.sh` (`--solo` for one node, plain for many), nvidia through `docker run`. `_build_solo_cmd` survives only as the argv builder for that script.
+
 ## Values that reach launch-cluster.sh (security)
 
 - **Never write an unvalidated string into the launcher `.env` or into `VLLM_SPARK_EXTRA_DOCKER_ARGS`.** Upstream re-quotes every `CONTAINER_*` value by interpolating it into a Python one-liner (`launch-cluster.sh`: `python3 -c "…shlex.quote('$value')…"`), so a single quote in the value closes that literal and the rest runs as code. `VLLM_SPARK_EXTRA_DOCKER_ARGS` is worse: it is expanded **unquoted** into `docker run`, so whitespace injects flags — `-v /:/host` or `--privileged` is a host compromise.

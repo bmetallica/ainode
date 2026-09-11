@@ -57,6 +57,28 @@ Versions follow [Semantic Versioning](https://semver.org/).
   to do when the registry has none yet instead of surfacing docker's bare
   "manifest unknown".
 
+### Fixed
+- **A solo launch on the eugr backend works again.** `start_solo()` spawned
+  `vllm` as a subprocess of AINode's own container, which has been
+  `python:3.12-slim` since the orchestrator and engine images were split — so
+  every single-node load failed with
+  `Launch failed: [Errno 2] No such file or directory: 'vllm'`. It now runs the
+  engine in its own container through the launcher's `--solo` mode, the same
+  path the distributed launch uses.
+- **Per-load overrides reach a distributed launch.** `max_model_len`,
+  `extra_vllm_args`, `kv_cache_dtype`, `quantization`, `engine_image` and
+  `served_model_name` were accepted on a solo load and silently dropped on
+  `/api/sharding/launch` — the launch that most needs a batching flag or a
+  context limit was the one that could not carry them. Both routes now share
+  one parser. The eugr backend also emits `extra_vllm_args` into its launch
+  script, without which the new UI fields were inert on that backend.
+
+### Added
+- **Concurrency controls in the launch panel.** An *Advanced* section exposes
+  concurrent requests (`--max-num-seqs`), max context and free-form vLLM flags,
+  with a note that the KV cache — memory fraction × context × concurrency — is
+  what actually bounds how many people can share a model.
+
 ### Security
 - **Config values that reach the cluster launcher are validated.** Upstream's
   `launch-cluster.sh` re-quotes every `CONTAINER_*` value by interpolating it
