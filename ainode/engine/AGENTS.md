@@ -26,6 +26,13 @@ Parent: `../../AGENTS.md` · State / "why" / history: Obsidian Vault → `Titani
 - **Data parallelism is unverified on this hardware** — documented upstream, no recipe behind it. `recommend_strategy()` never picks it; it stays an explicit operator choice. If you verify it, say so here.
 - Emit a `--*-parallel-size` flag only when that axis is > 1, so a solo serve and a plain TP launch produce the command line they always did.
 
+## Losing a member node
+
+- A distributed instance whose member node disappears keeps running on the head but has lost the ranks Ray placed there — it **cannot serve**. `/api/cluster/resources` reports it `degraded` with `missing_peer_ips`; the UI badges it amber and offers RELAUNCH.
+- **The head never relaunches by itself.** A model spread across three nodes usually does not fit on two, so an automatic retry trades a visible outage for an OOM. `/api/sharding/relaunch` is the explicit action, and it refuses with a reason (bad axis, or the weights no longer fit) rather than trying.
+- Relaunch **re-plans** for the smaller node set — a TP=4 instance losing a node comes back as PP=3, never the impossible TP=3 — and delegates placement to `handle_sharding_launch` so there is one launch implementation, not two.
+- `save_instance_manifest` still skips distributed instances, so a head restart does not bring them back. That is unchanged and deliberate.
+
 ## Fabric topology (mesh vs. direct)
 
 - `ainode/cluster/topology.py` classifies by **active CX7 link count**: 2 = `DIRECT`, 4 = `MESH`, anything else = `UNKNOWN`. `UNKNOWN` behaves exactly like `DIRECT` — degrade to current behaviour, never refuse to launch.

@@ -1075,8 +1075,15 @@ async def handle_cluster_resources(request: web.Request) -> web.Response:
         iid = inst.get("instance_id", "") or ""
         peers = list(inst.get("peer_ips", []) or [])
         peer_node_ids, member_names = [], [head.node_name]
+        # A peer_ip with no online member behind it is a node that has gone
+        # away since this instance launched. The instance is still *running* on
+        # the head, but its ranks are incomplete — vLLM loses the ranks Ray
+        # placed there — so it is reported degraded rather than healthy.
+        missing_peer_ips = []
         for ip in peers:
             m = by_fabric.get(ip)
+            if m is None:
+                missing_peer_ips.append(ip)
             peer_node_ids.append(m.node_id if m else ip)
             member_names.append(m.node_name if m else ip)
         # model can be stale ("") if the head started idle; it's authoritative in
@@ -1097,6 +1104,13 @@ async def handle_cluster_resources(request: web.Request) -> web.Response:
             # Ready-made badge text ("PP=3", "TP=2 · PP=2") so the UI does not
             # re-derive the label from three sizes in three places.
             "parallel_label": InstanceRecord.from_dict(inst).parallel_label(),
+            # Peers this instance was launched across that are no longer online,
+            # and the node_ids that ARE — what a relaunch would run on.
+            "missing_peer_ips": missing_peer_ips,
+            "degraded": bool(missing_peer_ips),
+            "surviving_node_ids": [head.node_id] + [
+                by_fabric[ip].node_id for ip in peers if ip in by_fabric
+            ],
             "model": model,
             "status": inst.get("status", "serving"),
         }

@@ -37,7 +37,24 @@ Versions follow [Semantic Versioning](https://semver.org/).
   address, or a mesh coordinating over wireless. The remaining doctor sections
   are still stubs.
 
+- **A degraded instance is visible and relaunchable** — when a member node goes
+  away, the instance keeps running on the head but has lost the ranks Ray placed
+  there and cannot serve. `/api/cluster/resources` now reports `degraded` plus
+  `missing_peer_ips` and `surviving_node_ids`; the UI badges it amber, names the
+  lost node, and offers RELAUNCH. `POST /api/sharding/relaunch` re-plans the
+  split for the smaller node set (a TP=4 instance losing a node returns as PP=3,
+  not an impossible TP=3) and refuses with a reason — bad axis, or the weights no
+  longer fitting — instead of launching into an OOM. The head never does this by
+  itself: a model spread over three nodes usually does not fit on two.
+
 ### Fixed
+- **A node going offline no longer takes the head down with it** — a head
+  configured across three Sparks with one powered off crashed on boot
+  (`start_distributed()` raises on an unreachable peer, and the exception
+  escaped `cmd_start` before `run_server`), which systemd's `Restart=always`
+  turned into a restart every 10 seconds: no UI to read the reason from, and no
+  way to relaunch on the nodes that were up. The node now serves the UI with no
+  engine and says which way out to take.
 - **Tensor-parallel across 3 nodes is refused with the alternatives named**, at
   the API, before anything launches. TP splits attention heads and head counts
   are powers of two, so TP=3 has no models behind it; previously the launch path

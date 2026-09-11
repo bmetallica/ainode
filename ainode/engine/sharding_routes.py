@@ -33,6 +33,7 @@ def register_sharding_routes(app: web.Application) -> None:
     """Register sharding API endpoints on the aiohttp app."""
     app.router.add_get("/api/sharding/plan", handle_sharding_plan)
     app.router.add_post("/api/sharding/launch", handle_sharding_launch)
+    app.router.add_post("/api/sharding/relaunch", handle_sharding_relaunch)
     app.router.add_get("/api/sharding/status", handle_sharding_status)
 
 
@@ -333,6 +334,171 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         "strategy": plan.strategy.value,
         "parallel_plan": plan.to_dict(),
     })
+
+
+async def handle_sharding_relaunch(request: web.Request) -> web.Response:
+    """POST /api/sharding/relaunch — re-run a degraded instance on the nodes
+    that are still online.
+
+    JSON body:
+        model (required): the model of the instance to relaunch
+        strategy (optional): axis to use; default auto (re-planned for the
+            smaller node set, so a TP=4 instance losing a node comes back as
+            PP=3 rather than an impossible TP=3)
+
+    An instance keeps running on the head after a member node disappears, but
+    with ranks that Ray placed on the lost node — it cannot serve. Relaunching
+    is deliberately an explicit action rather than something the head does by
+    itself: a model spread across three nodes usually does not fit on two, and
+    guessing would trade a visible outage for an OOM. This endpoint therefore
+    checks the fit first and explains a refusal instead of trying.
+    """
+    from ainode.core.config import NodeConfig
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    model = body.get("model")
+    if not model:
+        return web.json_response({"error": "model field required"}, status=400)
+
+    cluster: ClusterState = request.app["cluster_state"]
+    config: NodeConfig = request.app["config"]
+
+    manager = request.app.get("instances")
+    instance = manager.by_model(model) if manager is not None else None
+    if instance is None:
+        return web.json_response(
+            {"error": f"No instance is running for {model!r} on this node."},
+            status=404,
+        )
+
+    launched_peers = list(getattr(instance.record, "peer_ips", []) or [])
+    if not launched_peers:
+        return web.json_response(
+            {"error": f"{model!r} is a single-node instance; there is nothing "
+                      f"to relaunch across."},
+            status=409,
+        )
+
+    # Which of the nodes it launched across are still online?
+    online = {
+        (getattr(n, "fabric_ip", "") or ""): n
+        for n in cluster.members()
+        if (n.status.value if hasattr(n.status, "value") else str(n.status))
+        in ("online", "member-ready", "serving")
+    }
+    surviving = [online[ip] for ip in launched_peers if ip in online]
+    missing = [ip for ip in launched_peers if ip not in online]
+
+    if not missing:
+        return web.json_response({
+            "error": f"{model!r} is not degraded — all "
+                     f"{len(launched_peers)} peer(s) are online.",
+            "hint": "Use /api/sharding/launch to change its placement.",
+        }, status=409)
+
+    node_ids = [config.node_id or "head"] + [n.node_id for n in surviving]
+    node_count = len(node_ids)
+
+    # Two ways a relaunch can be impossible, and the caller deserves to know
+    # which. First: no split of this axis fills the surviving nodes (a TP=4
+    # instance down to 3 nodes has no valid tensor split).
+    strategy = body.get("strategy") or "auto"
+    try:
+        plan = plan_for(strategy, node_count)
+    except ParallelPlanError as exc:
+        return web.json_response({
+            "error": str(exc), "model": model,
+            "surviving_node_ids": node_ids, "missing_peer_ips": missing,
+        }, status=422)
+
+    # Second: the weights no longer fit. This is the common case and the whole
+    # reason the head does not do this by itself.
+    fit_error = _fit_check(model, surviving, cluster, config, plan)
+    if fit_error:
+        return web.json_response({
+            "error": fit_error, "model": model,
+            "surviving_node_ids": node_ids, "missing_peer_ips": missing,
+            "parallel_plan": plan.to_dict(),
+        }, status=422)
+
+    logger.info(
+        "Relaunching %s on %d surviving node(s) as %s (lost %s)",
+        model, node_count, plan.label(), ", ".join(missing),
+    )
+
+    # Delegate to the launch path so placement, transfer-address resolution and
+    # instance bookkeeping have exactly one implementation. It stops the
+    # existing instance for this model before starting the replacement.
+    class _ReqShim:
+        def __init__(self, orig, payload):
+            self._o = orig
+            self._b = payload
+
+        def __getattr__(self, k):
+            return getattr(self._o, k)
+
+        async def json(self):
+            return self._b
+
+    payload = {"model": model, "node_ids": node_ids,
+               "strategy": plan.strategy.value}
+    if body.get("gpu_memory_utilization") is not None:
+        payload["gpu_memory_utilization"] = body["gpu_memory_utilization"]
+
+    resp = await handle_sharding_launch(_ReqShim(request, payload))
+    if resp.status == 200:
+        merged = json.loads(resp.body)
+        merged["relaunched_from"] = {
+            "node_count": 1 + len(launched_peers),
+            "missing_peer_ips": missing,
+        }
+        return web.json_response(merged)
+    return resp
+
+
+def _fit_check(model, surviving_nodes, cluster, config, plan) -> str:
+    """Return a human-readable reason the model will not fit, or "".
+
+    Deliberately conservative and deliberately approximate: it uses the same
+    size heuristic the planner shows in the UI preview, so a refusal here
+    matches the number the operator already saw. It exists to catch the
+    obvious "three nodes' worth of weights onto two" case before a launch
+    burns minutes and ends in an OOM — not to be authoritative about memory.
+    """
+    from ainode.engine.sharding import MEMORY_OVERHEAD_FACTOR, estimate_model_size
+
+    local = cluster.get_node(config.node_id) if config.node_id else None
+    nodes = ([local] if local is not None else []) + list(surviving_nodes)
+    if not nodes:
+        return ""
+
+    required = estimate_model_size(model) * MEMORY_OVERHEAD_FACTOR
+    # Data parallelism keeps a full replica per node; the others divide the
+    # weights, so the per-node share is what has to fit.
+    per_node = required if plan.data_parallel_size > 1 else required / len(nodes)
+
+    def free_gb(n):
+        total = float(getattr(n, "gpu_memory_gb", 0) or 0)
+        used = float(getattr(n, "gpu_memory_used_mb", 0) or 0) / 1024.0
+        return max(0.0, total - used)
+
+    short = [n for n in nodes if free_gb(n) < per_node]
+    if not short:
+        return ""
+
+    names = ", ".join(
+        f"{getattr(n, 'node_name', n.node_id)} (~{free_gb(n):.0f} GB free)"
+        for n in short
+    )
+    return (
+        f"{model} needs ~{per_node:.0f} GB per node as {plan.label()} across "
+        f"{len(nodes)} node(s), but {names} cannot hold that. Free memory on "
+        f"those nodes, bring the missing node back, or load a smaller model."
+    )
 
 
 async def handle_sharding_status(request: web.Request) -> web.Response:

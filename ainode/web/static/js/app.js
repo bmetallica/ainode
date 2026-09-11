@@ -718,8 +718,12 @@ const AINode = {
         // axis. parallel_label comes from the server ("TP=4", "PP=3"); the
         // fallback covers a head still running an older build.
         badge: (self.instanceWorldSize(di) > 1)
-          ? ('DISTRIBUTED · ' + (di.parallel_label || ('TP=' + di.tensor_parallel_size)))
+          ? ((di.degraded ? 'DEGRADED · ' : 'DISTRIBUTED · ')
+             + (di.parallel_label || ('TP=' + di.tensor_parallel_size)))
           : 'SOLO · TP=1',
+        degraded: !!di.degraded,
+        missingPeers: di.missing_peer_ips || [],
+        survivingNodeIds: di.surviving_node_ids || [],
       });
     }
 
@@ -813,13 +817,24 @@ const AINode = {
 
     container.innerHTML = instances.map(function (inst, idx) {
       var nodeList = inst.nodes.map(function (n) { return self.esc(n); }).join(', ');
-      var badgeClass = inst.strategy === 'distributed' ? 'distributed' : 'single';
+      var badgeClass = inst.degraded ? 'degraded'
+        : (inst.strategy === 'distributed' ? 'distributed' : 'single');
+      // A degraded instance is still running on the head but has lost the ranks
+      // Ray placed on the node that went away — it cannot serve. Say which node
+      // is gone and offer the one action that helps.
+      var degradedNote = inst.degraded
+        ? '<div class="instance-degraded">Lost ' +
+            self.esc((inst.missingPeers || []).join(', ')) +
+            ' — this instance cannot serve until it is relaunched on the ' +
+            ((inst.survivingNodeIds || []).length || 1) + ' node(s) still online.' +
+          '</div>'
+        : '';
       return '<div class="instance-card" data-idx="' + idx + '">' +
         '<div class="instance-model">' + self.esc(inst.model) + '</div>' +
         '<div class="instance-meta">' +
         '<span class="instance-strategy ' + badgeClass + '">' + self.esc(inst.badge || inst.strategy) + '</span>' +
         '<span class="instance-nodes">' + nodeList + '</span>' +
-        '</div>' +
+        '</div>' + degradedNote +
         '<div class="instance-footer">' +
         (inst.status === 'READY'
           ? '<span class="instance-status ready">READY</span>'
@@ -829,6 +844,9 @@ const AINode = {
                 '<span style="display:inline-block;width:90px;height:5px;background:#1f2a1f;border-radius:3px;margin:0 8px;vertical-align:middle;overflow:hidden">' +
                 '<span style="display:block;height:100%;width:' + pi[1] + '%;background:#76c043;transition:width .4s"></span></span>';
             })()) +
+        (inst.degraded
+          ? '<button class="instance-relaunch" data-model="' + self.esc(inst.model) + '">RELAUNCH</button>'
+          : '') +
         '<button class="instance-delete" data-model="' + self.esc(inst.model) + '">UNLOAD</button>' +
         '</div>' +
         '</div>';
@@ -841,6 +859,41 @@ const AINode = {
         self.deleteInstance(model);
       });
     });
+
+    container.querySelectorAll('.instance-relaunch').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        self.relaunchInstance(btn.dataset.model, btn);
+      });
+    });
+  },
+
+  // Re-run a degraded instance on the nodes still online. The server re-plans
+  // the split for the smaller node set (a TP=4 instance down to 3 nodes comes
+  // back as PP=3, not an impossible TP=3) and refuses with a reason when the
+  // weights no longer fit — that refusal is the useful answer, so show it in
+  // full rather than a generic failure.
+  async relaunchInstance(model, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'RELAUNCHING...'; }
+    try {
+      var resp = await fetch('/api/sharding/relaunch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: model }),
+      });
+      var data = await resp.json().catch(function () { return {}; });
+      if (resp.ok) {
+        var how = (data.parallel_plan && data.parallel_plan.label) || '';
+        this.toast('Relaunching ' + model + (how ? ' as ' + how : ''), 'success');
+      } else {
+        this.toast(data.error || ('Relaunch failed (' + resp.status + ')'), 'error');
+      }
+    } catch (err) {
+      this.toast('Relaunch failed: ' + err, 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'RELAUNCH'; }
+      this.refresh();
+    }
   },
 
   async deleteInstance(model) {
