@@ -276,7 +276,9 @@ class NvidiaBackend(EngineBackend):
         3. SSH to each peer and run ``docker run -d`` there too, pointing
            the workers at the head fabric IP.
         4. ``docker exec`` into the local head container to invoke
-           ``vllm serve --tensor-parallel-size N`` with N = 1 + len(peers).
+           ``vllm serve`` with the parallelism flags for
+           :meth:`_parallel_plan` — tensor, pipeline or data, filling
+           1 + len(peers) GPUs.
 
         The ``Popen`` handle we keep is for the ``vllm serve`` exec
         (step 4); the Ray containers on head + peers are managed by

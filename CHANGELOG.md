@@ -8,6 +8,54 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **3-node switchless mesh support** — three DGX Sparks cabled in a ring, each
+  ConnectX-7 port a private link to a different neighbour, coordinating over the
+  shared 10G Ethernet. `ainode/cluster/topology.py` classifies the fabric by
+  active CX7 link count (2 = direct-attach, 4 = mesh, anything else = unknown and
+  treated as direct-attach) and derives from it which interface carries
+  coordination and which devices carry RDMA. On a mesh, Ray/discovery/SSH move to
+  the shared Ethernet — no CX7 subnet reaches all three nodes — while NCCL gets
+  all four RoCE devices unfiltered plus `NCCL_NET_PLUGIN=none`,
+  `NCCL_IB_MERGE_NICS=0` and `NCCL_IB_SUBNET_AWARE_ROUTING=1`. New
+  `coord_interface` / `rdma_hcas` config fields override detection. Heuristic and
+  NCCL values adapted from eugr/spark-vllm-docker's `autodiscover.sh` (MIT).
+- **Second address list for bulk transfer** — every node announces its RoCE link
+  addresses (`ib_ips`). At launch the head picks, per peer, whichever sits on a
+  subnet it also has a link on, and streams model weights over that direct cable
+  instead of the coordination Ethernet. Peers with no shared subnet, or running an
+  older build, transfer over the coordination path as before. Mirrors upstream's
+  `CLUSTER_NODES` / `COPY_HOSTS` split without its SSH sweep.
+- **Pipeline- and data-parallel launches** — `ainode/engine/parallelism.py` owns
+  the split (`Strategy`, `ParallelPlan`, `plan_for`, `validate_plan`). `auto`
+  picks tensor where the node count allows and pipeline otherwise. Threaded
+  through the launch route, both backends, the instance record, the announcement
+  and the UI, which gains a Data pill and a strategy-aware fit hint.
+- **`ainode doctor` reports the fabric** — link count, classification,
+  coordination interface and IP, the derived `NCCL_IB_HCA` and mesh NCCL vars,
+  and warnings for an unexpected link count, a coordination interface with no
+  address, or a mesh coordinating over wireless. The remaining doctor sections
+  are still stubs.
+
+### Fixed
+- **Tensor-parallel across 3 nodes is refused with the alternatives named**, at
+  the API, before anything launches. TP splits attention heads and head counts
+  are powers of two, so TP=3 has no models behind it; previously the launch path
+  built it anyway and failed deep in vLLM startup.
+- **The UI's Pipeline pill does something** — `/api/sharding/launch` read the
+  `strategy` field and ignored it ("we accept but don't gate on strategy here"),
+  and eugr's generated launch script hardcoded `--pipeline-parallel-size 1`.
+  Both spellings in circulation (`tensor` from the UI, `tensor_parallel` from
+  the docs) are now accepted and acted on.
+- **An incomplete launcher `.env` is refused instead of written** — pointing
+  `cluster_interface` at the 10G port left the HCA subnet filter with no match
+  and wrote `IB_IF=` empty, which dropped `launch-cluster.sh` into its own
+  autodiscovery, which needs `ibdev2netdev` — not installed in the AINode image.
+- **`discovery_port` default is 5679**, matching `scripts/install.sh` and the
+  docs. The code default was 5678, so a hand-installed node could not see an
+  installer-provisioned one. Installed nodes carry an explicit value and are
+  unaffected.
+
 ---
 
 ## [0.5.5] — 2026-08-19
