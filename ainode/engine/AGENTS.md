@@ -4,7 +4,7 @@ Parent: `../../AGENTS.md` · State / "why" / history: Obsidian Vault → `Titani
 
 ## Edit contract — DISTRIBUTED LAUNCH (dangerous, read before any change)
 
-- **Launch distributed serves via the systemd path, NOT the dashboard LAUNCH button / `POST /api/sharding/launch`** (`sharding_routes.py`). That path auto-discovers peers from mgmt-LAN UDP source IPs (`192.168.0.x`), lands a Ray worker on a non-GPU address, and dies with `RuntimeError: current platform does not support ray` (and pollutes Ray with mgmt-IP nodes). Use `config.json` `distributed_mode="head"` + explicit fabric `peer_ips` + `systemctl restart ainode`.
+- **`POST /api/sharding/launch` (the dashboard LAUNCH button) is a supported path.** It once auto-discovered peers from mgmt-LAN UDP source IPs (`192.168.0.x`), landing a Ray worker on a non-GPU address and dying with `RuntimeError: current platform does not support ray`. That is fixed: it resolves each selected member to its **announced** `fabric_ip` and returns 422 rather than falling back to a mgmt address when one is missing. Do not reintroduce a `peer_ip` fallback there. The systemd path (`config.json` `distributed_mode="head"` + explicit `peer_ips` + `systemctl restart ainode`) still works and is the right choice for a fixed, always-on placement; the API path is what the UI uses and the only way to pick a non-tensor split.
 - **`peer_ips` are the fabric (`10.100.0.x`)** — never mgmt LAN or Tailscale addresses. Exception: on a **switchless mesh** the fabric address IS the shared Ethernet (see below), because no CX7 subnet reaches every node.
 - **vLLM flags are emitted by the backend, not hand-edited per run.** Change them in `backends/`, not by asking a user to edit a command.
 - **Never read `config.cluster_interface` directly in a backend.** Go through `ainode.cluster.topology.topology_for_config(config)` and use `coord_interface` (Ray / SSH / socket env) and `rdma_hcas` (`NCCL_IB_HCA`). On a direct-attach or switched cluster those resolve back to `cluster_interface` and today's local HCA detection, so the 2-/4-node TP setups are unaffected; on a 4-active-link mesh they diverge, and reading the raw field silently pins coordination to a link that reaches one neighbour.
@@ -17,6 +17,13 @@ Parent: `../../AGENTS.md` · State / "why" / history: Obsidian Vault → `Titani
 - **Never add `--enable-expert-parallel`** — it hangs on this MoE/hardware.
 - **`--gpu-memory-utilization` target `0.85`** (config default is `0.9`).
 - `--kv-cache-dtype fp8` is required for long context (32k+) or it OOMs.
+
+## Values that reach launch-cluster.sh (security)
+
+- **Never write an unvalidated string into the launcher `.env` or into `VLLM_SPARK_EXTRA_DOCKER_ARGS`.** Upstream re-quotes every `CONTAINER_*` value by interpolating it into a Python one-liner (`launch-cluster.sh`: `python3 -c "…shlex.quote('$value')…"`), so a single quote in the value closes that literal and the rest runs as code. `VLLM_SPARK_EXTRA_DOCKER_ARGS` is worse: it is expanded **unquoted** into `docker run`, so whitespace injects flags — `-v /:/host` or `--privileged` is a host compromise.
+- Device names go through `topology.is_safe_device_name()`, paths through `eugr._is_safe_path_arg()`. Both are enforced at the **sink** (`_write_eugr_env`, `start_distributed`) as well as at `PATCH /api/config`, because `config.json` is also editable by hand.
+- This matters because **the API is unauthenticated unless the operator turns auth on**, and `cluster_interface` / `coord_interface` / `rdma_hcas` / `models_dir` are all PATCHable. Adding another PATCHable field that reaches the launcher means adding a validator for it.
+- The quoting flaw is upstream's (eugr/spark-vllm-docker, MIT) and is not ours to patch from here. Not feeding it hostile input is.
 
 ## Parallelism (tensor / pipeline / data)
 

@@ -150,6 +150,35 @@ class TopologyInfo:
         }
 
 
+# A Linux network-interface name is at most IFNAMSIZ-1 = 15 bytes and cannot
+# contain "/" or whitespace; RDMA device names follow the same shape. Anything
+# outside this set is not a device name, and several of these values end up in
+# a file that a shell script parses — see is_safe_device_name().
+_DEVICE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
+
+
+def is_safe_device_name(name: str) -> bool:
+    """True if ``name`` is shaped like a netdev / RDMA device name.
+
+    Not cosmetic. ``coord_interface`` and ``rdma_hcas`` are written into
+    ``/opt/spark-vllm-docker/.env``, and upstream's ``launch-cluster.sh``
+    re-quotes every ``CONTAINER_*`` value by interpolating it into a Python
+    one-liner:
+
+        escaped_value=$(python3 -c "import shlex; print(shlex.quote('$value'))")
+
+    A value containing a single quote closes that literal, so a crafted device
+    name becomes code that runs on the head at launch time. These fields are
+    settable over ``PATCH /api/config``, and the API is unauthenticated unless
+    the operator turns auth on — so the value has to be rejected before it is
+    ever written, not quoted afterwards.
+
+    The flaw is upstream's (eugr/spark-vllm-docker, MIT) and is not ours to
+    patch from here; not feeding it hostile input is.
+    """
+    return bool(isinstance(name, str) and _DEVICE_NAME_RE.match(name))
+
+
 def detect_cx7_links() -> List[CX7Link]:
     """Return every RoCE device whose port is ACTIVE, with its netdev + IPv4.
 
@@ -433,6 +462,7 @@ __all__ = [
     "classify_fabric",
     "coordination_interface",
     "detect_cx7_links",
+    "is_safe_device_name",
     "detect_topology",
     "local_ib_ips",
     "topology_for_config",

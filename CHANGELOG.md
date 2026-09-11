@@ -57,7 +57,35 @@ Versions follow [Semantic Versioning](https://semver.org/).
   to do when the registry has none yet instead of surfacing docker's bare
   "manifest unknown".
 
+### Security
+- **Config values that reach the cluster launcher are validated.** Upstream's
+  `launch-cluster.sh` re-quotes every `CONTAINER_*` value by interpolating it
+  into a Python one-liner, so a single quote in the value closes that literal
+  and the remainder runs as code on the head; and `VLLM_SPARK_EXTRA_DOCKER_ARGS`
+  is expanded unquoted into `docker run`, so whitespace injects docker flags
+  (`-v /:/host`, `--privileged`). `cluster_interface`, `coord_interface`,
+  `rdma_hcas` and `models_dir` are all settable over `PATCH /api/config`, which
+  is unauthenticated unless the operator enables auth. Device names are now
+  checked against the Linux interface-name shape and paths against a
+  shell-safe set, at the sink as well as at the API — `config.json` can be
+  edited by hand too. The quoting flaw itself is upstream's and is not patched
+  from here.
+
 ### Fixed
+- **Malformed request bodies return 4xx instead of 500.** `(body.get("model")
+  or "").strip()` assumed the body decoded to an object and the field held a
+  string; a client controls both, and `[1, 2]` or `{"model": 123}` raised
+  `AttributeError` out of the handler, which aiohttp turned into a 500 with a
+  traceback. New coercion helpers (`ainode/api/params.py`) make the cast total
+  across the model-load, unload, download, delete and sharding endpoints. A
+  non-string `strategy` is still rejected rather than silently defaulted — a
+  bogus value would otherwise hand the caller a working launch on an axis they
+  did not ask for.
+- **Fabric detection no longer blocks the event loop or runs twice.** The
+  launch path ran it inline in an async handler, where a NIC in a bad state
+  would freeze every other request — including the chat proxy — for as long as
+  the `ip` timeouts took; it now runs in an executor. Startup ran two full
+  detections where one sufficed, halving the `ip` invocations.
 - **A completed repo download no longer reports stale progress** — the progress
   poller and the completion write raced. `poll_stop.set()` only ends the poller's
   *next* iteration, so a poller already awaiting its directory measurement still

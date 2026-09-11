@@ -29,6 +29,24 @@ edit when the fork moves. Docker Hub mirroring stays off unless the
 secret: GitHub → Packages → `ainode` → Package settings → Change visibility.
 `install.sh` resolves tags anonymously and expects a public image.
 
+## First: switch CI on
+
+GitHub disables workflows on a **forked** repository until someone enables them
+once by hand. The repo-level API reports `enabled: true` and each workflow reads
+`state: active` while that gate is still closed, so the absence is easy to miss —
+this fork merged its first four pull requests with nothing running.
+
+Open **Actions** in the repository and click *"I understand my workflows, go
+ahead and enable them"*. There is no API for it. Confirm afterwards:
+
+```bash
+gh run list --repo <owner>/ainode --limit 5
+```
+
+An empty list on a repository that has had pushes means the gate is still shut.
+`tests.yml` then runs `ruff` and `pytest` on every pull request and on pushes to
+`main`; `publish-image.yml` stays manual / tag-triggered.
+
 ## Option B — build locally on one Spark
 
 No CI, no registry. Useful for trying a branch on real hardware.

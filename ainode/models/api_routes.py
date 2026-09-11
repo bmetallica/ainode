@@ -14,6 +14,7 @@ from typing import Optional
 
 from aiohttp import web
 
+from ainode.api.params import str_field
 from ainode.core.gpu import detect_gpu
 from ainode.models.registry import ModelManager
 
@@ -507,11 +508,11 @@ async def handle_model_load(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    model = (body.get("model") or "").strip()
+    model = str_field(body, "model")
     if not model:
         return web.json_response({"error": "model field required"}, status=400)
 
-    strategy_str = body.get("strategy", "auto")
+    strategy_str = str_field(body, "strategy", default="auto")
     try:
         strategy = ShardingStrategy(strategy_str)
     except ValueError:
@@ -713,7 +714,7 @@ async def handle_model_unload(request: web.Request) -> web.Response:
     # other stacked instances on this node serving. Falls through to the legacy
     # singleton teardown when no manager/model match (back-compat).
     manager = request.app.get("instances")
-    model = (body.get("model") or "").strip() if isinstance(body, dict) else ""
+    model = str_field(body, "model")
     if manager is not None and model:
         inst = manager.by_model(model)
         if inst is not None:
@@ -923,7 +924,7 @@ async def handle_delete_repo(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    hf_repo = (body.get("hf_repo") or body.get("model_id") or "").strip()
+    hf_repo = str_field(body, "hf_repo", "model_id")
     if not hf_repo or "/" not in hf_repo:
         return web.json_response({"error": "hf_repo required"}, status=400)
 
@@ -1011,7 +1012,7 @@ async def handle_cancel_download(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    job_id = (body.get("job_id") or "").strip()
+    job_id = str_field(body, "job_id")
     jobs: dict = request.app["download_jobs"]
 
     if not job_id or job_id not in jobs:

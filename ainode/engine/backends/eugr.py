@@ -35,7 +35,11 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from ainode.cluster import hca_discovery
-from ainode.cluster.topology import TopologyInfo, topology_for_config
+from ainode.cluster.topology import (
+    TopologyInfo,
+    is_safe_device_name,
+    topology_for_config,
+)
 from ainode.core.config import LOGS_DIR, NodeConfig
 from ainode.core.gpu import detect_gpu
 from ainode.engine.backends.base import EngineBackend
@@ -61,6 +65,22 @@ NCCL_INIT_SHARED_DIR = Path("/mnt/shared-models/.ainode")
 NCCL_INIT_SHARED_PATH = NCCL_INIT_SHARED_DIR / "nccl-env-init.sh"
 # In-container path used by ``--entrypoint`` AND by the head's exec-script source hook.
 NCCL_INIT_CONTAINER_PATH = "/mnt/shared-models/.ainode/nccl-env-init.sh"
+
+
+# Characters a path may contain before it is handed to launch-cluster.sh.
+# ``VLLM_SPARK_EXTRA_DOCKER_ARGS`` is appended to ``DOCKER_ARGS`` and expanded
+# UNQUOTED into the ``docker run`` line, so whitespace in a path does not just
+# break the mount — it injects additional docker flags. ``models_dir`` is
+# settable over ``PATCH /api/config``, which is unauthenticated unless the
+# operator enabled auth, and a flag like ``-v /:/host`` or ``--privileged``
+# there is a host compromise. Backslash and quotes are excluded too: the value
+# passes through a shell, and a plausible model path needs none of them.
+_SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_./@+:-]+$")
+
+
+def _is_safe_path_arg(path: str) -> bool:
+    """True if ``path`` is safe to interpolate into the launcher's docker args."""
+    return bool(isinstance(path, str) and path and _SAFE_PATH_RE.match(path))
 
 
 class EugrBackendError(RuntimeError):
@@ -166,10 +186,15 @@ class EugrBackend(EngineBackend):
         shim_container_path = self._publish_nccl_init_script()
 
         cmd = [str(EUGR_LAUNCHER), "--launch-script", str(launch_script)]
-        extra_docker_args = [
-            "-v",
-            f"{self.config.models_dir or '/root/.ainode/models'}:/models",
-        ]
+        models_dir = self.config.models_dir or "/root/.ainode/models"
+        if not _is_safe_path_arg(models_dir):
+            raise EugrBackendError(
+                f"Refusing to pass models_dir {models_dir!r} to the launcher: it "
+                f"is expanded unquoted into the docker run arguments, so "
+                f"whitespace or a shell metacharacter there injects docker "
+                f"flags rather than naming a directory."
+            )
+        extra_docker_args = ["-v", f"{models_dir}:/models"]
         if shim_container_path is not None:
             # Mount the shared dir read-only and replace the vllm_node
             # container's default entrypoint with the shim. The shim detects
@@ -684,6 +709,23 @@ class EugrBackend(EngineBackend):
         # name here — ``IB_IF=enP2p1s0f1np1`` — which produced a garbage
         # ``NCCL_IB_HCA=enP2p1s0f1np1`` (a netdev is not an HCA device).
         ib_hca = self._nccl_ib_hca() or ""
+
+        # Every value below lands in a file whose CONTAINER_* entries
+        # launch-cluster.sh re-quotes by interpolating them into a Python
+        # one-liner — a single quote in a device name becomes code that runs on
+        # the head. These fields are settable over PATCH /api/config, which is
+        # unauthenticated unless the operator enabled auth, so they are checked
+        # here at the sink as well as at that entry point: config.json can also
+        # be edited by hand. See topology.is_safe_device_name.
+        unsafe = [n for n in ([iface] + ib_hca.split(",") if ib_hca else [iface])
+                  if n and not is_safe_device_name(n)]
+        if unsafe:
+            raise EugrBackendError(
+                f"Refusing to write device name(s) {unsafe!r} into the launcher "
+                f".env: a network-interface or RDMA device name is at most 15 "
+                f"characters of [A-Za-z0-9_.-]. Check cluster_interface / "
+                f"coord_interface / rdma_hcas in config.json."
+            )
 
         if not iface or not ib_hca:
             raise EugrBackendError(

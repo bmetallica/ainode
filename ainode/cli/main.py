@@ -335,7 +335,7 @@ def cmd_stop(args):
     try:
         result = subprocess.run(
             ["pgrep", "-f", "ainode.cli.main|ainode start"],
-            capture_output=True, text=True
+            capture_output=True, text=True, timeout=10,
         )
         pids = [int(p) for p in result.stdout.strip().split("\n") if p.strip() and int(p) != os.getpid()]
     except Exception:
