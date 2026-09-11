@@ -36,7 +36,6 @@ Versions follow [Semantic Versioning](https://semver.org/).
   and warnings for an unexpected link count, a coordination interface with no
   address, or a mesh coordinating over wireless. The remaining doctor sections
   are still stubs.
-
 - **A degraded instance is visible and relaunchable** — when a member node goes
   away, the instance keeps running on the head but has lost the ranks Ray placed
   there and cannot serve. `/api/cluster/resources` now reports `degraded` plus
