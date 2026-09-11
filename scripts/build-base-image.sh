@@ -104,6 +104,52 @@ else
     exit 1
 fi
 
+# -- Patch eugr's Dockerfile: resolve upstream wheel pin conflicts ----------
+# The wheels come from eugr's ROLLING ``prebuilt-vllm-current`` release, so
+# EUGR_COMMIT does not pin them and a bad nightly fails the build outright:
+#
+#   quack-kernels==0.6.4 depends on nvidia-cutlass-dsl==4.6.2
+#   vllm==...d20260911  depends on nvidia-cutlass-dsl[cu13]==4.7.0
+#   => unsatisfiable
+#
+# The vLLM wheel pins quack-kernels==0.6.4 while itself requiring a newer
+# cutlass-dsl than 0.6.4 accepts. quack-kernels 0.6.5 requires
+# nvidia-cutlass-dsl>=4.7, which is exactly what vLLM asks for — so lifting the
+# lower bound resolves it with the version that actually supports the cutlass
+# vLLM wants. This is a stale pin in the wheel, not a version gamble.
+#
+# Set AINODE_UV_OVERRIDES="" to disable once upstream ships a coherent wheel,
+# or to a space-separated list of your own requirement strings.
+AINODE_UV_OVERRIDES="${AINODE_UV_OVERRIDES-quack-kernels>=0.6.5}"
+
+if [ -n "$AINODE_UV_OVERRIDES" ]; then
+    echo "==> Patching eugr Dockerfile: uv overrides ($AINODE_UV_OVERRIDES)"
+    OVERRIDES="$AINODE_UV_OVERRIDES" python3 - "$DOCKERFILE" <<'PATCH'
+import os, sys, pathlib
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+plain = "        uv pip install /workspace/wheels/*.whl; \\\n"
+if "ainode-override.txt" in text:
+    print("    already patched (idempotent re-run)")
+elif plain in text:
+    lines = " && ".join(
+        f"printf '%s\\n' {req!r} >> /tmp/ainode-override.txt"
+        for req in os.environ["OVERRIDES"].split()
+    )
+    patched = (
+        "        rm -f /tmp/ainode-override.txt && "
+        f"{lines} && \\\n"
+        "        uv pip install /workspace/wheels/*.whl "
+        "--override /tmp/ainode-override.txt; \\\n"
+    )
+    path.write_text(text.replace(plain, patched, 1))
+    print("    wheel install now passes --override")
+else:
+    sys.exit("!! expected wheel-install line not found; re-audit this patch")
+PATCH
+fi
+
 echo "==> Building eugr image (prebuilt vLLM wheels expected; ~12 min)"
 pushd "$WORKTREE" >/dev/null
 ./build-and-copy.sh --tag "vllm-node:${EUGR_SHORT}"

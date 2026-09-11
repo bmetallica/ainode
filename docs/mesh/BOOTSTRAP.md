@@ -102,7 +102,7 @@ detected below the floor.
 
 `build-and-copy.sh` fetches its vLLM wheel from eugr's **rolling**
 `prebuilt-vllm-current` release, so the pinned `EUGR_COMMIT` does not pin the
-wheel. A bad nightly there fails the build with something like:
+wheel. A nightly with a stale pin fails the build:
 
 ```
 Because quack-kernels==0.6.4 depends on nvidia-cutlass-dsl==4.6.2
@@ -110,22 +110,36 @@ and vllm==… depends on nvidia-cutlass-dsl[cu13]==4.7.0, …
 we can conclude that your requirements are unsatisfiable.
 ```
 
-That is upstream's wheel, not this repo. Options, in order of preference:
+`build-base-image.sh` handles this one: the vLLM wheel pins
+`quack-kernels==0.6.4` while itself requiring a newer `nvidia-cutlass-dsl` than
+0.6.4 accepts. `quack-kernels` 0.6.5 requires `nvidia-cutlass-dsl>=4.7`, which
+is exactly what vLLM asks for, so the default override
 
-1. **Wait and retry.** The tag is republished regularly; a broken closure is
-   usually corrected within a day.
-2. **Reuse a cached wheel set.** `build-and-copy.sh` keeps previously
-   downloaded wheels; a build that succeeded before can be repeated without a
-   fresh download. Check `~/.cache` for the wheel dir the script prints.
-3. **Force the resolution** with a uv override, accepting that the combination
-   is untested:
-   ```bash
-   docker build -f scripts/Dockerfile.ainode ... \
-     --build-arg UV_OVERRIDE="nvidia-cutlass-dsl==4.7.0"
-   ```
-   Only do this if you are prepared to verify the resulting engine actually
-   generates tokens — a forced pin can produce an image that loads and then
-   fails in a kernel.
+```
+AINODE_UV_OVERRIDES="quack-kernels>=0.6.5"
+```
+
+resolves it **with the version that actually supports the cutlass vLLM wants**.
+That is a stale pin in the wheel, not a version gamble.
+
+Turn it off once upstream ships a coherent wheel, or replace it with your own
+space-separated requirement strings:
+
+```bash
+AINODE_UV_OVERRIDES="" scripts/build-base-image.sh          # no overrides
+AINODE_UV_OVERRIDES="quack-kernels>=0.6.5 foo>=1.2" scripts/build-base-image.sh
+```
+
+If a *different* conflict appears later, read the resolver's message: it names
+both sides. Check the offending package on PyPI for a release whose constraint
+matches what vLLM wants, and add that lower bound. Only force a pin that has no
+such release if you are prepared to verify the engine actually generates
+tokens — a forced resolution can produce an image that loads and then fails in
+a kernel.
+
+Wheels are cached, so a failed build reuses the same broken set on a retry.
+The build prints the cache directory; remove the `vllm/` subtree there to force
+a fresh download once upstream republishes.
 
 ## Where the registry is configured
 
