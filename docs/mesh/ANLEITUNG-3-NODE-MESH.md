@@ -171,7 +171,7 @@ dem Benutzer gehören, unter dem du installierst.
 
 ---
 
-## Schritt 5 — Gemeinsames Modellverzeichnis
+## Schritt 5 — `/mnt/shared-models` anlegen
 
 **Auf allen drei:**
 
@@ -179,14 +179,20 @@ dem Benutzer gehören, unter dem du installierst.
 sudo mkdir -p /mnt/shared-models
 ```
 
-Der Installer bricht ab, wenn das Verzeichnis fehlt. Ein leeres Verzeichnis
-genügt zum Start.
+Ein **leeres Verzeichnis genügt.** Der Installer bricht ab, wenn es fehlt.
 
-**Empfohlen:** exportiere es per NFS von `Spark1` (`192.168.1.2`) und mounte es
-auf den anderen beiden — **über die 10G-Adresse**, nicht über eine
-`10.100.3x`-Adresse. Der Ring ist
-nicht voll vermascht gedacht für NFS, und AINode verteilt Modellgewichte
-ohnehin selbst über die Direktlinks (siehe Schritt 9).
+> **Kein NFS nötig — und für den Ring auch nicht sinnvoll.**
+> Trotz des Namens liegen hier keine Modelle. Das Verzeichnis trägt genau eine
+> Sache: ein 3 KB großes NCCL-Init-Skript, das der Head an jeden Knoten
+> weiterreicht.
+>
+> Modellgewichte kopiert AINode beim Start selbst auf die **lokale Platte**
+> jedes Peers — über den Direktlink, wo einer existiert. Eine NFS-Freigabe für
+> Gewichte wäre hier ein Engpass: im Ring erreicht kein CX7-Subnetz alle drei
+> Knoten, die Freigabe müsste also über das gemeinsame 10G laufen, und dann
+> teilen sich beim Laden alle Ränge diese eine Leitung — bei **jedem** Start.
+> Eine einmalige Kopie über die 100G-Direktlinks kostet stattdessen Plattenplatz,
+> und der ist hier die billigere Ressource.
 
 ---
 

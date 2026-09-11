@@ -85,7 +85,9 @@ log "Checking prerequisites"
 command -v docker >/dev/null 2>&1 || die "docker not found. Install: https://docs.docker.com/engine/install/"
 docker info >/dev/null 2>&1 || die "docker daemon not reachable — run 'sudo systemctl start docker' or add \$USER to the 'docker' group"
 
-# /mnt/shared-models is required by the v0.4.9 systemd unit (--mount type=bind
+# /mnt/shared-models carries the per-node NCCL init shim — NOT model weights.
+# Weights are copied to each peer's local disk at launch (engine/distribute.py).
+# Required by the systemd unit (--mount type=bind
 # fails loudly if the source doesn't exist). Surface the setup requirement
 # here instead of waiting for first-start to fail with a cryptic docker error.
 # For clusters: make this an NFS mount from the master's model storage. For
@@ -93,7 +95,7 @@ docker info >/dev/null 2>&1 || die "docker daemon not reachable — run 'sudo sy
 # TODO(v0.4.10): once the NCCL init shim is baked into ainode-base, this
 # path becomes optional and the precheck can be dropped.
 if [ ! -d /mnt/shared-models ]; then
-    die "AINode v0.4.9+ requires /mnt/shared-models to exist for the per-node NCCL init shim.\n  Create it before re-running this installer:\n    sudo mkdir -p /mnt/shared-models\n  For clusters, mount shared model storage there (NFS from master recommended)."
+    die "AINode requires /mnt/shared-models to exist — it carries the per-node NCCL init shim (a 3 KB script).\n  Create it before re-running this installer:\n    sudo mkdir -p /mnt/shared-models\n  An empty directory is enough. Model weights do NOT go here: the head copies\n  them to each peer's local disk at launch, over a direct RoCE link where one\n  exists. Shared storage for weights would put every rank's read on one link."
 fi
 
 # GPU check (nvidia-container-toolkit). AINode targets NVIDIA GB10; skip if
