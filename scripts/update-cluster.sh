@@ -228,11 +228,22 @@ if [[ $CHECK -eq 1 ]]; then
     exit 0
 fi
 
+# Asked over SSH rather than over HTTP by name. "Spark2" is an SSH alias — it
+# is in ~/.ssh/config, not necessarily in DNS or /etc/hosts, so
+# http://Spark2:3000 resolves to nothing and every member "did not answer",
+# on a cluster where every member was in fact answering. Asking the node to
+# curl its own localhost sidesteps naming and any firewall between us.
 check_node() {
-    local label="$1" url="$2"
+    local label="$1" node="$2"
+    local probe='curl -fsS --max-time 3 http://localhost:3000/api/status'
     for _ in $(seq 1 30); do
-        local got
-        got="$(curl -fsS --max-time 3 "$url/api/status" 2>/dev/null \
+        local got payload
+        if [[ -z "$node" ]]; then
+            payload="$(eval "$probe" 2>/dev/null || true)"
+        else
+            payload="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$node" "$probe" 2>/dev/null || true)"
+        fi
+        got="$(printf '%s' "$payload" \
                | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' 2>/dev/null || true)"
         if [[ -n "$got" ]]; then
             if [[ "$got" == "$VERSION" ]]; then
@@ -247,10 +258,9 @@ check_node() {
     warn "${label}: did not answer within 60s — check 'journalctl -u ainode -n 50' there"
 }
 
-check_node "this node" "http://localhost:3000"
+check_node "this node" ""
 for node in "${NODE_LIST[@]}"; do
-    host="$node"
-    check_node "$node" "http://${host}:3000"
+    check_node "$node" "$node"
 done
 
 step "Done"

@@ -139,8 +139,13 @@ class LoadPhaseTracker:
         #: the tail, which is usually a supervising process's own traceback.
         self.root_cause = ""
         #: A known mistake recognised from the log, explained in the operator's
-        #: terms rather than the engine's. Outranks the root cause.
+        #: terms rather than the engine's. Accompanies the evidence; it does
+        #: not replace it.
         self.fatal_hint = ''
+        #: The log line that triggered the hint — the one naming the rejected
+        #: flag or the unservable architecture. This is the part an operator
+        #: can act on.
+        self.offending_line = ''
         #: What is happening right now, in the operator's words — set by the
         #: backend for work that produces no log lines of its own. A 20 GB
         #: engine-image pull and a multi-hundred-GB weight copy both happen
@@ -157,6 +162,7 @@ class LoadPhaseTracker:
         self.tail = []
         self.root_cause = ""
         self.fatal_hint = ""
+        self.offending_line = ""
         self.detail = ""
 
     def note(self, detail: str) -> None:
@@ -202,6 +208,8 @@ class LoadPhaseTracker:
         for lead, needle, message in _FATAL_PATTERNS:
             if lead in low and needle in low.replace(" ", ""):
                 self.fatal_hint = message
+                if not self.offending_line:
+                    self.offending_line = stripped[:300]
                 break
         for phase, markers in LOAD_PHASE_MARKERS:
             if any(m in low for m in markers):
@@ -222,6 +230,14 @@ class LoadPhaseTracker:
     def failure_reason(self) -> str:
         """One line an operator can act on, or "".
 
+        Evidence first, explanation second. The hint used to REPLACE the log
+        line it was explaining, which threw away the only part that identified
+        the failure: "the engine rejected a command-line flag" is true of
+        every exit-2 and names none of them, while "unrecognized arguments:
+        --speculative_config" says exactly what to change. Observed on
+        hardware, where a launch failed and the message could not distinguish
+        which flag had been refused.
+
         The root cause wins over the tail. vLLM reports an engine crash twice:
         the real exception in the worker, then "Engine core initialization
         failed. See root cause above" from the supervisor — and that second one
@@ -230,6 +246,8 @@ class LoadPhaseTracker:
         if self.phase != PHASE_FAILED:
             return ""
         interesting = [ln for ln in self.tail if not _is_teardown(ln)]
-        detail = (self.fatal_hint or self.root_cause
-                  or " | ".join(interesting[-3:] or self.tail[-3:]))
+        evidence = (self.offending_line or self.root_cause
+                    or " | ".join(interesting[-3:] or self.tail[-3:]))
+        parts = [p for p in (evidence, self.fatal_hint) if p]
+        detail = " — ".join(parts)
         return f"{self.error}{(' — ' + detail) if detail else ''}"

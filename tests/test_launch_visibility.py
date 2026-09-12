@@ -131,3 +131,43 @@ class TestItReachesTheOperator:
     def test_the_card_renders_it(self):
         assert "load_detail" in APP_JS
         assert "loadDetail" in APP_JS
+
+
+class TestFailuresNameTheEvidence:
+    """A hint must not replace the line it is explaining.
+
+    "the engine rejected a command-line flag" is true of every exit-2 and
+    names none of them. The operator needs the flag.
+    """
+
+    def _failed(self, *lines):
+        tracker = LoadPhaseTracker()
+        tracker.reset()
+        for line in lines:
+            tracker.observe(line)
+        tracker.fail("the launcher exited (code 2)")
+        return tracker.failure_reason()
+
+    def test_the_rejected_flag_is_named(self):
+        reason = self._failed(
+            "INFO starting",
+            "vllm serve: error: unrecognized arguments: --speculative_config {}",
+            "Stopping cluster...")
+        assert "--speculative_config" in reason
+
+    def test_and_the_explanation_still_comes_with_it(self):
+        reason = self._failed(
+            "vllm serve: error: unrecognized arguments: --nope")
+        assert "--nope" in reason
+        assert "catalog recipe" in reason
+
+    def test_a_drafter_failure_names_the_architecture_line(self):
+        reason = self._failed(
+            "INFO Resolved architecture: Qwen3DSparkModel",
+            "AttributeError: 'NoneType' object has no attribute 'draft_model_config'")
+        assert "Qwen3DSparkModel" in reason
+        assert "DRAFT model" in reason
+
+    def test_teardown_noise_is_still_not_the_explanation(self):
+        reason = self._failed("Stopping cluster...", "Cluster stopped.")
+        assert "Stopping cluster" not in reason or "exited" in reason
