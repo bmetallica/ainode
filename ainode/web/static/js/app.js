@@ -921,6 +921,10 @@ const AINode = {
     var phase = (s && s.load_phase) || 'idle';
     // Both come from this node's status, so they describe the same launch.
     var loadError = (s && s.load_error) || '';
+    // What a silent pre-launch step is doing. The engine-image pull and the
+    // weight copy to a peer both run before the launcher writes a line, so
+    // without this the card sits at "starting" for minutes with an empty log.
+    var loadDetail = (s && s.load_detail) || '';
     // Coarse phase → [label, percent] for the launching card (3c).
     // Any phase missing here renders as the `idle` fallback — a flat 8% that
     // reads as a hang. Keep in step with LOAD_PHASE_ORDER in
@@ -1085,7 +1089,8 @@ const AINode = {
                 return '<span class="instance-status failed">FAILED</span>';
               }
               var pi = PHASE_INFO[phase] || ['starting', 10];
-              return '<span class="instance-status starting">' + self.esc(pi[0].toUpperCase()) + ' · ' + pi[1] + '%</span>' +
+              var label = loadDetail || pi[0];
+              return '<span class="instance-status starting" title="' + self.esc(loadDetail || '') + '">' + self.esc(label.toUpperCase()) + ' · ' + pi[1] + '%</span>' +
                 '<span style="display:inline-block;width:90px;height:5px;background:#1f2a1f;border-radius:3px;margin:0 8px;vertical-align:middle;overflow:hidden">' +
                 '<span style="display:block;height:100%;width:' + pi[1] + '%;background:#76c043;transition:width .4s"></span></span>';
             })()) +

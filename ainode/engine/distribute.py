@@ -151,16 +151,24 @@ def local_image_id(image: str) -> str:
     return out.stdout.strip() if out.returncode == 0 else ""
 
 
-def ensure_local_image(image: str) -> str:
+def ensure_local_image(image: str, on_pull: Optional[Callable[[], None]] = None) -> str:
     """Make ``image`` available on THIS node. Returns "present" or "pulled".
 
     The head needs it as much as the peers do: launch-cluster.sh inspects it
     here first and aborts before touching a worker. Pulling it as part of the
     launch beats telling the operator to go and pull it and come back.
+
+    ``on_pull`` fires only when a pull actually starts — several GB of silence
+    that the caller will want to put on screen.
     """
     image = (image or "").strip()
     if not image or local_image_id(image):
         return "present"
+    if on_pull is not None:
+        try:
+            on_pull()
+        except Exception:  # pragma: no cover — a status callback must not abort a pull
+            logger.exception("on_pull callback failed")
     logger.info("Pulling %s locally", image)
     try:
         subprocess.run(["docker", "pull", image], capture_output=True,

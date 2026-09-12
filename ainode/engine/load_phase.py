@@ -141,6 +141,13 @@ class LoadPhaseTracker:
         #: A known mistake recognised from the log, explained in the operator's
         #: terms rather than the engine's. Outranks the root cause.
         self.fatal_hint = ''
+        #: What is happening right now, in the operator's words — set by the
+        #: backend for work that produces no log lines of its own. A 20 GB
+        #: engine-image pull and a multi-hundred-GB weight copy both happen
+        #: before the launcher writes its first line, so without this the UI
+        #: shows "starting" and the log file is empty, which is exactly what a
+        #: hang looks like.
+        self.detail = ''
 
     def reset(self) -> None:
         """A fresh log stream means a fresh launch — start the clock over."""
@@ -150,6 +157,11 @@ class LoadPhaseTracker:
         self.tail = []
         self.root_cause = ""
         self.fatal_hint = ""
+        self.detail = ""
+
+    def note(self, detail: str) -> None:
+        """Say what is happening now. ``""`` clears it."""
+        self.detail = (detail or "").strip()
 
     def fail(self, reason: str) -> None:
         """Mark the launch dead. Ignored once the engine is serving — the
@@ -161,10 +173,16 @@ class LoadPhaseTracker:
         self.error = reason.strip()
 
     def advance(self, phase: str) -> None:
-        """Move to ``phase`` only if it is later than the current one."""
+        """Move to ``phase`` only if it is later than the current one.
+
+        Moving on clears the detail: it described the phase being left, and a
+        stale "copying weights to spark-2" under "loading weights" is worse
+        than no detail at all.
+        """
         try:
             if LOAD_PHASE_ORDER.index(phase) > LOAD_PHASE_ORDER.index(self.phase):
                 self.phase = phase
+                self.detail = ""
         except ValueError:
             pass
 

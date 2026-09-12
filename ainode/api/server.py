@@ -726,6 +726,9 @@ async def handle_status(request: web.Request) -> web.Response:
         # Why a launch died, quoting the engine's own last lines. Empty unless
         # the phase is "failed" — without it the UI can say a launch failed but
         # not why, and the operator is sent to hunt through a log file.
+        # What a silent pre-launch step is doing (pulling an engine image,
+        # copying weights). Empty once the launcher speaks for itself.
+        "load_detail": ("" if engine_ready else (getattr(engine, "load_detail", "") if engine is not None else "")),
         "load_error": ("" if engine_ready else (getattr(engine, "load_error", "") if engine is not None else "")),
         "uptime": round(time.time() - start_time, 1),
         "version": __version__,
