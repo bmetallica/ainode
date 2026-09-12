@@ -338,6 +338,7 @@ set the read token with `ainode config --hf-token hf_xxx`.
 | AutoData — Δ-filtered synthetic-data generation (v2.2 val-set lift objective) | ✅ v0.5.0 |
 | Proven catalog recipes applied to **distributed** launches too (engine image, parsers, spec-decode) | ✅ |
 | Profiles — describe several models as one deployment, apply it, restore it at startup | ✅ |
+| Tool calling configured automatically — parser derived from the model family, overridable per launch | ✅ |
 
 ---
 

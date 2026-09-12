@@ -215,7 +215,7 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "--mamba-backend", "flashinfer",
             "--mamba-cache-mode", "align",
             "--reasoning-parser", "nemotron_v3",
-            "--tool-call-parser", "qwen3_coder",
+            "--tool-call-parser", "qwen3_xml",
             "--enable-auto-tool-choice",
         ],
         recommended_gmu=0.91,
@@ -248,7 +248,7 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "--reasoning-parser", "qwen3",
             # REQUIRED: the template emits <tool_call><function=..><parameter=..>.
             # With the hermes parser, tool calls silently never parse (0 emitted).
-            "--tool-call-parser", "qwen3_coder",
+            "--tool-call-parser", "qwen3_xml",
             "--enable-auto-tool-choice",
             "--speculative_config", '{"method":"qwen3_5_mtp","num_speculative_tokens":2}',
         ],
