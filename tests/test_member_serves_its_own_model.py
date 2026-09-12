@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 
 from ainode.api.server import _instance_is_starting, _live_instance_records
 
