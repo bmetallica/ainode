@@ -16,7 +16,9 @@ def get_backend(config, on_ready=None, instance_id="") -> EngineBackend:
     """
     backend = (getattr(config, "engine_backend", None) or "eugr").lower()
     if backend == "eugr":
-        return EugrBackend(config, on_ready=on_ready)
+        # instance_id was dropped here, so every eugr instance shared one
+        # container name and one generated script.
+        return EugrBackend(config, on_ready=on_ready, instance_id=instance_id)
     if backend == "nvidia":
         return NvidiaBackend(config, on_ready=on_ready, instance_id=instance_id)
     raise ValueError(

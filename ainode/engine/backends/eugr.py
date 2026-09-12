@@ -119,9 +119,18 @@ class EugrBackend(EngineBackend):
     (GPU memory, Ray cluster, peer containers) lives in the OS.
     """
 
-    def __init__(self, config: NodeConfig, on_ready: Optional[Callable] = None):
+    #: The launcher's own default container name. Every instance used it,
+    #: which is fine until there are two: a second model on the same node then
+    #: lands in the FIRST model's container, and an engine that outlived an
+    #: orchestrator restart silently owns the name and the port. Observed with
+    #: an hour-old vllm_node still running while a fresh launch went to 8001.
+    CONTAINER_BASENAME = "vllm_node"
+
+    def __init__(self, config: NodeConfig, on_ready: Optional[Callable] = None,
+                 instance_id: str = ""):
         self.config = config
         self.on_ready = on_ready
+        self._instance_id = str(instance_id or "").strip()
         self._process: Optional[subprocess.Popen] = None
         self._ready = False
         self._log_thread: Optional[threading.Thread] = None
@@ -131,6 +140,31 @@ class EugrBackend(EngineBackend):
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         self._log_file: Path = LOGS_DIR / "vllm.log"
         self._distributed_log: Path = LOGS_DIR / "distributed.log"
+
+    @property
+    def container_name(self) -> str:
+        """This instance's engine container.
+
+        The first (primary) instance keeps the launcher's default name, so
+        everything that already refers to ``vllm_node`` — documentation, an
+        operator's muscle memory, the shim mounted by --entrypoint — keeps
+        working. Stacked instances get a suffix.
+        """
+        token = getattr(self, "_instance_id", "")
+        if not token:
+            return self.CONTAINER_BASENAME
+        return f"{self.CONTAINER_BASENAME}-{token}"
+
+    def _container_args(self) -> List[str]:
+        """``--name`` for the launcher, when this is not the primary."""
+        if not getattr(self, "_instance_id", ""):
+            return []
+        if not _is_safe_path_arg(self.container_name):
+            raise EugrBackendError(
+                f"Refusing to pass container name {self.container_name!r} to "
+                f"the launcher: it is expanded unquoted into a docker command."
+            )
+        return ["--name", self.container_name]
 
     # ------------------------------------------------------------------
     # Public API (lifecycle)
@@ -178,7 +212,7 @@ class EugrBackend(EngineBackend):
 
         launch_script = self._write_launch_script(ParallelPlan(), solo=True)
         cmd = [str(EUGR_LAUNCHER), "--solo", *self._launcher_image_args(),
-               "--launch-script", str(launch_script)]
+               *self._container_args(), "--launch-script", str(launch_script)]
         env = self._launcher_env()
 
         logger.info("Starting solo vLLM via the launcher: %s", " ".join(cmd))
@@ -236,7 +270,7 @@ class EugrBackend(EngineBackend):
         shim_container_path = self._publish_nccl_init_script()
 
         cmd = [str(EUGR_LAUNCHER), *self._launcher_image_args(),
-               "--launch-script", str(launch_script)]
+               *self._container_args(), "--launch-script", str(launch_script)]
         env = self._launcher_env(shim_container_path=shim_container_path)
 
         logger.info(
@@ -1152,7 +1186,12 @@ vllm serve {shlex.quote(serve_target or self.config.model)} \\
 {executor_line}{parallel_lines}    --gpu-memory-utilization {self.config.gpu_memory_utilization} \\
 {dtype_line}{extra}    --download-dir {shlex.quote(ENGINE_MODELS_DIR)}
 """
-        name = "ainode-solo.sh" if solo else "ainode-distributed.sh"
+        stem = "ainode-solo" if solo else "ainode-distributed"
+        # Per instance: two models launching at once would otherwise overwrite
+        # each other's script between it being written and being copied in.
+        token = getattr(self, "_instance_id", "")
+        suffix = f"-{token}" if token else ""
+        name = f"{stem}{suffix}.sh"
         target = EUGR_LAUNCHER.parent / "examples" / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(script)
