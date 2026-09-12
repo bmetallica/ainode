@@ -13,11 +13,24 @@ on an unexpected line is not.
 
 from __future__ import annotations
 
+import re
+
 __all__ = ["LOAD_PHASE_MARKERS", "LOAD_PHASE_ORDER", "PHASE_FAILED",
            "LoadPhaseTracker"]
 
 # How much of the tail to keep for a failure message.
 _TAIL_LINES = 12
+
+# An exception line, with vLLM's process prefix tolerated:
+#   (EngineCore pid=143) AttributeError: 'NoneType' object has no attribute ...
+# The FIRST match in a launch is the root cause. What follows it is usually a
+# second traceback from the supervising process ending in vLLM's own
+# "Engine core initialization failed. See root cause above" — the tail of the
+# log, and the least useful line in it.
+_EXCEPTION_RE = re.compile(
+    r"^\s*(?:\([^)]*\)\s*)?(?:\[[^\]]*\]\s*)?"
+    r"([A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Exit)): (.+)$"
+)
 
 # Monotonic: a phase only ever moves forward within one launch.
 LOAD_PHASE_ORDER = [
@@ -67,6 +80,9 @@ class LoadPhaseTracker:
         #: Last lines seen, so a failure can quote the cause instead of
         #: pointing at a log file the operator then has to go and find.
         self.tail: list = []
+        #: First exception line of this launch — the root cause. Preferred over
+        #: the tail, which is usually a supervising process's own traceback.
+        self.root_cause = ""
 
     def reset(self) -> None:
         """A fresh log stream means a fresh launch — start the clock over."""
@@ -74,6 +90,7 @@ class LoadPhaseTracker:
         self.ready = False
         self.error = ""
         self.tail = []
+        self.root_cause = ""
 
     def fail(self, reason: str) -> None:
         """Mark the launch dead. Ignored once the engine is serving — the
@@ -100,6 +117,10 @@ class LoadPhaseTracker:
         if stripped:
             self.tail.append(stripped)
             del self.tail[:-_TAIL_LINES]
+            if not self.root_cause:
+                match = _EXCEPTION_RE.match(stripped)
+                if match:
+                    self.root_cause = f"{match.group(1)}: {match.group(2)}".strip()
         low = line.lower()
         for phase, markers in LOAD_PHASE_MARKERS:
             if any(m in low for m in markers):
@@ -118,8 +139,14 @@ class LoadPhaseTracker:
         return self.phase
 
     def failure_reason(self) -> str:
-        """One line an operator can act on, or ""."""
+        """One line an operator can act on, or "".
+
+        The root cause wins over the tail. vLLM reports an engine crash twice:
+        the real exception in the worker, then "Engine core initialization
+        failed. See root cause above" from the supervisor — and that second one
+        is what the tail of the log actually contains.
+        """
         if self.phase != PHASE_FAILED:
             return ""
-        detail = " | ".join(self.tail[-3:])
+        detail = self.root_cause or " | ".join(self.tail[-3:])
         return f"{self.error}{(' — ' + detail) if detail else ''}"

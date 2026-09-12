@@ -58,6 +58,15 @@ Versions follow [Semantic Versioning](https://semver.org/).
   "manifest unknown".
 
 ### Fixed
+- **A failed launch quotes the root cause, not the last line of the log.** vLLM
+  reports an engine crash twice: the real exception in the worker, then
+  `RuntimeError: Engine core initialization failed. See root cause above` from
+  the supervisor — and that second, useless one is what the tail of the log
+  actually contains. The first exception-shaped line of a launch is kept and
+  preferred, so a failure reads `AttributeError: 'NoneType' object has no
+  attribute 'draft_model_config'` instead of pointing at a root cause the
+  reader then has to go and find. Falls back to the tail when there is no
+  traceback at all, which is what an SSH or launcher failure looks like.
 - **A launch that dies is reported as dead.** When the engine or the launcher
   exited without ever reporting readiness, nothing noticed: the log stream
   simply ended and the instance card sat at whatever phase it had reached,
