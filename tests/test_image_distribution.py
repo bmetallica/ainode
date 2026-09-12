@@ -76,24 +76,42 @@ class TestPeerAlreadyHasIt:
             assert _place() == "copied"
 
 
-class TestPullFirst:
-    def test_a_registry_image_is_pulled_on_the_peer(self):
+class TestLocalBeatsTheInternet:
+    """Where the bytes come from when the head already has the image.
+
+    The original policy was pull-first, on the reasoning that parallel pulls
+    dedupe layers. On this hardware that reasoning loses to arithmetic: the
+    nodes are joined by 10G at worst and a direct 100G cable at best, while the
+    site's uplink is whatever it is, so a three-node launch fetched the same
+    ~20 GB engine image across the internet three times when it was already
+    sitting on the machine next door.
+    """
+
+    def test_the_head_sends_it_rather_than_the_peer_fetching_it(self):
         with mock.patch("subprocess.run",
                         side_effect=_runner(local=HEAD_ID, peer="",
                                             after_pull=HEAD_ID)) as run:
+            assert _place() == "copied"
+        cmds = [" ".join(c[0][0]) for c in run.call_args_list]
+        assert any("docker save" in c for c in cmds)
+        assert not any("docker pull" in c for c in cmds)
+
+    def test_a_peer_pulls_only_when_the_head_has_nothing_to_send(self):
+        with mock.patch("subprocess.run",
+                        side_effect=_runner(local="", peer="",
+                                            after_pull=OTHER_ID)) as run:
+            assert _place() == "pulled"
+        assert any("docker pull" in " ".join(c[0][0]) for c in run.call_args_list)
+
+    def test_a_failed_copy_falls_back_to_a_pull(self):
+        # Slower, but it may be the only route left after a full disk.
+        with mock.patch("subprocess.run",
+                        side_effect=_runner(local=HEAD_ID, peer="",
+                                            after_pull=HEAD_ID, copy_rc=1)) as run:
             assert _place() == "pulled"
         cmds = [" ".join(c[0][0]) for c in run.call_args_list]
+        assert any("docker save" in c for c in cmds)
         assert any("docker pull" in c for c in cmds)
-        assert not any("docker save" in c for c in cmds)
-
-    def test_the_head_does_not_stream_when_a_pull_works(self):
-        """~20 GB through one link, avoided."""
-        with mock.patch("subprocess.run",
-                        side_effect=_runner(local=HEAD_ID, peer="",
-                                            after_pull=HEAD_ID)) as run:
-            _place()
-        assert not any("docker save" in " ".join(c[0][0])
-                       for c in run.call_args_list)
 
 
 class TestCopyFallback:
@@ -113,7 +131,8 @@ class TestCopyFallback:
         assert "10.100.36.2" in save        # transfer address, not coordination
         assert "192.168.1.3" not in save
 
-    def test_a_failed_copy_raises_with_the_reason(self):
+    def test_a_failed_copy_that_a_pull_cannot_rescue_raises_with_the_reason(self):
+        # after_pull stays empty: the peer still has nothing afterwards.
         with mock.patch("subprocess.run",
                         side_effect=_runner(local=HEAD_ID, peer="", copy_rc=1)), \
              pytest.raises(DistributionError, match="no space left"):
