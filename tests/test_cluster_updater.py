@@ -44,12 +44,15 @@ def merge_program(tmp_path_factory) -> Path:
 
 
 def _merge(merge_program: Path, daemon_json: Path, check_only: bool = False):
-    env = {"DAEMON_JSON": str(daemon_json), "PATH": "/usr/bin:/bin"}
-    if check_only:
-        env["CHECK_ONLY"] = "1"
+    # Check mode is an argument, not an environment variable: sudo's env
+    # policy decides whether VAR=value survives the hop to another node, and
+    # that policy differs between hosts. The test invokes it the way the
+    # script does.
     return subprocess.run(
-        [sys.executable, str(merge_program), MIRROR, INSECURE, LOCAL],
-        capture_output=True, text=True, env=env,
+        [sys.executable, str(merge_program), MIRROR, INSECURE, LOCAL,
+         "1" if check_only else "0"],
+        capture_output=True, text=True,
+        env={"DAEMON_JSON": str(daemon_json), "PATH": "/usr/bin:/bin"},
     )
 
 
@@ -159,6 +162,50 @@ class TestScriptsAreSane:
 
     def test_the_updater_can_reach_the_registry_setup(self):
         assert "setup-registry-cache.sh" in UPDATE.read_text()
+
+    @pytest.mark.parametrize("script", [SETUP, UPDATE])
+    def test_remote_root_commands_can_prompt_for_a_password(self, script):
+        # Observed on hardware: `ssh node "sudo systemctl restart docker"`
+        # died with "sudo: a terminal is required". ssh allocates no TTY for a
+        # command, and sudo will not read a password without one — so every
+        # remote privileged command goes through remote_sudo, which falls back
+        # to `ssh -t`.
+        text = script.read_text()
+        assert "remote_sudo()" in text
+        assert "ssh -t" in text
+        assert 'sudo -n true' in text
+
+    @pytest.mark.parametrize("script", [SETUP, UPDATE])
+    def test_no_remote_sudo_bypasses_the_helper(self, script):
+        # `sudo -n` is exempt: it never prompts, which is what makes it the
+        # probe the helper uses to decide whether a TTY is needed.
+        inside_helper = False
+        for line in script.read_text().splitlines():
+            stripped = line.strip()
+            # The helper's own body is the one place that may ssh with sudo.
+            if stripped.startswith("remote_sudo()"):
+                inside_helper = True
+                continue
+            if inside_helper:
+                inside_helper = line != "}"
+                continue
+            if stripped.startswith("#") or "sudo -n" in stripped:
+                continue
+            reaches_a_node = re.search(
+                r'ssh\s+(-o\s+\S+\s+)*"?\$\{?(node|target)', stripped)
+            assert not (reaches_a_node and "sudo" in stripped), stripped
+
+    def test_a_failed_node_does_not_abandon_the_others(self):
+        # Dying half-way leaves the cluster part-configured with no record of
+        # which part.
+        text = SETUP.read_text()
+        assert "FAILED_NODES" in text
+        assert "could not update /etc/docker/daemon.json" in text
+        assert 'die "${label}: could not update' not in text
+
+    def test_the_password_need_is_announced_before_the_build(self):
+        text = UPDATE.read_text()
+        assert text.index("will ask for a password") < text.index("build-ainode-image.sh")
 
     def test_peers_are_restarted_before_the_head(self):
         # The head builds its picture from what it discovers, so it comes up

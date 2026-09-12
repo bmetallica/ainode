@@ -41,6 +41,32 @@ say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Running something as root on another node.
+#
+# `ssh node "sudo ..."` fails with "sudo: a terminal is required" unless that
+# node has passwordless sudo — ssh allocates no TTY for a command, and sudo
+# refuses to read a password without one. So: try the non-interactive form
+# first, and fall back to `ssh -t`, which gives sudo a terminal to prompt on.
+# The fallback is why this script is meant to be run by a person at a
+# keyboard rather than from cron.
+remote_sudo() {
+    local node="$1"; shift
+    if ssh -o BatchMode=yes -o ConnectTimeout=10 "$node" "sudo -n true" 2>/dev/null; then
+        ssh -o BatchMode=yes "$node" "sudo $*"
+    else
+        warn "${node}: sudo needs a password — you will be asked"
+        ssh -t "$node" "sudo $*"
+    fi
+}
+
+# The same locally. `sudo -v` up front so the password is asked once, at the
+# start, rather than fifteen minutes into a build.
+local_sudo_ready() {
+    sudo -n true 2>/dev/null && return 0
+    warn "this node: sudo needs a password"
+    sudo -v
+}
+
 [[ -n "$HEAD_IP" ]] || die "--head <ip> is required: the peers need an address that reaches this node."
 
 # The daemon.json edit, as a program rather than a sed line: the file may
@@ -57,6 +83,10 @@ path = os.environ.get("DAEMON_JSON", "/etc/docker/daemon.json")
 mirror = sys.argv[1]
 insecure = sys.argv[2]
 local = sys.argv[3]
+# Passed as an argument rather than an environment variable: sudo's env
+# policy decides whether VAR=value survives, and that policy differs between
+# hosts. An argument always arrives.
+check_only = len(sys.argv) > 4 and sys.argv[4] == "1"
 
 try:
     with open(path) as fh:
@@ -84,7 +114,7 @@ config["insecure-registries"] = insecures
 if json.dumps(config, sort_keys=True) == before:
     raise SystemExit(0)
 
-if os.environ.get("CHECK_ONLY") == "1":
+if check_only:
     print("would add: " + mirror + " and " + local)
     raise SystemExit(10)
 
@@ -149,17 +179,22 @@ configure_node() {
     local changed=0 rc=0
 
     if [[ -z "$target" ]]; then
-        CHECK_ONLY="$CHECK" sudo -E python3 -c "$MERGE_PY" "$MIRROR" "$INSECURE" "$LOCAL" || rc=$?
+        sudo python3 -c "$MERGE_PY" "$MIRROR" "$INSECURE" "$LOCAL" "$CHECK" || rc=$?
     else
-        ssh -o BatchMode=yes -o ConnectTimeout=10 "$target" \
-            "CHECK_ONLY=$CHECK sudo -E python3 -c $(printf '%q' "$MERGE_PY") \
-             $(printf '%q' "$MIRROR") $(printf '%q' "$INSECURE") $(printf '%q' "$LOCAL")" || rc=$?
+        remote_sudo "$target" "python3 -c $(printf '%q' "$MERGE_PY") \
+            $(printf '%q' "$MIRROR") $(printf '%q' "$INSECURE") \
+            $(printf '%q' "$LOCAL") $(printf '%q' "$CHECK")" || rc=$?
     fi
 
     case $rc in
-        0)  say "${label}: docker already points at the cache" ;;
+        0)  say "${label}: docker already points at the cache"; return 0 ;;
         10) changed=1 ;;
-        *)  die "${label}: could not update /etc/docker/daemon.json (rc=$rc)" ;;
+        *)  # Not fatal for the other nodes. A peer without the mirror simply
+            # does not use the cache; stopping here would leave the cluster
+            # half-configured with no way to tell which half.
+            warn "${label}: could not update /etc/docker/daemon.json (rc=$rc)"
+            FAILED_NODES+=("$label")
+            return 0 ;;
     esac
 
     [[ $changed -eq 1 ]] || return 0
@@ -177,10 +212,16 @@ configure_node() {
         sleep 3
         sudo systemctl restart ainode 2>/dev/null || true
     else
-        ssh -o BatchMode=yes "$target" \
-            "sudo systemctl restart docker && sleep 3 && (sudo systemctl restart ainode || true)"
+        remote_sudo "$target" \
+            "systemctl restart docker && sleep 3 && (sudo systemctl restart ainode || true)" \
+            || { warn "${label}: Docker restart failed"; FAILED_NODES+=("$label"); }
     fi
 }
+
+FAILED_NODES=()
+
+# Ask for the local password once, before anything slow happens.
+[[ $CHECK -eq 1 ]] || local_sudo_ready
 
 configure_node ""
 if [[ -n "$NODES" ]]; then
@@ -198,6 +239,13 @@ if [[ $CHECK -eq 0 ]]; then
     echo
     curl -fsS "http://${HEAD_IP}:5001/v2/_catalog" 2>/dev/null || warn "local registry not answering yet"
     echo
+fi
+
+if [[ ${#FAILED_NODES[@]} -gt 0 ]]; then
+    warn "not configured: ${FAILED_NODES[*]}"
+    warn "Those nodes will keep pulling from the internet. Re-run this script;"
+    warn "it changes only what is still wrong."
+    exit 1
 fi
 
 say "done"

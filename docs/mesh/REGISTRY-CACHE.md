@@ -56,6 +56,21 @@ gemeldet.
 > Skript startet `ainode` danach selbst wieder; laufende Modelle sind trotzdem
 > weg. Also in einem ruhigen Moment ausführen.
 
+**Passwortabfragen:** Das Skript braucht auf jedem Knoten `root`. Hat ein
+Knoten kein passwortloses `sudo`, fragt es dort nach — dafür braucht es ein
+Terminal, also am besten von Hand starten und danebensitzen. Wer es unbeaufsichtigt
+laufen lassen will, richtet vorher auf jedem Knoten ein:
+
+```bash
+echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl, /usr/bin/python3" \
+  | sudo tee /etc/sudoers.d/ainode-update
+```
+
+Schlägt ein Knoten fehl, macht das Skript mit den übrigen weiter und nennt am
+Ende, welche offen sind — ein Knoten ohne Mirror zieht einfach weiter aus dem
+Internet, das ist kein Grund, den Rest stehenzulassen. Einfach erneut
+ausführen; geändert wird nur, was noch falsch ist.
+
 Noch kürzer: `scripts/update-cluster.sh --head 192.168.1.2 --nodes
 Spark2,Spark3 --registry` macht das im Rahmen eines normalen Updates mit.
 
