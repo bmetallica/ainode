@@ -83,16 +83,23 @@ class TestStartingInstancesAreAdvertised:
         records = _records(manager, serving=True)
         assert records[0].status == "serving"
 
-    def test_a_dead_process_drops_out(self):
-        # The phantom-READY protection this filter existed for.
+    def test_a_dead_process_is_advertised_as_failed(self):
+        # Dropping it made an instance VANISH from the dashboard — no card, no
+        # error, and no button to unload it. Seen on the cluster when a model
+        # died during CUDA-graph capture. A truthful status is what the UI
+        # needs; the phantom-READY protection is the status flip, not the
+        # disappearance.
         manager = _Manager([_Instance("a/b", running=False)])
-        assert _records(manager, serving=False) == []
+        records = _records(manager, serving=False)
+        assert [r.model for r in records] == ["a/b"]
+        assert records[0].status == "failed"
 
-    def test_a_failed_launch_drops_out(self):
+    def test_a_failed_launch_is_advertised_as_failed(self):
         manager = _Manager([_Instance("a/b", phase="failed")])
-        assert _records(manager, serving=False) == []
+        records = _records(manager, serving=False)
+        assert records and records[0].status == "failed"
 
-    def test_a_crashed_instance_is_marked_failed(self):
+    def test_a_crashed_instance_loses_its_serving_latch(self):
         inst = _Instance("a/b", running=False, status="serving")
         _records(_Manager([inst]), serving=False)
         assert inst.record.status == "failed"

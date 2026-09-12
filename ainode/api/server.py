@@ -478,15 +478,24 @@ async def _engine_serving(backend, loop) -> bool:
 
 
 def _instance_is_starting(inst) -> bool:
-    """True while an instance's engine process is alive but not yet answering."""
+    """True while an instance's engine process is alive but not yet answering.
+
+    Two ways to ask, because backends differ: ``is_running`` where it exists,
+    and the ``process_alive`` field of a health check otherwise.
+    """
     backend = getattr(inst, "backend", None)
     if backend is None:
         return False
-    phase = str(getattr(backend, "load_phase", "") or "")
-    if phase == "failed":
+    if str(getattr(backend, "load_phase", "") or "") == "failed":
         return False
+    probe = getattr(backend, "is_running", None)
+    if callable(probe):
+        try:
+            return bool(probe())
+        except Exception:
+            return False
     try:
-        return bool(backend.is_running())
+        return bool((backend.health_check() or {}).get("process_alive"))
     except Exception:
         return False
 
@@ -517,17 +526,19 @@ async def _live_instance_records(manager, loop) -> list:
             if inst.record.status not in ("starting", "failed"):
                 inst.record.status = "starting"
             live.append(inst.record)
-        elif inst.record.status == "serving":
-            # Truthful reset (the other half of F3): the `serving` stamp is a
-            # latch — set once when the engine first answered and, before this,
-            # never cleared. An instance that was serving but whose engine no
-            # longer answers has crashed or been killed out-of-band; leaving the
-            # latch at `serving` makes every consumer that reads `record.status`
-            # without its own probe (e.g. the Server view's LOADED MODELS list)
-            # paint a dead instance as READY forever. Flip it back to `failed`
-            # so status tracks liveness in both directions. If the engine
-            # recovers, the next cycle re-flips it to `serving`.
-            inst.record.status = "failed"
+        else:
+            # Not answering and not coming up: it crashed, was killed out of
+            # band, or its launch died. Say so — and keep advertising it.
+            #
+            # Dropping it was worse than the phantom READY it was written to
+            # prevent: an instance the operator had loaded simply VANISHED from
+            # the dashboard, with no card, no error and no way to unload it.
+            # Seen on the cluster when a model died during CUDA-graph capture.
+            # A truthful `failed` gives the UI something to render and a button
+            # to press. If the engine recovers, the next cycle flips it back.
+            if inst.record.status != "failed":
+                inst.record.status = "failed"
+            live.append(inst.record)
     return live
 
 
