@@ -124,3 +124,44 @@ class TestGemma4Catalog:
         from ainode.models.registry import CURATED_CLUSTER_MODELS
 
         assert CURATED_CLUSTER_MODELS["gemma4-26b-a4b-nvfp4"].verified is False
+
+
+class TestGemma31B:
+    """The dense sibling, which is a different model from the curated MoE.
+
+    Launched from the UI with no recipe at all — no parsers, no loader, no
+    memory fraction — because the catalog only knew the 26B-A4B. It then died
+    in CUDA-graph capture, which looked like the model being broken.
+    """
+
+    GEMMA31 = "nvidia/Gemma-4-31B-IT-NVFP4"
+
+    def test_it_has_a_recipe_now(self):
+        assert catalog_recipe(self.GEMMA31)["extra_vllm_args"]
+
+    def test_it_carries_the_family_parsers(self):
+        args = catalog_recipe(self.GEMMA31)["extra_vllm_args"]
+        assert args[args.index("--tool-call-parser") + 1] == "gemma4"
+        assert args[args.index("--reasoning-parser") + 1] == "gemma4"
+
+    def test_it_does_not_inherit_the_moe_drafter(self):
+        # The 26B-A4B recipe's speculative model belongs to that model. Pairing
+        # it with this one fails in a way that reads like a broken model.
+        args = catalog_recipe(self.GEMMA31)["extra_vllm_args"]
+        assert not any("speculative" in a for a in args)
+        assert not any("assistant" in a for a in args)
+
+    def test_it_is_a_separate_entry_from_the_moe(self):
+        from ainode.models.registry import CURATED_CLUSTER_MODELS
+
+        moe = CURATED_CLUSTER_MODELS["gemma4-26b-a4b-nvfp4"]
+        dense = CURATED_CLUSTER_MODELS["gemma4-31b-it-nvfp4"]
+        assert moe.hf_repo != dense.hf_repo
+        assert dense.verified is False
+
+    def test_it_fits_one_node(self):
+        from ainode.models.registry import CURATED_CLUSTER_MODELS
+
+        dense = CURATED_CLUSTER_MODELS["gemma4-31b-it-nvfp4"]
+        assert dense.proven_tp == 1
+        assert dense.min_memory_gb < 122
