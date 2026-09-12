@@ -389,3 +389,91 @@ class TestADeadLaunchIsReportedAsDead:
 
         assert '"load_error"' in (server.__file__ and
                                   Path(server.__file__).read_text())
+
+
+class TestRootCauseBeatsTheTail:
+    """vLLM reports an engine crash twice: the real exception in the worker,
+    then "Engine core initialization failed. See root cause above" from the
+    supervisor — and that useless second one is what the tail of the log
+    actually contains. Quoting the tail told the operator nothing."""
+
+    # Trimmed from a real failure: a DFlash draft model served as a base.
+    REAL_LOG = [
+        "(EngineCore pid=143)   File \"/usr/local/lib/python3.12/dist-packages/"
+        "vllm/model_executor/models/qwen3_dflash.py\", line 693, in __init__",
+        "(EngineCore pid=143)     self.draft_model_config = "
+        "vllm_config.speculative_config.draft_model_config",
+        "(EngineCore pid=143) AttributeError: 'NoneType' object has no attribute "
+        "'draft_model_config'",
+        "[rank0]:[W912 00:26:00.238913763 ProcessGroupNCCL.cpp:1575] Warning: ...",
+        "(APIServer pid=91) Traceback (most recent call last):",
+        "(APIServer pid=91)   File \"/usr/local/bin/vllm\", line 10, in <module>",
+        "(APIServer pid=91)     sys.exit(main())",
+        "(APIServer pid=91)   File \".../utils.py\", line 1320, in wait_for_engine_startup",
+        "(APIServer pid=91)     raise RuntimeError(",
+        "(APIServer pid=91) RuntimeError: Engine core initialization failed. "
+        "See root cause above. Failed core proc(s): {}",
+    ]
+
+    def _fail_with(self, lines):
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        t = LoadPhaseTracker()
+        t.reset()
+        for line in lines:
+            t.observe(line)
+        t.fail("the launcher exited (code 1)")
+        return t
+
+    def test_the_real_exception_is_reported(self):
+        reason = self._fail_with(self.REAL_LOG).failure_reason()
+        assert "AttributeError" in reason
+        assert "draft_model_config" in reason
+
+    def test_the_useless_supervisor_error_is_not(self):
+        reason = self._fail_with(self.REAL_LOG).failure_reason()
+        assert "See root cause above" not in reason
+
+    def test_the_process_prefix_is_stripped(self):
+        reason = self._fail_with(self.REAL_LOG).failure_reason()
+        assert "EngineCore pid=" not in reason
+
+    def test_the_first_exception_wins(self):
+        t = self._fail_with([
+            "ValueError: the real problem",
+            "RuntimeError: a downstream consequence",
+        ])
+        assert "ValueError: the real problem" in t.failure_reason()
+        assert "downstream" not in t.failure_reason()
+
+    def test_it_falls_back_to_the_tail_without_an_exception_line(self):
+        """Not every failure is a Python traceback — a launcher can die on an
+        SSH error with no exception anywhere."""
+        t = self._fail_with([
+            "Checking SSH connectivity to worker nodes...",
+            "Error: Passwordless SSH to 192.168.1.3 failed.",
+        ])
+        assert "Passwordless SSH" in t.failure_reason()
+
+    @pytest.mark.parametrize("line", [
+        "AttributeError: x",
+        "(EngineCore pid=1) ValueError: x",
+        "[rank0] RuntimeError: x",
+        "torch.cuda.OutOfMemoryError: CUDA out of memory",
+    ])
+    def test_exception_shapes_recognised(self, line):
+        assert self._fail_with([line]).root_cause
+
+    @pytest.mark.parametrize("line", [
+        "INFO 09-12 00:26:00 [utils.py:620] starting",
+        "  File \"/usr/local/bin/vllm\", line 10, in <module>",
+        "Traceback (most recent call last):",
+        "just some prose about an Error: that is not one",
+    ])
+    def test_non_exceptions_are_not_mistaken_for_one(self, line):
+        assert not self._fail_with([line]).root_cause
+
+    def test_reset_clears_the_root_cause(self):
+        t = self._fail_with(["ValueError: old"])
+        t.reset()
+        assert t.root_cause == ""
