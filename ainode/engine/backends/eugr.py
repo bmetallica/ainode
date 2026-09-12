@@ -216,10 +216,17 @@ class EugrBackend(EngineBackend):
                 f"eugr launcher missing at {EUGR_LAUNCHER}. Is this running inside the ainode image?"
             )
 
+        # Reset here, not in the log-stream thread: the two distribution steps
+        # below run BEFORE the launcher exists, and they are the slowest part
+        # of a first launch. Leaving the phase on its previous value made them
+        # look like a launch that had not started.
+        self._phase.reset()
         self._write_eugr_env()
         launch_script = self._write_distributed_launch_script()
         self._distribute_engine_image_to_peers()
         self._distribute_model_to_peers()
+        self._progress("distributing", "preparing the cluster launch",
+                       self._distributed_log)
 
         # Bug 3 fix: publish per-node shim to shared storage so every peer's
         # vllm_node can mount + exec it as --entrypoint. Returns None if the
@@ -732,16 +739,30 @@ class EugrBackend(EngineBackend):
         if not image:
             return  # the launcher default is built locally on every node
         # The head first: the launcher inspects it here and aborts before it
-        # ever looks at a worker.
-        logger.info("Engine image %s locally: %s", image, ensure_local_image(image))
+        # ever looks at a worker. A pull of a ~20 GB engine image is minutes of
+        # complete silence, so say what is happening before starting it.
+        log = self._distributed_log
+        self._progress("distributing",
+                       f"checking the engine image {image} on this node", log)
+        action = ensure_local_image(
+            image,
+            on_pull=lambda: self._progress(
+                "distributing",
+                f"pulling the engine image {image} — several GB, minutes on a "
+                f"first launch", log),
+        )
+        self._progress("distributing", f"engine image {image} here: {action}", log)
         for peer_ip in self.config.peer_ips:
             action = ensure_peer_has_image(
                 ssh_user=self.config.ssh_user,
                 coord_ip=peer_ip,
                 transfer_ip=self._transfer_ip(peer_ip),
                 image=image,
+                on_start=lambda ip=peer_ip: self._progress(
+                    "distributing", f"placing the engine image {image} on {ip}", log),
             )
-            logger.info("Engine image %s on %s: %s", image, peer_ip, action)
+            self._progress("distributing",
+                           f"engine image {image} on {peer_ip}: {action}", log)
 
     def _distribute_model_to_peers(self) -> None:
         """Make sure every peer can read the model from its own local disk.
@@ -776,6 +797,11 @@ class EugrBackend(EngineBackend):
                     dir_name=dir_name,
                     target_parent=hub,
                     label="direct RoCE link" if transfer_ip != peer_ip else "",
+                    on_start=lambda ip=transfer_ip: self._progress(
+                        "distributing",
+                        f"copying the weights of {model} to {ip} — tens of GB, "
+                        f"this is the slow part of a first launch",
+                        self._distributed_log),
                 )
             except DistributionError:
                 raise
@@ -1057,6 +1083,33 @@ vllm serve {self.config.model} \\
         minutes, which is indistinguishable from a hang.
         """
         return self._phase.current(ready_latch=self._ready)
+
+    @property
+    def load_detail(self) -> str:
+        """What the launch is doing right now, or "".
+
+        Only set for work that writes no log lines of its own — pulling an
+        engine image, copying weights to a peer. Everything after the launcher
+        starts speaks for itself.
+        """
+        return self._phase.detail
+
+    def _progress(self, phase: str, detail: str, log_file: Path) -> None:
+        """Report a pre-launch step to the UI *and* to the log file.
+
+        Both, deliberately. The card is where someone watching sees it; the log
+        file is where someone who came back an hour later looks, and an empty
+        log during a 20 GB pull is indistinguishable from a wedged process.
+        """
+        self._phase.advance(phase)
+        self._phase.note(detail)
+        logger.info("%s", detail)
+        try:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(log_file, "a") as sink:
+                sink.write(f"[ainode] {detail}\n")
+        except OSError:
+            logger.exception("could not write progress to %s", log_file)
 
     @property
     def load_error(self) -> str:

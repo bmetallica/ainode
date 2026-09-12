@@ -192,7 +192,7 @@ class TestBothBackendsPlaceIt:
              mock.patch.object(type(backend), "_distribute_model_to_peers",
                                lambda s: None), \
              mock.patch.object(E, "ensure_local_image",
-                               lambda i: order.append("image") or "present"), \
+                               lambda i, **k: order.append("image") or "present"), \
              mock.patch.object(E, "ensure_peer_has_image",
                                lambda **k: "present"), \
              mock.patch("threading.Thread"):
