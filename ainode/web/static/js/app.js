@@ -690,8 +690,12 @@ const AINode = {
     var live = !!(s && s.engine_ready);
     var phase = (s && s.load_phase) || 'idle';
     // Coarse phase → [label, percent] for the launching card (3c).
+    // Any phase missing here renders as the `idle` fallback — a flat 8% that
+    // reads as a hang. Keep in step with LOAD_PHASE_ORDER in
+    // ainode/engine/load_phase.py.
     var PHASE_INFO = {
       idle: ['starting', 8], starting: ['starting', 12],
+      distributing: ['copying weights to peers', 26],
       loading_weights: ['loading weights', 40],
       distributed_init: ['connecting nodes', 62],
       profiling: ['profiling', 84], ready: ['ready', 100],

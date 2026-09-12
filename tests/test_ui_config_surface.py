@@ -221,3 +221,89 @@ class TestLauncherIsInTheImage:
                              self.BUILD_BASE)
         assert dockerfile_sha and base_sha
         assert dockerfile_sha.group(1) == base_sha.group(1)
+
+
+class TestLoadPhaseIsReportedByBothBackends:
+    """The UI turns the phase into a percentage. The eugr backend — the default
+    — reported none, so every launch showed a flat 8% (the fallback for
+    "unknown") for the whole of a load that can take minutes. That is
+    indistinguishable from a hang."""
+
+    def _tracker(self):
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        t = LoadPhaseTracker()
+        t.reset()
+        return t
+
+    def test_phases_advance_in_order(self):
+        t = self._tracker()
+        assert t.phase == "starting"
+        t.observe("Loading model weights took 12.3 GiB")
+        assert t.phase == "loading_weights"
+        t.observe("NCCL INFO Bootstrap : Using enP7s7")
+        assert t.phase == "distributed_init"
+        t.observe("Memory profiling results: total_gpu_memory=...")
+        assert t.phase == "profiling"
+
+    def test_a_phase_never_goes_backwards(self):
+        t = self._tracker()
+        t.observe("Memory profiling results")
+        t.observe("Loading model weights")      # a late straggler line
+        assert t.phase == "profiling"
+
+    def test_readiness_fires_once(self):
+        t = self._tracker()
+        assert t.observe("INFO:     Uvicorn running on http://0.0.0.0:8000") is True
+        assert t.observe("INFO:     Application startup complete.") is False
+        assert t.phase == "ready"
+
+    def test_launcher_progress_counts_too(self):
+        """launch-cluster.sh talks before vLLM does; without these the bar sits
+        at 'starting' through the slowest part of a distributed launch."""
+        t = self._tracker()
+        t.observe("Waiting for cluster to be ready...")
+        assert t.phase == "distributed_init"
+
+    def test_unknown_lines_do_not_throw(self):
+        """vLLM's log format is not a contract."""
+        t = self._tracker()
+        for line in ("", "\n", "🚀 emoji", "a" * 5000):
+            t.observe(line)
+        assert t.phase == "starting"
+
+    def test_the_api_poll_latch_wins(self):
+        """wait_ready() can beat the log stream; the phase must not stay stuck
+        on a model that is already serving."""
+        t = self._tracker()
+        assert t.current(ready_latch=True) == "ready"
+
+    def test_eugr_exposes_load_phase(self):
+        from ainode.core.config import NodeConfig
+        from ainode.engine.backends.eugr import EugrBackend
+
+        backend = EugrBackend(NodeConfig(node_id="n"))
+        assert backend.load_phase == "idle"
+
+    def test_both_backends_share_one_phase_vocabulary(self):
+        from ainode.engine.backends.nvidia import NvidiaBackend
+        from ainode.engine.load_phase import LOAD_PHASE_ORDER
+
+        assert NvidiaBackend._LOAD_PHASE_ORDER is LOAD_PHASE_ORDER
+
+    def test_every_phase_the_ui_knows_is_produced(self):
+        """A phase the UI has no entry for falls back to 8% — the bug this
+        fixes, in a different disguise."""
+        ui = {"idle", "starting", "distributing", "loading_weights",
+              "distributed_init", "profiling", "ready"}
+        from ainode.engine.load_phase import LOAD_PHASE_ORDER
+
+        assert set(LOAD_PHASE_ORDER) - ui == set()
+
+    def test_the_ui_table_lists_every_phase(self):
+        """A phase with no entry renders as the idle fallback — a flat 8% that
+        reads as a hang. That is the bug this whole class exists for."""
+        from ainode.engine.load_phase import LOAD_PHASE_ORDER
+
+        for phase in LOAD_PHASE_ORDER:
+            assert f"{phase}:" in APP_JS, f"PHASE_INFO has no entry for {phase}"

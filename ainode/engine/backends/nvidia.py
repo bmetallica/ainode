@@ -45,6 +45,7 @@ from ainode.cluster.hca_discovery import (
     detect_fabric_ip,
 )
 from ainode.cluster.topology import TopologyInfo, topology_for_config
+from ainode.engine.load_phase import LOAD_PHASE_MARKERS, LOAD_PHASE_ORDER
 from ainode.engine.parallelism import ParallelPlan, Strategy
 from ainode.core.config import LOGS_DIR, NodeConfig
 from ainode.engine.backends.base import EngineBackend
@@ -1538,18 +1539,16 @@ class NvidiaBackend(EngineBackend):
     # these markers; the phase only advances (monotonic by rank) so a coarse
     # progress card can show load → distributed-init → profiling → ready, and a
     # stall is visible as the phase that stops advancing.
-    _LOAD_PHASE_ORDER = ["idle", "starting", "distributing", "loading_weights", "distributed_init", "profiling", "ready"]
-    _LOAD_PHASE_MARKERS = [
-        ("loading_weights", ("loading model weights", "loading weights", "loading safetensors")),
-        ("distributed_init", ("nccl info", "init_process_group", "rayworkerwrapper", "ray worker")),
-        ("profiling", ("memory profiling", "available kv cache", "gpu kv cache", "warming up", "autotuning")),
-    ]
+    # Shared with EugrBackend — see ainode/engine/load_phase.py. Kept as class
+    # attributes because callers and tests reach for them here.
+    _LOAD_PHASE_ORDER = LOAD_PHASE_ORDER
+    _LOAD_PHASE_MARKERS = LOAD_PHASE_MARKERS
 
     def _advance_load_phase(self, phase: str) -> None:
         """Set _load_phase to `phase` only if it's later than the current one."""
-        order = self._LOAD_PHASE_ORDER
         try:
-            if order.index(phase) > order.index(self._load_phase):
+            if (LOAD_PHASE_ORDER.index(phase)
+                    > LOAD_PHASE_ORDER.index(self._load_phase)):
                 self._load_phase = phase
         except ValueError:
             pass
