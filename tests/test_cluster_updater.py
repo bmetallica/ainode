@@ -220,3 +220,19 @@ class TestScriptsAreSane:
         # cluster on two versions — worse than where it started.
         text = UPDATE.read_text()
         assert text.index("cannot ssh to") < text.index("build-ainode-image.sh")
+
+
+class TestVerification:
+    """Checking a node has to work with the names the operator actually uses."""
+
+    def test_members_are_asked_over_ssh(self):
+        # "Spark2" is an SSH alias in ~/.ssh/config, not necessarily a DNS
+        # name: http://Spark2:3000 resolved to nothing and every member
+        # "did not answer within 60s" on a cluster where every member was in
+        # fact answering.
+        text = UPDATE.read_text()
+        assert 'http://localhost:3000/api/status' in text
+        assert 'http://${host}:3000' not in text
+
+    def test_the_head_checks_itself_locally(self):
+        assert 'check_node "this node" ""' in UPDATE.read_text()
