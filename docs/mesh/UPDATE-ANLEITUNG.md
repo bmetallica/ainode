@@ -18,6 +18,8 @@ wie sie sind. Das spart die 15–25 Minuten aus Schritt 6.
 | Ein Advanced-Feld wirft das Rezept nicht mehr weg | `--max-num-seqs` für Qwen3.8 zu setzen hat vorher Reasoning-Parser, Tool-Parser und MTP-Config mitgenommen. Jetzt gewinnt dein Wert **pro Flag**, der Rest des Rezepts bleibt. |
 | `proven_tp` begrenzt den Tensor-Split | Ein Modell, das nur bei TP=1 verifiziert ist, wird über mehrere Knoten als **Pipeline** gefahren statt seine Attention-Heads in einer nie getesteten Breite zu zerlegen. |
 | Der Standard-Backend (eugr) beachtet alle Launch-Felder | `served_model_name`, `kv_cache_dtype` und `trust_remote_code` wurden im UI angenommen, gespeichert — und auf dem Weg zu vLLM stillschweigend verworfen. Wer in OpenWebUI einen kurzen Modellnamen wollte, bekam die volle Repo-ID. |
+| Tool-Calling automatisch | Open WebUI schickt bei jedem Chat mit Werkzeug `tool_choice: "auto"`. vLLM lehnt das ab, solange die Engine nicht mit `--enable-auto-tool-choice` **und** einem passenden `--tool-call-parser` gestartet wurde. Das hatten genau drei kuratierte Modelle; alles von HF Geladene nicht. AINode leitet den Parser jetzt aus der Modellfamilie ab. |
+| Parser für Qwen3.8 und Nemotron 3.5 korrigiert | Beide standen auf `qwen3_coder`; die Rezepte, aus denen die Einträge stammen, benutzen für genau diese Modelle `qwen3_xml`. `qwen3_coder` gehört zur Qwen3-Coder-/3.5-Generation. |
 | **Profile** | Mehrere Modelle als einen Zustand beschreiben, anwenden und beim Start wiederherstellen — inklusive verteilter Instanzen, die `instances.json` nie abbilden konnte. Siehe Schritt 12 der [Cluster-Anleitung](ANLEITUNG-3-NODE-MESH.md). |
 | Gemma 4 26B-A4B (NVFP4) im Katalog | Mit den Flags aus eugrs erprobtem Rezept (MIT, im Code als Herkunft vermerkt). **Anmerkung:** Das Modell heißt 26B-A4B, nicht 31B — eine 31B-Variante gibt es in der Referenzimplementierung nicht. |
 
@@ -171,4 +173,6 @@ hat (`instances.json`).
 | `/api/status` zeigt nach dem Neustart die alte Version | Container wurde nicht ersetzt | `docker ps --filter name=ainode`, dann `sudo systemctl restart ainode` |
 | Verteilter Start endet mit Exit-Code 2 | Rezept fehlt weiterhin → auf dem Knoten läuft noch der alte Orchestrator | Schritt 3 für diesen Knoten wiederholen |
 | „engine image not present on peer" | Das Modell verlangt ein Engine-Image, das ein Member nicht hat | passiert ab diesem Stand nicht mehr von selbst — AINode legt es dort ab. Bleibt die Meldung: `docker images` auf dem Member prüfen |
+| Open WebUI: „server does not allow automatic tool calls" | Modell ohne Tool-Parser gestartet, oder Familie nicht erkannt | Launch-Panel → *Advanced* → **Tool calling** auf den passenden Parser stellen und neu starten. Welcher es ist, steht in der Auswahlliste neben dem Namen |
+| Werkzeuge werden aufgerufen, aber die Antwort ist Unsinn | falscher Parser für dieses Modell | derselbe Weg — bei Qwen 3.6+ `qwen3_xml`, bei Qwen3-Coder/3.5 `qwen3_coder` |
 | Profil anwenden stoppt ein Modell, das du behalten wolltest | „Anwenden" konvergiert — was nicht im Profil steht, wird gestoppt | Profil mit **Save current state** neu aufnehmen, wenn alles läuft |

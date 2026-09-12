@@ -107,10 +107,28 @@ def test_uncurated_model_gets_no_recipe():
     assert catalog_recipe("") == {}
 
 
-def test_qwen38_recipe_uses_qwen3_coder_tool_parser():
-    # hermes silently parses ZERO tool calls for this template — proven on hardware.
+def test_qwen38_recipe_uses_the_parser_its_source_recipe_uses():
+    # History: hermes silently parses ZERO tool calls for this template (proven
+    # on hardware), so it was replaced with qwen3_coder. But the recipe this
+    # entry is derived from — eugr/spark-vllm-docker
+    # recipes/qwen3.8-27b-nvfp4-dflash2.yaml (MIT) — serves this exact model
+    # with qwen3_xml, as does the Nemotron 3.5 recipe. qwen3_coder belongs to
+    # the Qwen3-Coder / Qwen3.5 generation; 3.6 and newer emit XML-tagged
+    # calls. Matching the cited source beats matching a sibling family.
+    #
+    # If tool calls misbehave on hardware with qwen3_xml, the override is one
+    # field in the launch panel (tool_calling) — no rebuild.
     a = CURATED_CLUSTER_MODELS["qwen3.8-27b-nvfp4"].extra_vllm_args
-    assert a[a.index("--tool-call-parser") + 1] == "qwen3_coder"
+    assert a[a.index("--tool-call-parser") + 1] == "qwen3_xml"
+
+
+def test_every_curated_tool_parser_also_enables_auto_tool_choice():
+    # A parser without --enable-auto-tool-choice is inert: vLLM rejects
+    # tool_choice:"auto" anyway, which is what Open WebUI sends.
+    for info in CURATED_CLUSTER_MODELS.values():
+        args = list(info.extra_vllm_args or [])
+        if "--tool-call-parser" in args:
+            assert "--enable-auto-tool-choice" in args, info.id
 
 
 def test_recipes_never_hardcode_enforce_eager():

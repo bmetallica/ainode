@@ -247,6 +247,28 @@ def apply_catalog_recipe(model: str, overrides: dict, gmu=None):
     return overrides, gmu
 
 
+def apply_tool_calling(model: str, overrides: dict, choice: str = "") -> dict:
+    """Make the model answer ``tool_choice: "auto"`` requests, where we can.
+
+    Open WebUI sends ``tool_choice: "auto"`` whenever a tool is attached, and
+    vLLM refuses it unless the engine was started with
+    ``--enable-auto-tool-choice`` and a matching ``--tool-call-parser``. Only
+    three curated models carried those flags, so every other model — including
+    anything downloaded from HF — rejected those chats with an error about
+    server configuration that no amount of clicking in the UI could fix.
+
+    Applied after the recipe, so a recipe's own parser always wins. An
+    unrecognised model gets nothing at all: see ainode.models.tool_parsers.
+    """
+    from ainode.models.tool_parsers import AUTO, tool_call_args
+
+    extra = list(overrides.get("extra_vllm_args") or [])
+    added = tool_call_args(model, extra, choice or AUTO)
+    if added:
+        overrides["extra_vllm_args"] = extra + added
+    return overrides
+
+
 def catalog_proven_tp(model: str) -> int:
     """Node count a curated model has actually been served at here, or 0.
 
@@ -742,6 +764,7 @@ async def handle_model_load(request: web.Request) -> web.Response:
         return err
 
     overrides, gmu = apply_catalog_recipe(model, overrides, gmu)
+    overrides = apply_tool_calling(model, overrides, str_field(body, "tool_calling"))
 
     # Decide: single-node or distributed?
     sharding_config = None

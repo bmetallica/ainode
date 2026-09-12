@@ -305,7 +305,11 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     # drop all of them and honour only gpu_memory_utilization, so the launch
     # that most needs a batching flag or a context limit was the one that could
     # not carry them.
-    from ainode.models.api_routes import apply_catalog_recipe, parse_load_overrides
+    from ainode.models.api_routes import (
+        apply_catalog_recipe,
+        apply_tool_calling,
+        parse_load_overrides,
+    )
 
     overrides, err = parse_load_overrides(body)
     if err is not None:
@@ -328,6 +332,7 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     )
     if recipe_gmu is not None:
         overrides["gpu_memory_utilization"] = recipe_gmu
+    overrides = apply_tool_calling(model, overrides, str_field(body, "tool_calling"))
 
     inst_config = replace(config, model=model, distributed_mode="head",
                           peer_ips=chosen_peers, peer_transfer_ips=peer_transfer_ips,

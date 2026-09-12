@@ -1536,6 +1536,11 @@ const AINode = {
     }
     var trc = document.getElementById('launch-trust-remote-code');
     if (trc && trc.checked) advanced.trust_remote_code = true;
+    // Empty means "Automatic": the server derives the parser from the model
+    // family. Sent only when the operator picked something, so the default
+    // stays server-side and one place decides it.
+    var toolCalling = textField('launch-tool-calling');
+    if (toolCalling) advanced.tool_calling = toolCalling;
 
     var launchBtn = document.getElementById('launch-btn');
     if (launchBtn) { launchBtn.disabled = true; launchBtn.textContent = 'LAUNCHING...'; }
