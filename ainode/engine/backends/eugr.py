@@ -43,6 +43,7 @@ from ainode.cluster.topology import (
 from ainode.core.config import LOGS_DIR, NodeConfig, host_path
 from ainode.core.gpu import detect_gpu
 from ainode.engine.backends.base import EngineBackend
+from ainode.engine.load_phase import LoadPhaseTracker
 from ainode.engine.distribute import (
     DistributionError,
     ensure_peer_has_dir,
@@ -118,6 +119,7 @@ class EugrBackend(EngineBackend):
         self._log_thread: Optional[threading.Thread] = None
         # Fabric wiring, resolved lazily on first use — see _topology().
         self._topology_cache: Optional[TopologyInfo] = None
+        self._phase = LoadPhaseTracker()
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         self._log_file: Path = LOGS_DIR / "vllm.log"
         self._distributed_log: Path = LOGS_DIR / "distributed.log"
@@ -960,18 +962,26 @@ vllm serve {self.config.model} \\
     # Log streaming
     # ------------------------------------------------------------------
 
+    @property
+    def load_phase(self) -> str:
+        """Coarse load phase for the UI's launching card.
+
+        This backend reported none, so every launch showed a flat 8% — the
+        UI's fallback for "unknown" — for the whole of a load that can take
+        minutes, which is indistinguishable from a hang.
+        """
+        return self._phase.current(ready_latch=self._ready)
+
     def _stream_logs(self, process: subprocess.Popen, target: Path) -> None:
-        """Tee subprocess stdout to a log file, watching for readiness."""
+        """Tee subprocess stdout to a log file, tracking readiness and phase."""
         if not process.stdout:
             return
+        self._phase.reset()
         with open(target, "a") as sink:
             for line in process.stdout:
                 sink.write(line)
                 sink.flush()
-                if not self._ready and (
-                    "Uvicorn running on" in line
-                    or "Application startup complete" in line
-                ):
+                if self._phase.observe(line) and not self._ready:
                     self._ready = True
                     if self.on_ready:
                         try:

@@ -58,6 +58,15 @@ Versions follow [Semantic Versioning](https://semver.org/).
   "manifest unknown".
 
 ### Fixed
+- **The launch progress bar reports real progress on the default backend.**
+  `load_phase` existed only on the nvidia backend, so an eugr launch showed a
+  flat 8% — the UI's fallback for "no phase reported" — for the whole of a load
+  that takes minutes on a frontier model. Indistinguishable from a hang, and
+  reported as one. The phase tracker moves to `engine/load_phase.py` and both
+  backends use it; the launcher's own output (image check, Ray start, waiting
+  for the cluster) counts too, since it covers the slowest part of a
+  distributed launch. A phase with no entry in the UI table renders as that
+  same 8% fallback, so a test now asserts the table covers every phase.
 - **The eugr launcher is in the orchestrator image again.** `EugrBackend`
   shells out to `/opt/spark-vllm-docker/launch-cluster.sh` for both solo and
   distributed serves. It was present while this image was `FROM ainode-base`;
