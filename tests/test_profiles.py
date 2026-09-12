@@ -207,3 +207,36 @@ class TestProfileRoutes:
         # The UI sends no body for "set default"; a handler must not 500 on it.
         _call(handle_create_profile, app, {"name": "p"})
         assert _call(handle_set_default, app, None, name="p").status == 200
+
+
+class TestRoutesAreActuallyRegistered:
+    """A feature nobody wired into the app is a feature that does not exist.
+
+    Every other test here calls the handlers directly, which proves they work
+    and proves nothing about whether a request can reach them.
+    """
+
+    @pytest.fixture()
+    def app(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AINODE_HOME", str(tmp_path))
+        from ainode.api.server import create_app
+        from ainode.core.config import NodeConfig
+
+        return create_app(config=NodeConfig(node_id="head"), engine=None)
+
+    def test_the_store_is_ready_before_the_app_starts(self, app):
+        # Built in create_app, not lazily on a running app: the startup restore
+        # and the routes have to share one store, and assigning into a started
+        # aiohttp application is deprecated.
+        assert isinstance(app.get("profiles"), ProfileStore)
+
+    @pytest.mark.parametrize("path", [
+        "/api/profiles",
+        "/api/profiles/capture",
+        "/api/profiles/{name}",
+        "/api/profiles/{name}/apply",
+        "/api/profiles/{name}/default",
+    ])
+    def test_route_exists(self, app, path):
+        paths = {getattr(r.resource, "canonical", "") for r in app.router.routes()}
+        assert path in paths
