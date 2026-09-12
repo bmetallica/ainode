@@ -6,6 +6,7 @@ das UI. Dazu eine Profilfunktion, mit der sich mehrere Modelle gemeinsam
 konfigurieren, laden und beim Start automatisch bereitstellen lassen.
 
 Stand vor dem Umbau: `main` @ a4a0a67, 1132 Tests.
+Stand danach: `fable/profiles-and-modern-llms`, 1224 Tests. Abschnitt 6 hält fest, was abweichend gebaut wurde.
 
 ---
 
@@ -170,3 +171,37 @@ Neuer Reiter **Profiles** neben Cluster/Chat/Server/Models/Training/Config:
 A → B → C → D → E. A ist Voraussetzung, weil ein Profil sonst je nach
 Knotenzahl unterschiedlich startet. D erst nach C, damit das UI gegen eine
 fertige API gebaut wird.
+
+## 6. Was tatsächlich gebaut wurde
+
+Alle fünf Teile sind umgesetzt. Abweichungen und Zusätze gegenüber dem Plan:
+
+**Teil A, zusätzlich zum Plan.** Beim Prüfen des verteilten Pfads fielen zwei
+weitere Stellen auf, an denen dieselbe Konfiguration verlorenging:
+
+- *Der Standard-Backend (eugr) las nur einen Teil der Launch-Felder.*
+  `served_model_name`, `kv_cache_dtype` und `trust_remote_code` wurden vom UI
+  angenommen, in `NodeConfig` gespeichert und beim Schreiben des
+  Startskripts verworfen. Die Regeln dafür hängen am Modell und an der
+  Hardware, nicht am Backend, also liegen sie jetzt in
+  `ainode/engine/serve_args.py` und beide Backends benutzen sie.
+- *Ein Advanced-Feld ersetzte das ganze Rezept.* `extra_vllm_args` vom Aufrufer
+  trat an die Stelle der Rezept-Argumente; ein `--max-num-seqs` für Qwen3.8 nahm
+  dessen Reasoning-Parser, Tool-Parser und Speculative-Config mit. Jetzt gewinnt
+  der Aufrufer **pro Flag**, der Rest bleibt (`merge_vllm_args`).
+
+**Teil B, kleiner als geplant.** `PUT` ersetzt ein Profil vollständig; ein
+Umbenennen gibt es nicht (neu anlegen, altes löschen). Das UI schreibt Profile
+ausschließlich über `capture` — ein Formular mit zwölf Feldern pro Modell wäre
+der unbequemere Weg zum selben Ergebnis.
+
+**Teil C, wie geplant.** `startup_restore` meldet `True`, sobald ein
+Standardprofil existiert — auch wenn das Anwenden scheitert. Andernfalls liefe
+danach der Manifest-Replay und startete einen zweiten, widersprechenden Satz.
+
+**Teil E, mit einer Korrektur am Anwendungsfall.** Das Alltagsmodell heißt
+**Gemma 4 26B-A4B**, nicht 31B; eine 31B-Variante gibt es in der
+Referenzimplementierung nicht. Übernommen ist das Rezept aus
+`recipes/gemma4-26b-a4b-nvfp4.yaml` (MIT, im Katalog als Herkunft vermerkt),
+ohne dessen `-tp 2`: das zielt auf einen Host mit zwei GPUs, und bei einer GPU
+pro Knoten ergibt sich die Aufteilung aus der Knotenauswahl.

@@ -217,7 +217,7 @@ publishes to; Docker Hub mirroring is opt-in and off by default (see
 
 ```bash
 docker pull ghcr.io/bmetallica/ainode:latest     # always newest
-# pin a release instead: ghcr.io/bmetallica/ainode:0.5.6
+# pin a release instead: ghcr.io/bmetallica/ainode:0.6.0
 ```
 
 ### Two nodes (distributed mode)
