@@ -62,6 +62,25 @@ LOAD_PHASE_MARKERS = [
 # Lines that mean the API is up. Both appear; whichever lands first wins.
 READY_MARKERS = ("uvicorn running on", "application startup complete")
 
+# Failures worth naming before the engine reaches its own traceback, because
+# the traceback describes the symptom and not the mistake.
+#
+# A repository whose architecture resolves to *DraftModel holds the draft half
+# of a speculative-decoding pair. It is not servable on its own: vLLM loads it,
+# reaches for the speculative_config that would name its base model, finds None
+# and dies with "AttributeError: 'NoneType' object has no attribute
+# 'draft_model_config'" — which says nothing about what the operator actually
+# did wrong. The draft belongs in --speculative-config alongside a base model.
+_FATAL_PATTERNS = [
+    (
+        "resolved architecture:",
+        "draftmodel",
+        "this repository is a speculative-decoding DRAFT model, not a servable "
+        "model. Load the base model it belongs to, and pass this one in "
+        "--speculative-config if you want speculative decoding.",
+    ),
+]
+
 
 class LoadPhaseTracker:
     """Tracks how far a launch has got, from log lines.
@@ -83,6 +102,9 @@ class LoadPhaseTracker:
         #: First exception line of this launch — the root cause. Preferred over
         #: the tail, which is usually a supervising process's own traceback.
         self.root_cause = ""
+        #: A known mistake recognised from the log, explained in the operator's
+        #: terms rather than the engine's. Outranks the root cause.
+        self.fatal_hint = ''
 
     def reset(self) -> None:
         """A fresh log stream means a fresh launch — start the clock over."""
@@ -91,6 +113,7 @@ class LoadPhaseTracker:
         self.error = ""
         self.tail = []
         self.root_cause = ""
+        self.fatal_hint = ""
 
     def fail(self, reason: str) -> None:
         """Mark the launch dead. Ignored once the engine is serving — the
@@ -122,6 +145,10 @@ class LoadPhaseTracker:
                 if match:
                     self.root_cause = f"{match.group(1)}: {match.group(2)}".strip()
         low = line.lower()
+        for lead, needle, message in _FATAL_PATTERNS:
+            if lead in low and needle in low.replace(" ", ""):
+                self.fatal_hint = message
+                break
         for phase, markers in LOAD_PHASE_MARKERS:
             if any(m in low for m in markers):
                 self.advance(phase)
@@ -148,5 +175,5 @@ class LoadPhaseTracker:
         """
         if self.phase != PHASE_FAILED:
             return ""
-        detail = self.root_cause or " | ".join(self.tail[-3:])
+        detail = self.fatal_hint or self.root_cause or " | ".join(self.tail[-3:])
         return f"{self.error}{(' — ' + detail) if detail else ''}"

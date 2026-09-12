@@ -477,3 +477,72 @@ class TestRootCauseBeatsTheTail:
         t = self._fail_with(["ValueError: old"])
         t.reset()
         assert t.root_cause == ""
+
+
+class TestKnownMistakesAreNamed:
+    """Some failures have a traceback that describes the symptom and not the
+    mistake. A DFlash repository is the case that prompted this: vLLM dies with
+    "AttributeError: 'NoneType' object has no attribute 'draft_model_config'",
+    which says nothing about what the operator actually did."""
+
+    def _fail_with(self, lines):
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        t = LoadPhaseTracker()
+        t.reset()
+        for line in lines:
+            t.observe(line)
+        t.fail("the launcher exited (code 1)")
+        return t
+
+    REAL = [
+        "(APIServer pid=91) INFO 09-12 00:45:55 [model.py:692] "
+        "Resolved architecture: DFlashDraftModel",
+        "(EngineCore pid=143) AttributeError: 'NoneType' object has no attribute "
+        "'draft_model_config'",
+        "(APIServer pid=91) RuntimeError: Engine core initialization failed. "
+        "See root cause above.",
+    ]
+
+    def test_a_draft_model_is_named_as_such(self):
+        reason = self._fail_with(self.REAL).failure_reason()
+        assert "DRAFT model" in reason
+        assert "--speculative-config" in reason
+
+    def test_it_outranks_the_raw_traceback(self):
+        """The AttributeError is accurate and useless; the hint is neither."""
+        reason = self._fail_with(self.REAL).failure_reason()
+        assert "draft_model_config" not in reason
+
+    @pytest.mark.parametrize("arch", [
+        "Resolved architecture: DFlashDraftModel",
+        "Resolved architecture: Qwen3DraftModel",
+        "resolved architecture: SomeDraftModel",
+    ])
+    def test_draft_architectures_recognised(self, arch):
+        assert self._fail_with([arch]).fatal_hint
+
+    @pytest.mark.parametrize("arch", [
+        "Resolved architecture: Gemma3ForCausalLM",
+        "Resolved architecture: Qwen3MoeForCausalLM",
+        "some prose mentioning a draft model in passing",
+    ])
+    def test_ordinary_models_are_not_flagged(self, arch):
+        assert not self._fail_with([arch]).fatal_hint
+
+    def test_reset_clears_the_hint(self):
+        t = self._fail_with(self.REAL)
+        t.reset()
+        assert t.fatal_hint == ""
+
+    def test_a_successful_load_is_unaffected(self):
+        """The hint must not fire on a model that goes on to serve."""
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        t = LoadPhaseTracker()
+        t.reset()
+        t.observe("Resolved architecture: DFlashDraftModel")
+        t.observe("INFO:     Uvicorn running on http://0.0.0.0:8000")
+        t.fail("the launcher exited (code 0)")
+        assert t.phase == "ready"
+        assert t.failure_reason() == ""
