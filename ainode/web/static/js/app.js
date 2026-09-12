@@ -5054,6 +5054,7 @@ const AINode = {
       case 'training':    return this.renderConfigTrainingDefaults();
       case 'security':    return this.renderConfigSecurity();
       case 'network':     return this.renderConfigNetwork();
+      case 'monitoring':  return this.renderConfigMonitoring();
       case 'about':       return this.renderConfigAbout();
     }
   },
@@ -5678,6 +5679,137 @@ const AINode = {
         host: document.getElementById('cfg-f-host').value,
         cors_origins: document.getElementById('cfg-f-cors_origins').value,
       }, { restartHint: true });
+    });
+  },
+
+  // ----- Monitoring (MQTT telemetry) ---------------------------------------
+
+  async renderConfigMonitoring() {
+    var mount = this._configMount();
+    if (!mount) return;
+    mount.innerHTML = '<div class="config-empty">Loading…</div>';
+    var data = await this.fetchJSON('/api/telemetry/mqtt');
+    if (!data) {
+      mount.innerHTML = '<div class="config-empty">Unable to load telemetry settings.</div>';
+      return;
+    }
+    var self = this;
+    var s = data.settings || {};
+    var status = data.status || {};
+
+    var html = '';
+    html += '<h2 class="config-section-title">Monitoring</h2>';
+    html += '<p class="config-section-desc">Publish this node\'s metrics to an MQTT broker — CPU, memory, disk, per-interface network load, GPU, and what each loaded model is doing. ' +
+            'The head also publishes the cluster view. Anything that speaks MQTT can read it: Home Assistant, Node-RED, Telegraf into Grafana.</p>';
+
+    // Live status first: whether it is actually publishing is the question
+    // someone opening this page has.
+    html += '<div class="config-card">';
+    html += '  <h3 class="config-card-title">Status</h3>';
+    html += '  <div class="config-form-grid">';
+    html += '    <div><div class="config-field-label">Publishing</div><div>' +
+            (status.running ? '<span style="color:var(--nvidia-green)">yes</span>' : 'no') + '</div></div>';
+    html += '    <div><div class="config-field-label">Broker</div><div class="mono">' + this.esc(status.broker || '—') + '</div></div>';
+    html += '    <div><div class="config-field-label">Messages sent</div><div>' + (status.published || 0) + '</div></div>';
+    if (status.last_error) {
+      html += '    <div><div class="config-field-label">Last error</div><div style="color:#ff6b6b">' + this.esc(status.last_error) + '</div></div>';
+    }
+    html += '  </div>';
+    html += '</div>';
+
+    html += '<div class="config-card"><div class="config-form-grid">';
+    html += '<div><label class="config-field-label">Publish telemetry</label>' +
+            '<label style="display:flex;align-items:center;gap:8px;margin-top:6px">' +
+            '<input type="checkbox" id="cfg-mqtt-enabled"' + (s.mqtt_enabled ? ' checked' : '') + '> enabled</label></div>';
+    html += this._field('Broker host', 'mqtt_host', s.mqtt_host, { hint: 'IP or hostname of the MQTT server' });
+    html += this._field('Broker port', 'mqtt_port', s.mqtt_port, { type: 'number' });
+    html += this._field('Username', 'mqtt_username', s.mqtt_username, { hint: 'Leave empty for an anonymous broker' });
+    html += '<div><label class="config-field-label" for="cfg-f-mqtt_password">Password</label>' +
+            '<input class="form-input" id="cfg-f-mqtt_password" type="password" placeholder="' +
+            (data.password_set ? 'stored — leave empty to keep it' : 'none stored') + '">' +
+            '<div class="config-field-hint">Kept in the secrets store, not in config.json.</div></div>';
+    html += this._field('Topic prefix', 'mqtt_topic_prefix', s.mqtt_topic_prefix,
+                        { hint: 'Topics become prefix/node-id/system, /gpu, /models — plus prefix/cluster from the head' });
+    html += this._field('Interval (seconds)', 'mqtt_interval', s.mqtt_interval,
+                        { type: 'number', hint: 'How often to publish. 5-3600.' });
+    html += '<div><label class="config-field-label">TLS</label>' +
+            '<label style="display:flex;align-items:center;gap:8px;margin-top:6px">' +
+            '<input type="checkbox" id="cfg-mqtt-tls"' + (s.mqtt_tls ? ' checked' : '') + '> use TLS</label></div>';
+    html += '<div><label class="config-field-label">Retain</label>' +
+            '<label style="display:flex;align-items:center;gap:8px;margin-top:6px">' +
+            '<input type="checkbox" id="cfg-mqtt-retain"' + (s.mqtt_retain ? ' checked' : '') + '> keep the last message on the broker</label>' +
+            '<div class="config-field-hint">Handy after a broker restart; a retained message from a node that has gone away still looks alive.</div></div>';
+    html += '</div>';
+    html += '<div class="config-actions">' +
+            '<button class="config-btn" id="cfg-mqtt-save">Save</button>' +
+            '<button class="config-btn" id="cfg-mqtt-test">Test connection</button>' +
+            '<button class="config-btn" id="cfg-mqtt-publish">Publish now</button>' +
+            '<button class="config-btn" id="cfg-mqtt-preview">Show payload</button>' +
+            '</div>';
+    html += '<div id="cfg-mqtt-result" class="config-card-desc" style="margin-top:10px"></div>';
+    html += '</div>';
+
+    html += '<div class="config-card">';
+    html += '  <h3 class="config-card-title">Topics</h3>';
+    html += '  <ul style="margin:0;padding-left:18px;font-family:var(--font-mono);font-size:12px">';
+    (data.topics || []).forEach(function (t) {
+      html += '<li>' + self.esc(t) + '</li>';
+    });
+    html += '  </ul>';
+    html += '  <p class="config-card-desc" style="margin-top:10px">One JSON message per topic. <code>cluster</code> is published by the head only — a member would overwrite the complete picture with its own partial one.</p>';
+    html += '</div>';
+
+    mount.innerHTML = html;
+
+    var out = document.getElementById('cfg-mqtt-result');
+    var say = function (text, bad) {
+      out.innerHTML = '<span style="color:' + (bad ? '#ff6b6b' : 'var(--nvidia-green)') + '">' + self.esc(text) + '</span>';
+    };
+
+    document.getElementById('cfg-mqtt-save').addEventListener('click', async function () {
+      var body = {
+        mqtt_enabled: document.getElementById('cfg-mqtt-enabled').checked,
+        mqtt_tls: document.getElementById('cfg-mqtt-tls').checked,
+        mqtt_retain: document.getElementById('cfg-mqtt-retain').checked,
+        mqtt_host: document.getElementById('cfg-f-mqtt_host').value.trim(),
+        mqtt_port: parseInt(document.getElementById('cfg-f-mqtt_port').value, 10),
+        mqtt_username: document.getElementById('cfg-f-mqtt_username').value.trim(),
+        mqtt_topic_prefix: document.getElementById('cfg-f-mqtt_topic_prefix').value.trim(),
+        mqtt_interval: parseInt(document.getElementById('cfg-f-mqtt_interval').value, 10),
+        mqtt_password: document.getElementById('cfg-f-mqtt_password').value,
+      };
+      var resp = await fetch('/api/telemetry/mqtt', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      var d = await resp.json().catch(function () { return {}; });
+      if (!resp.ok) { say(d.error || 'Could not save', true); return; }
+      self.toast('Monitoring settings saved', 'success');
+      self.renderConfigMonitoring();
+    });
+
+    document.getElementById('cfg-mqtt-test').addEventListener('click', async function () {
+      say('Connecting…');
+      var resp = await fetch('/api/telemetry/mqtt/test', { method: 'POST' });
+      var d = await resp.json().catch(function () { return {}; });
+      if (d.ok) say('Connected to ' + d.broker);
+      else say(d.error || 'Connection failed', true);
+    });
+
+    document.getElementById('cfg-mqtt-publish').addEventListener('click', async function () {
+      say('Publishing…');
+      var resp = await fetch('/api/telemetry/mqtt/publish', { method: 'POST' });
+      var d = await resp.json().catch(function () { return {}; });
+      if (d.ok) say('Published ' + d.published + ' message(s)');
+      else say(d.error || 'Publish failed', true);
+    });
+
+    document.getElementById('cfg-mqtt-preview').addEventListener('click', async function () {
+      say('Sampling…');
+      var d = await self.fetchJSON('/api/telemetry/preview');
+      if (!d) { say('Could not build a preview', true); return; }
+      out.innerHTML = '<pre style="max-height:420px;overflow:auto;font-size:11px;background:rgba(0,0,0,.35);padding:10px;border-radius:6px">' +
+        self.esc(JSON.stringify(d.payloads, null, 2)) + '</pre>';
     });
   },
 

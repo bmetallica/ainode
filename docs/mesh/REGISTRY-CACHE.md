@@ -24,7 +24,46 @@ typisch 2 GB statt 20.
 
 ---
 
-## Einrichtung (einmalig, ~10 Minuten)
+## Einrichtung — der kurze Weg
+
+```bash
+ssh Spark1
+cd ~/ainode
+scripts/setup-registry-cache.sh --head 192.168.1.2 --nodes Spark2,Spark3
+```
+
+Das Skript ist **wiederholbar**: es legt an, was fehlt, lässt in Ruhe, was
+stimmt, und startet den Docker-Daemon nur auf Knoten, deren Konfiguration sich
+tatsächlich geändert hat. Vorher ansehen, was es täte:
+
+```bash
+scripts/setup-registry-cache.sh --head 192.168.1.2 --nodes Spark2,Spark3 --check
+```
+
+Es richtet **zwei** Registries ein, weil ein Container nicht beides kann:
+
+| Port | Was | Wofür |
+|---|---|---|
+| 5000 | Pull-through-Cache für Docker Hub | die großen Engine-Images (`vllm/vllm-openai`) — einmal aus dem Netz, dann lokal |
+| 5001 | normale Registry | unsere eigenen Builds (`ainode`, `vllm-node`), die es in keiner öffentlichen Registry gibt |
+
+Und es trägt beide in `/etc/docker/daemon.json` jedes Knotens ein — bestehende
+Einstellungen bleiben erhalten, eine zeitgestempelte Sicherung wird angelegt,
+und eine von Hand kaputt editierte Datei wird **nicht** überschrieben, sondern
+gemeldet.
+
+> `systemctl restart docker` stoppt Container ohne `--restart`-Policy. Das
+> Skript startet `ainode` danach selbst wieder; laufende Modelle sind trotzdem
+> weg. Also in einem ruhigen Moment ausführen.
+
+Noch kürzer: `scripts/update-cluster.sh --head 192.168.1.2 --nodes
+Spark2,Spark3 --registry` macht das im Rahmen eines normalen Updates mit.
+
+---
+
+## Einrichtung — von Hand
+
+Wer wissen will, was das Skript tut, oder es einzeln braucht:
 
 ### 1. Registry auf dem Head starten
 
@@ -113,11 +152,12 @@ sondern normale Docker-Infrastruktur.
 
 ---
 
-## Warum AINode das nicht selbst einrichtet
+## Warum das ein Skript ist und keine Funktion im UI
 
 Die Änderung gehört in `/etc/docker/daemon.json` und verlangt einen Neustart
 des Docker-Daemons **auf jedem Knoten**. AINode läuft in einem Container und
-startet den Daemon nicht neu, unter dem es selbst läuft — und ein Werkzeug,
-das ungefragt die Docker-Konfiguration des Hosts umschreibt und dabei alle
-Container beendet, wäre eine unangenehme Überraschung. Die Schritte oben sind
-kurz genug, um sie bewusst zu machen.
+kann den Daemon, unter dem es selbst läuft, nicht neu starten — ein Knopf im
+UI, der die Anwendung mitten im Klick beendet, wäre eine schlechte Idee.
+
+Als Skript bleibt es ein bewusster Schritt, ist vorher mit `--check`
+einsehbar, und lässt sich jederzeit wiederholen.

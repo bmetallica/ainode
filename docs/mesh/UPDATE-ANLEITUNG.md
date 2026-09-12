@@ -25,6 +25,43 @@ wie sie sind. Das spart die 15–25 Minuten aus Schritt 6.
 
 ---
 
+## Der kurze Weg: ein Befehl
+
+Seit diesem Stand gibt es einen Updater, der alles unten Beschriebene selbst
+macht — und den du für **jedes** künftige Update genauso aufrufen kannst:
+
+```bash
+ssh Spark1
+cd ~/ainode
+scripts/update-cluster.sh --head 192.168.1.2 --nodes Spark2,Spark3
+```
+
+Er prüft erst alle Knoten, holt den Code, baut den Orchestrator, verteilt das
+Image, startet die Dienste (Member zuerst, Head zuletzt) und prüft am Ende,
+dass jeder Knoten die neue Version meldet. Vorher ansehen, ohne etwas zu
+ändern:
+
+```bash
+scripts/update-cluster.sh --head 192.168.1.2 --nodes Spark2,Spark3 --check
+```
+
+Einmalig lohnt sich zusätzlich `--registry`: das richtet den
+[Image-Cache](REGISTRY-CACHE.md) auf dem Head ein. Danach bewegt ein Update
+nur noch die geänderten Layer statt des ganzen Images, und die 20-GB-Engine-
+Images kommen einmal aus dem Netz statt einmal pro Knoten:
+
+```bash
+scripts/update-cluster.sh --head 192.168.1.2 --nodes Spark2,Spark3 --registry
+```
+
+Das Engine-Image wird dabei **nicht** neu gebaut. Wenn doch nötig: `--base`
+(dann 15–25 Minuten länger).
+
+Der Rest dieser Seite beschreibt dieselben Schritte von Hand — nützlich, wenn
+etwas schiefgeht oder du wissen willst, was der Updater tut.
+
+---
+
 ## Schritt 1 — Laufenden Zustand sichern (auf Spark1)
 
 Falls beim Update etwas schiefgeht, willst du wissen, was lief:

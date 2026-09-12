@@ -59,6 +59,13 @@ KNOWN_SECRETS: Dict[str, Dict[str, str]] = {
         "prefix_hint": "",
         "testable": "",
     },
+    "mqtt_password": {
+        "label": "MQTT Password",
+        "description": "Password for the MQTT broker telemetry is published to. The host, user, topics and interval are in Config -> Monitoring; only the password lives here.",
+        "docs_url": "",
+        "prefix_hint": "",
+        "testable": "",
+    },
     "openai_api_key": {
         "label": "OpenAI API Key",
         "description": "Optional -- used for benchmark comparisons against hosted OpenAI models.",

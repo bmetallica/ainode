@@ -32,6 +32,10 @@ dependencies = [
     "aiohttp>=3.9.0",
     "rich>=13.0.0",
     "huggingface_hub>=0.20.0",
+    # Telemetry publishing. A core dependency rather than an extra: it is
+    # ~200 KB of pure Python, and a monitoring feature that needs a different
+    # image than the one people run is a monitoring feature nobody turns on.
+    "paho-mqtt>=1.6.1",
 ]
 
 [project.optional-dependencies]
