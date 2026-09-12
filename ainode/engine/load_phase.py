@@ -13,13 +13,23 @@ on an unexpected line is not.
 
 from __future__ import annotations
 
-__all__ = ["LOAD_PHASE_MARKERS", "LOAD_PHASE_ORDER", "LoadPhaseTracker"]
+__all__ = ["LOAD_PHASE_MARKERS", "LOAD_PHASE_ORDER", "PHASE_FAILED",
+           "LoadPhaseTracker"]
+
+# How much of the tail to keep for a failure message.
+_TAIL_LINES = 12
 
 # Monotonic: a phase only ever moves forward within one launch.
 LOAD_PHASE_ORDER = [
     "idle", "starting", "distributing", "loading_weights",
     "distributed_init", "profiling", "ready",
 ]
+
+# Terminal, and outside the ordering: a launch that died did not reach a later
+# phase, it stopped. Without this a dead launcher is indistinguishable from a
+# slow load — the card sits at "starting" forever and the only way to find out
+# is to read a log file.
+PHASE_FAILED = "failed"
 
 LOAD_PHASE_MARKERS = [
     ("loading_weights", ("loading model weights", "loading weights",
@@ -53,11 +63,26 @@ class LoadPhaseTracker:
     def __init__(self) -> None:
         self.phase = "idle"
         self.ready = False
+        self.error = ""
+        #: Last lines seen, so a failure can quote the cause instead of
+        #: pointing at a log file the operator then has to go and find.
+        self.tail: list = []
 
     def reset(self) -> None:
         """A fresh log stream means a fresh launch — start the clock over."""
         self.phase = "starting"
         self.ready = False
+        self.error = ""
+        self.tail = []
+
+    def fail(self, reason: str) -> None:
+        """Mark the launch dead. Ignored once the engine is serving — the
+        launcher exiting after a successful start is normal for a detached
+        engine, and must not retract a working model."""
+        if self.ready:
+            return
+        self.phase = PHASE_FAILED
+        self.error = reason.strip()
 
     def advance(self, phase: str) -> None:
         """Move to ``phase`` only if it is later than the current one."""
@@ -71,6 +96,10 @@ class LoadPhaseTracker:
         """Feed one log line. Returns True the first time readiness is seen."""
         if self.ready:
             return False
+        stripped = line.rstrip()
+        if stripped:
+            self.tail.append(stripped)
+            del self.tail[:-_TAIL_LINES]
         low = line.lower()
         for phase, markers in LOAD_PHASE_MARKERS:
             if any(m in low for m in markers):
@@ -84,4 +113,13 @@ class LoadPhaseTracker:
 
     def current(self, ready_latch: bool = False) -> str:
         """The phase to report. ``ready_latch`` is the backend's own flag."""
-        return "ready" if (self.ready or ready_latch) else self.phase
+        if self.ready or ready_latch:
+            return "ready"
+        return self.phase
+
+    def failure_reason(self) -> str:
+        """One line an operator can act on, or ""."""
+        if self.phase != PHASE_FAILED:
+            return ""
+        detail = " | ".join(self.tail[-3:])
+        return f"{self.error}{(' — ' + detail) if detail else ''}"

@@ -1618,6 +1618,19 @@ h4.chat-h { font-size: 14px; color: var(--nvidia-green); }
   border-color: var(--amber);
 }
 
+.instance-status.failed {
+  color: var(--red);
+  font-weight: 700;
+}
+
+.instance-failed-note {
+  font-size: 11px;
+  color: var(--red);
+  line-height: 1.4;
+  margin: 6px 0 2px;
+  word-break: break-word;
+}
+
 .instance-degraded {
   font-size: 11px;
   color: var(--amber);

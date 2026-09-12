@@ -45,7 +45,11 @@ from ainode.cluster.hca_discovery import (
     detect_fabric_ip,
 )
 from ainode.cluster.topology import TopologyInfo, topology_for_config
-from ainode.engine.load_phase import LOAD_PHASE_MARKERS, LOAD_PHASE_ORDER
+from ainode.engine.load_phase import (
+    LOAD_PHASE_MARKERS,
+    LOAD_PHASE_ORDER,
+    LoadPhaseTracker,
+)
 from ainode.engine.parallelism import ParallelPlan, Strategy
 from ainode.core.config import LOGS_DIR, NodeConfig
 from ainode.engine.backends.base import EngineBackend
@@ -130,6 +134,7 @@ class NvidiaBackend(EngineBackend):
         # monotonically as _stream_logs sees the engine's startup markers.
         self._load_phase = "idle"
         self._log_thread: Optional[threading.Thread] = None
+        self._phase = LoadPhaseTracker()
         # Fabric wiring, resolved lazily on first use — see _topology().
         self._topology_cache: Optional[TopologyInfo] = None
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -484,7 +489,12 @@ class NvidiaBackend(EngineBackend):
         the API-poll path before _stream_logs sees the startup log line, which
         left _load_phase stuck at 'starting' on a model that is actually serving.
         """
-        return "ready" if self._ready else self._load_phase
+        if self._ready:
+            return "ready"
+        # A dead launch outranks whatever phase it got to.
+        if self._phase.phase == "failed":
+            return "failed"
+        return self._load_phase
 
     @property
     def api_url(self) -> str:
@@ -1553,10 +1563,16 @@ class NvidiaBackend(EngineBackend):
         except ValueError:
             pass
 
+    @property
+    def load_error(self) -> str:
+        """Why the last launch died, or "". Quotes the engine's own last lines."""
+        return self._phase.failure_reason()
+
     def _stream_logs(self, process: subprocess.Popen, target: Path) -> None:
         """Tee subprocess stdout to ``target``, watch for readiness + load phase."""
         if not process.stdout:
             return
+        self._phase.reset()
         # A fresh log stream means a fresh launch — start the phase clock over.
         self._load_phase = "starting"
         with open(target, "a") as sink:
@@ -1575,11 +1591,27 @@ class NvidiaBackend(EngineBackend):
                 ):
                     self._ready = True
                     self._load_phase = "ready"
+                    self._phase.ready = True
                     if self.on_ready:
                         try:
                             self.on_ready()
                         except Exception:  # pragma: no cover
                             logger.exception("on_ready callback failed")
+                self._phase.observe(line)   # keeps the tail for a failure message
+
+        # The stream ended. If the engine never reported itself ready, the
+        # launch died — say so rather than leaving the card at a phase it will
+        # never advance past.
+        if not self._ready:
+            try:
+                rc = process.wait(timeout=10)
+            except Exception:
+                rc = None
+            self._phase.fail(
+                f"the engine exited (code {rc})" if rc is not None
+                else "the engine stopped producing output"
+            )
+            logger.error("Launch failed: %s", self._phase.failure_reason())
 
 
 __all__ = [
