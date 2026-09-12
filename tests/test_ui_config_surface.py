@@ -307,3 +307,85 @@ class TestLoadPhaseIsReportedByBothBackends:
 
         for phase in LOAD_PHASE_ORDER:
             assert f"{phase}:" in APP_JS, f"PHASE_INFO has no entry for {phase}"
+
+
+class TestADeadLaunchIsReportedAsDead:
+    """A launcher that dies looked exactly like a model that takes minutes to
+    load: the card sat at a phase it would never leave, and the only way to
+    find out was to go and read a log file."""
+
+    def _tracker(self):
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        t = LoadPhaseTracker()
+        t.reset()
+        return t
+
+    def test_failure_is_terminal_and_carries_a_reason(self):
+        t = self._tracker()
+        t.observe("Error: Passwordless SSH to 192.168.1.3 failed.")
+        t.fail("the launcher exited (code 1)")
+        assert t.phase == "failed"
+        assert "code 1" in t.failure_reason()
+        assert "Passwordless SSH" in t.failure_reason()
+
+    def test_a_running_engine_is_never_retracted(self):
+        """The launcher exiting after a successful start is normal for a
+        detached engine and must not mark a serving model failed."""
+        t = self._tracker()
+        t.observe("INFO:     Uvicorn running on http://0.0.0.0:8000")
+        t.fail("the launcher exited (code 0)")
+        assert t.phase == "ready"
+        assert t.failure_reason() == ""
+
+    def test_no_reason_before_a_failure(self):
+        assert self._tracker().failure_reason() == ""
+
+    def test_the_tail_is_bounded(self):
+        """A launcher that fails after thousands of lines must not carry them
+        all into a status payload polled every few seconds."""
+        t = self._tracker()
+        for i in range(5000):
+            t.observe(f"line {i}")
+        t.fail("died")
+        assert len(t.tail) <= 12
+        assert len(t.failure_reason()) < 500
+
+    def test_blank_lines_are_not_quoted_back(self):
+        t = self._tracker()
+        t.observe("real failure line")
+        t.observe("   \n")
+        t.fail("died")
+        assert "real failure line" in t.failure_reason()
+
+    def test_reset_clears_a_previous_failure(self):
+        """A relaunch must not inherit the last one's error."""
+        t = self._tracker()
+        t.fail("old failure")
+        t.reset()
+        assert t.phase == "starting"
+        assert t.failure_reason() == ""
+
+    def test_both_backends_expose_the_error(self):
+        from ainode.core.config import NodeConfig
+        from ainode.engine.backends.eugr import EugrBackend
+        from ainode.engine.backends.nvidia import NvidiaBackend
+
+        for cls in (EugrBackend, NvidiaBackend):
+            backend = cls(NodeConfig(node_id="n"))
+            assert backend.load_error == ""
+            backend._phase.reset()
+            backend._phase.fail("boom")
+            assert "boom" in backend.load_error
+
+    def test_the_ui_renders_failed_terminally(self):
+        assert "failed: ['failed', 100]" in APP_JS
+        assert "instance-status failed" in APP_JS
+        assert "instance-failed-note" in APP_JS
+        assert ".instance-failed-note" in STYLE
+
+    def test_the_api_exposes_the_error(self):
+        from ainode.api import server
+
+        assert '"load_error"' in (server.__file__ and
+                                  Path(server.__file__).read_text())

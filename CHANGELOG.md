@@ -58,6 +58,16 @@ Versions follow [Semantic Versioning](https://semver.org/).
   "manifest unknown".
 
 ### Fixed
+- **A launch that dies is reported as dead.** When the engine or the launcher
+  exited without ever reporting readiness, nothing noticed: the log stream
+  simply ended and the instance card sat at whatever phase it had reached,
+  forever. A dead launcher was indistinguishable from a model that takes
+  minutes to load, and the only way to tell them apart was to go and read a log
+  file. Both backends now detect the stream ending, mark the launch `failed`,
+  and surface the exit code together with the engine's own last lines —
+  `GET /api/status` carries `load_error`, and the card renders it in place of a
+  progress bar that would never move again. A launcher exiting *after* a
+  successful start never retracts a serving model.
 - **The launch progress bar reports real progress on the default backend.**
   `load_phase` existed only on the nvidia backend, so an eugr launch showed a
   flat 8% — the UI's fallback for "no phase reported" — for the whole of a load

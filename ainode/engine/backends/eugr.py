@@ -972,6 +972,11 @@ vllm serve {self.config.model} \\
         """
         return self._phase.current(ready_latch=self._ready)
 
+    @property
+    def load_error(self) -> str:
+        """Why the last launch died, or "". Quotes the engine's own last lines."""
+        return self._phase.failure_reason()
+
     def _stream_logs(self, process: subprocess.Popen, target: Path) -> None:
         """Tee subprocess stdout to a log file, tracking readiness and phase."""
         if not process.stdout:
@@ -988,6 +993,21 @@ vllm serve {self.config.model} \\
                             self.on_ready()
                         except Exception:  # pragma: no cover
                             logger.exception("on_ready callback failed")
+
+        # The stream ended. If the engine never reported itself ready, the
+        # launch died — say so. Without this the card sits at "starting"
+        # indefinitely and a dead launcher is indistinguishable from a model
+        # that simply takes minutes to load.
+        if not self._ready:
+            try:
+                rc = process.wait(timeout=10)
+            except Exception:
+                rc = None
+            self._phase.fail(
+                f"the launcher exited (code {rc})" if rc is not None
+                else "the launcher stopped producing output"
+            )
+            logger.error("Launch failed: %s", self._phase.failure_reason())
 
 
 # Back-compat alias — old code imports ``DockerEngine`` from the

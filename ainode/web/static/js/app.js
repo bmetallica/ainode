@@ -689,6 +689,8 @@ const AINode = {
     var s = this.state.status;
     var live = !!(s && s.engine_ready);
     var phase = (s && s.load_phase) || 'idle';
+    // Both come from this node's status, so they describe the same launch.
+    var loadError = (s && s.load_error) || '';
     // Coarse phase → [label, percent] for the launching card (3c).
     // Any phase missing here renders as the `idle` fallback — a flat 8% that
     // reads as a hang. Keep in step with LOAD_PHASE_ORDER in
@@ -699,6 +701,7 @@ const AINode = {
       loading_weights: ['loading weights', 40],
       distributed_init: ['connecting nodes', 62],
       profiling: ['profiling', 84], ready: ['ready', 100],
+      failed: ['failed', 100],
     };
     var instances = [];
 
@@ -826,6 +829,9 @@ const AINode = {
       // A degraded instance is still running on the head but has lost the ranks
       // Ray placed on the node that went away — it cannot serve. Say which node
       // is gone and offer the one action that helps.
+      var failNote = (phase === 'failed' && loadError)
+        ? '<div class="instance-failed-note">' + self.esc(loadError) + '</div>'
+        : '';
       var degradedNote = inst.degraded
         ? '<div class="instance-degraded">Lost ' +
             self.esc((inst.missingPeers || []).join(', ')) +
@@ -838,11 +844,16 @@ const AINode = {
         '<div class="instance-meta">' +
         '<span class="instance-strategy ' + badgeClass + '">' + self.esc(inst.badge || inst.strategy) + '</span>' +
         '<span class="instance-nodes">' + nodeList + '</span>' +
-        '</div>' + degradedNote +
+        '</div>' + failNote + degradedNote +
         '<div class="instance-footer">' +
         (inst.status === 'READY'
           ? '<span class="instance-status ready">READY</span>'
           : (function () {
+              // A launch that died is terminal — show it as such instead of a
+              // bar that will never move again.
+              if (phase === 'failed') {
+                return '<span class="instance-status failed">FAILED</span>';
+              }
               var pi = PHASE_INFO[phase] || ['starting', 10];
               return '<span class="instance-status starting">' + self.esc(pi[0].toUpperCase()) + ' · ' + pi[1] + '%</span>' +
                 '<span style="display:inline-block;width:90px;height:5px;background:#1f2a1f;border-radius:3px;margin:0 8px;vertical-align:middle;overflow:hidden">' +

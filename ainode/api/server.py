@@ -700,6 +700,10 @@ async def handle_status(request: web.Request) -> web.Response:
         # log marker and stay False on a model that is actually serving. Report
         # 'ready' when the probe says serving; else the engine's coarse phase.
         "load_phase": ("ready" if engine_ready else (getattr(engine, "load_phase", "idle") if engine is not None else "idle")),
+        # Why a launch died, quoting the engine's own last lines. Empty unless
+        # the phase is "failed" — without it the UI can say a launch failed but
+        # not why, and the operator is sent to hunt through a log file.
+        "load_error": ("" if engine_ready else (getattr(engine, "load_error", "") if engine is not None else "")),
         "uptime": round(time.time() - start_time, 1),
         "version": __version__,
         "powered_by": "argentos.ai",
