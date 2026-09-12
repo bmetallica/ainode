@@ -25,6 +25,8 @@ __all__ = [
     "effective_kv_cache_dtype",
     "is_multimodal_model",
     "local_model_dir",
+    "merge_vllm_args",
+    "split_vllm_args",
     "supplied_flags",
 ]
 
@@ -93,3 +95,41 @@ def supplied_flags(extra_args: Optional[Iterable]) -> Set[str]:
     """
     args: List[str] = [str(a) for a in (extra_args or [])]
     return {a.split("=", 1)[0] for a in args if a.startswith("--")}
+
+
+def split_vllm_args(args: Optional[Iterable]) -> List[List[str]]:
+    """Group a flat argument list into ``[flag, value...]`` runs.
+
+    ``["--moe-backend", "marlin", "--enable-prefix-caching"]`` becomes
+    ``[["--moe-backend", "marlin"], ["--enable-prefix-caching"]]``. Tokens
+    before the first flag are kept as their own leading group so nothing is
+    lost.
+    """
+    groups: List[List[str]] = []
+    for token in [str(a) for a in (args or [])]:
+        if token.startswith("--") or not groups:
+            groups.append([token])
+        else:
+            groups[-1].append(token)
+    return groups
+
+
+def merge_vllm_args(recipe_args: Optional[Iterable],
+                    caller_args: Optional[Iterable]) -> List[str]:
+    """Caller arguments, plus the recipe flags the caller did not mention.
+
+    Setting one thing in the UI must not throw away everything else the model
+    needs. Typing a ``--max-num-seqs`` for Qwen3.8 used to replace its whole
+    recipe — reasoning parser, tool-call parser and speculative config gone —
+    because the caller's list simply took the place of the recipe's. Now the
+    caller wins per flag, and the rest of the recipe survives.
+    """
+    caller = [str(a) for a in (caller_args or [])]
+    if not recipe_args:
+        return caller
+    supplied = supplied_flags(caller)
+    merged = list(caller)
+    for group in split_vllm_args(recipe_args):
+        if group[0].split("=", 1)[0] not in supplied:
+            merged.extend(group)
+    return merged

@@ -224,12 +224,24 @@ def apply_catalog_recipe(model: str, overrides: dict, gmu=None):
     parser and speculative config, distributed got none of them and died on the
     argparse error that configuration exists to avoid.
     """
+    from ainode.engine.serve_args import merge_vllm_args
+
     recipe = catalog_recipe(model)
     if not recipe:
         return overrides, gmu
-    for key in ("engine_image", "extra_vllm_args", "extra_env"):
-        if key in recipe and key not in overrides:
-            overrides[key] = recipe[key]
+    if "engine_image" in recipe and "engine_image" not in overrides:
+        overrides["engine_image"] = recipe["engine_image"]
+    # Merged per flag, not replaced wholesale: typing one advanced field in the
+    # UI must not silently drop the rest of the model's recipe. Setting
+    # --max-num-seqs for Qwen3.8 used to take its reasoning parser, tool-call
+    # parser and speculative config with it.
+    if recipe.get("extra_vllm_args"):
+        overrides["extra_vllm_args"] = merge_vllm_args(
+            recipe["extra_vllm_args"], overrides.get("extra_vllm_args"))
+    if recipe.get("extra_env"):
+        merged_env = dict(recipe["extra_env"])
+        merged_env.update(overrides.get("extra_env") or {})
+        overrides["extra_env"] = merged_env
     if gmu is None and "gpu_memory_utilization" in recipe:
         gmu = recipe["gpu_memory_utilization"]
     return overrides, gmu
