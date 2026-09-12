@@ -130,10 +130,23 @@ def ensure_peer_has_dir(
 # rather than exceptional, so the head places the image the way it places
 # weights.
 #
-# Pull first, copy second. A registry image is far cheaper to pull on each peer
-# in parallel — layers dedupe against what is already there — than to stream ~20
-# GB through the head. The copy is the fallback for a locally built image, which
-# has no registry to pull from.
+# Where the image comes from depends on who already has it.
+#
+# The head has it: copy from the head. The links between these nodes are 10G at
+# worst and a direct 100G cable at best, while the internet is whatever the site
+# has — so fetching the same 20 GB image from Docker Hub once per node is paying
+# the slowest link N times for bytes that are already sitting on the machine
+# next door. This was the original order (pull first, always), and it cost three
+# WAN pulls of the same image on a three-node launch.
+#
+# The head does not have it: pull on every peer in parallel. Layers dedupe
+# against what each node already has, and N nodes pulling is N links working
+# rather than one.
+#
+# Neither is as good as a registry cache on the head, which gets layer dedupe
+# *and* the local network. That needs a registry-mirror entry in each node's
+# /etc/docker/daemon.json — a host-level change outside this container — so it
+# is documented rather than done here: docs/mesh/REGISTRY-CACHE.md.
 
 IMAGE_PULL_TIMEOUT = 3600
 IMAGE_COPY_TIMEOUT = 7200
@@ -231,29 +244,28 @@ def ensure_peer_has_image(
         except Exception:  # pragma: no cover
             logger.exception("on_start callback failed")
 
-    # 1. Pull on the peer.
-    logger.info("Pulling %s on %s", image, coord_ip)
-    try:
-        subprocess.run(
-            ["ssh", *SSH_OPTS, f"{ssh_user}@{coord_ip}",
-             f"docker pull {shlex.quote(image)}"],
-            capture_output=True, text=True, timeout=IMAGE_PULL_TIMEOUT,
-        )
-    except Exception:
-        logger.info("Pull of %s on %s did not complete; will try copying",
-                    image, coord_ip)
-    peer_id = _peer_image_id(ssh_user, coord_ip, image)
-    if peer_id and (not head_id or peer_id == head_id):
-        return "pulled"
-
-    # 2. Copy from the head. The only route for a locally built image, and the
-    #    correction when a pull produced a different build of the same tag.
     if not head_id:
+        # Nothing local to copy — the peer has to fetch it itself.
+        logger.info("Pulling %s on %s", image, coord_ip)
+        try:
+            subprocess.run(
+                ["ssh", *SSH_OPTS, f"{ssh_user}@{coord_ip}",
+                 f"docker pull {shlex.quote(image)}"],
+                capture_output=True, text=True, timeout=IMAGE_PULL_TIMEOUT,
+            )
+        except Exception:
+            logger.info("Pull of %s on %s did not complete", image, coord_ip)
+        peer_id = _peer_image_id(ssh_user, coord_ip, image)
+        if peer_id:
+            return "pulled"
         raise DistributionError(
             f"{image} is on neither this node nor {coord_ip}, and could not be "
             f"pulled. Pull or build it on this node first, or correct the "
             f"model's engine image."
         )
+
+    # The head has it: send it over the local fabric rather than making the
+    # peer fetch the same bytes across the internet.
     logger.info("Copying %s to %s%s", image, transfer_ip,
                 " over a direct link" if transfer_ip != coord_ip else "")
     save = (
@@ -263,9 +275,26 @@ def ensure_peer_has_image(
     )
     result = subprocess.run(["bash", "-lc", save], capture_output=True,
                             text=True, timeout=IMAGE_COPY_TIMEOUT)
-    if result.returncode != 0:
-        raise DistributionError(
-            f"Could not place {image} on {transfer_ip} "
-            f"(rc={result.returncode}): {result.stderr.strip()[:300]}"
+    if result.returncode == 0:
+        return "copied"
+
+    # The copy failed — a full disk, a dropped link. A pull is the second
+    # chance, not the first one: slower over the WAN, but it may still be the
+    # only route left.
+    logger.info("Copy of %s to %s failed (rc=%s); falling back to a pull",
+                image, transfer_ip, result.returncode)
+    try:
+        subprocess.run(
+            ["ssh", *SSH_OPTS, f"{ssh_user}@{coord_ip}",
+             f"docker pull {shlex.quote(image)}"],
+            capture_output=True, text=True, timeout=IMAGE_PULL_TIMEOUT,
         )
-    return "copied"
+    except Exception:
+        logger.info("Fallback pull of %s on %s did not complete", image, coord_ip)
+    peer_id = _peer_image_id(ssh_user, coord_ip, image)
+    if peer_id and peer_id == head_id:
+        return "pulled"
+    raise DistributionError(
+        f"Could not place {image} on {transfer_ip} "
+        f"(rc={result.returncode}): {result.stderr.strip()[:300]}"
+    )
