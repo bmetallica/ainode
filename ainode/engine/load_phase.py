@@ -59,8 +59,15 @@ LOAD_PHASE_ORDER = [
 PHASE_FAILED = "failed"
 
 LOAD_PHASE_MARKERS = [
+    # The phrasing is vLLM's and it changes between builds. "Loading model
+    # from scratch..." is what the current one prints, and it matched nothing
+    # here — so a launch that was reading 23 GB off disk showed "starting ·
+    # 12%" for its entire duration, which is indistinguishable from a hang and
+    # was reported as one.
     ("loading_weights", ("loading model weights", "loading weights",
-                         "loading safetensors")),
+                         "loading safetensors", "loading model from scratch",
+                         "starting to load model", "loading weights took",
+                         "model loading took", "instanttensor")),
     # launch-cluster.sh's own output counts: it copies the image check, starts
     # Ray head and workers and waits for the cluster before vLLM says anything.
     # Without these the bar sits at "starting" through the slowest part of a
@@ -70,7 +77,30 @@ LOAD_PHASE_MARKERS = [
                           "waiting for cluster", "cluster head is responsive",
                           "starting container")),
     ("profiling", ("memory profiling", "available kv cache", "gpu kv cache",
-                   "warming up", "autotuning", "capturing cuda graph")),
+                   "warming up", "autotuning", "capturing cuda graph",
+                   "init engine", "torch.compile", "compiling a graph",
+                   "graph capturing finished")),
+]
+
+# Lines that say what is happening in words, for the phases whose slow part is
+# invisible from the phase alone. "Loading weights" covers both reading them
+# off a local disk in two minutes and pulling them from Hugging Face in forty,
+# and the operator very much wants to know which one they are watching.
+DETAIL_MARKERS = [
+    (("unauthenticated requests to the hf hub", "downloading from",
+      "resolve/main", "fetching "),
+     "downloading the model from Hugging Face — this is the slow one"),
+    ((".safetensors:", "model-0000"),
+     "downloading the model from Hugging Face — this is the slow one"),
+    (("loading model from scratch", "loading safetensors",
+      "loading weights"),
+     "reading the weights from disk"),
+    (("torch.compile", "compiling a graph", "inductor"),
+     "compiling kernels — a first launch pays this once"),
+    (("capturing cuda graph",),
+     "capturing CUDA graphs"),
+    (("memory profiling", "available kv cache"),
+     "sizing the KV cache"),
 ]
 
 # Lines that mean the API is up. Both appear; whichever lands first wins.
@@ -214,6 +244,13 @@ class LoadPhaseTracker:
         for phase, markers in LOAD_PHASE_MARKERS:
             if any(m in low for m in markers):
                 self.advance(phase)
+
+        # After advance(), which clears a detail belonging to the phase just
+        # left — so this sets the detail of the phase now current.
+        for markers, text in DETAIL_MARKERS:
+            if any(m in low for m in markers):
+                self.detail = text
+                break
                 break
         if any(m in low for m in READY_MARKERS):
             self.ready = True
