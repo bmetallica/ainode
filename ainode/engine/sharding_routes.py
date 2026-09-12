@@ -14,7 +14,6 @@ from ainode.discovery.cluster import ClusterState
 from ainode.engine.parallelism import (
     ParallelPlanError,
     Strategy,
-    plan_for,
     plan_for_model,
 )
 from ainode.engine.sharding import ShardingPlanner, ShardingStrategy, ShardingConfig
