@@ -336,6 +336,8 @@ set the read token with `ainode config --hf-token hf_xxx`.
 | Cancellable, commit-pinned, parallel model downloads | ✅ v0.5.2 |
 | Delete a downloaded model from disk (`delete-repo`, frees GB) | ✅ |
 | AutoData — Δ-filtered synthetic-data generation (v2.2 val-set lift objective) | ✅ v0.5.0 |
+| Proven catalog recipes applied to **distributed** launches too (engine image, parsers, spec-decode) | ✅ |
+| Profiles — describe several models as one deployment, apply it, restore it at startup | ✅ |
 
 ---
 
@@ -613,6 +615,28 @@ print(resp.choices[0].message.content)
 
 Works with Open WebUI, LiteLLM, LangChain, llama.cpp clients, and
 anything else that speaks OpenAI.
+
+### Profiles — one deployment, saved and restored
+
+A profile is the set of models a node should be serving, with placement and
+per-load settings. Applying one converges the node onto it: missing models are
+started one after another, models the profile does not list are stopped. A
+default profile is applied at startup and replaces the instance-manifest
+replay, which could only record single-node instances.
+
+```bash
+# save what is running right now
+curl -X POST localhost:3000/api/profiles/capture \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Production","description":"chat + code + embeddings"}'
+
+curl localhost:3000/api/profiles                      # list, with the default marked
+curl -X POST localhost:3000/api/profiles/Production/apply   -d '{}'
+curl -X POST localhost:3000/api/profiles/Production/default -d '{}'
+```
+
+Everything is also in the **Profiles** tab of the web UI, which is where the
+buttons that call these live.
 
 ### Metrics — `/metrics` (Prometheus) and `/api/metrics` (JSON)
 
