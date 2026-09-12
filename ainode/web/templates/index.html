@@ -223,6 +223,11 @@
             <input id="launch-quantization" class="form-input" type="text"
                    placeholder="awq, gptq, fp8 …">
 
+            <label class="form-label">Engine environment
+              <span style="color:var(--text-muted);font-weight:400">(NAME=value, one per line)</span></label>
+            <textarea id="launch-extra-env" class="form-input" rows="3"
+                      placeholder="VLLM_USE_AOT_COMPILE=1&#10;B12X_POLICY_MODE=auto"></textarea>
+
             <label class="form-label">Engine image
               <span style="color:var(--text-muted);font-weight:400">(leave empty for the fleet default)</span></label>
             <input id="launch-engine-image" class="form-input" type="text"

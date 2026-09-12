@@ -147,7 +147,7 @@ def load_instance_manifest() -> list:
 _OVERRIDE_KEYS = ("served_model_name", "max_model_len", "kv_cache_dtype",
                   "kv_cache_dtype_explicit", "quantization", "trust_remote_code",
                   "extra_vllm_args", "engine_image", "engine_image_source",
-                  "extra_env")
+                  "engine_image_eugr", "extra_env")
 
 
 def drafter_base_model(model: str) -> str:
@@ -233,6 +233,9 @@ def apply_catalog_recipe(model: str, overrides: dict, gmu=None):
     if "engine_image" in recipe and "engine_image" not in overrides:
         overrides["engine_image"] = recipe["engine_image"]
         overrides["engine_image_source"] = "catalog"
+    if "engine_image_eugr" in recipe and "engine_image" not in overrides:
+        overrides["engine_image_eugr"] = recipe["engine_image_eugr"]
+        overrides.setdefault("engine_image_source", "catalog")
     # Merged per flag, not replaced wholesale: typing one advanced field in the
     # UI must not silently drop the rest of the model's recipe. Setting
     # --max-num-seqs for Qwen3.8 used to take its reasoning parser, tool-call
@@ -310,6 +313,8 @@ def catalog_recipe(model: str) -> dict:
             recipe = {}
             if getattr(info, "engine_image", ""):
                 recipe["engine_image"] = info.engine_image
+            if getattr(info, "engine_image_eugr", ""):
+                recipe["engine_image_eugr"] = info.engine_image_eugr
             if getattr(info, "extra_vllm_args", None):
                 recipe["extra_vllm_args"] = list(info.extra_vllm_args)
             if getattr(info, "extra_env", None):

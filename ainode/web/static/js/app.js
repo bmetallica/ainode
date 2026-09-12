@@ -1558,6 +1558,23 @@ const AINode = {
     // stays server-side and one place decides it.
     var toolCalling = textField('launch-tool-calling');
     if (toolCalling) advanced.tool_calling = toolCalling;
+    // Engine environment: NAME=value per line. Some engine features have no
+    // command-line flag at all — the experimental B12X stack is selected
+    // purely by environment — so without this field those models can only be
+    // launched through the API, which is not what "configure it in the UI"
+    // was supposed to mean.
+    var envText = document.getElementById('launch-extra-env');
+    if (envText && envText.value.trim()) {
+      var env = {};
+      envText.value.split(/[\r\n]+/).forEach(function (line) {
+        var trimmed = line.trim();
+        if (!trimmed || trimmed.charAt(0) === '#') return;
+        var eq = trimmed.indexOf('=');
+        if (eq <= 0) return;
+        env[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+      });
+      if (Object.keys(env).length) advanced.extra_env = env;
+    }
 
     var launchBtn = document.getElementById('launch-btn');
     if (launchBtn) { launchBtn.disabled = true; launchBtn.textContent = 'LAUNCHING...'; }

@@ -702,15 +702,22 @@ class EugrBackend(EngineBackend):
         launcher then does not use.
         """
         image = (getattr(self.config, "engine_image", "") or "").strip()
-        if not image:
-            return ""
-        if (getattr(self.config, "engine_image_source", "") or "") == "catalog":
-            logger.info(
-                "Ignoring the catalog's engine image %s: this backend launches "
-                "through eugr, whose default image already satisfies the model "
-                "and is what the model's own upstream recipe uses. Set the "
-                "engine image explicitly in the launch panel to override.",
-                image)
+        source = (getattr(self.config, "engine_image_source", "") or "")
+        if source == "catalog":
+            # The catalog names an image per engine lineage. Ours, if it set
+            # one, is the only one this backend can use — the other belongs to
+            # the NVIDIA path, whose default is too old for these models while
+            # eugr's is not.
+            ours = (getattr(self.config, "engine_image_eugr", "") or "").strip()
+            if ours:
+                return ours
+            if image:
+                logger.info(
+                    "Ignoring the catalog's engine image %s: it names the "
+                    "NVIDIA path's image, and this backend launches through "
+                    "eugr, whose default already satisfies the model. Set the "
+                    "engine image explicitly in the launch panel to override.",
+                    image)
             return ""
         return image
 
@@ -1097,11 +1104,6 @@ class EugrBackend(EngineBackend):
         which is what it reported, from a launch that looked like a bad recipe
         and was a bad quoting decision here.
         """
-        gpu = detect_gpu()
-        dtype_line = ""
-        if gpu and gpu.unified_memory:
-            dtype_line = "    --dtype bfloat16 \\\n"
-
         # A flag the caller supplied in extra_vllm_args suppresses the built-in
         # one: vLLM rejects duplicates, and a recipe that pins --kv-cache-dtype
         # or --max-model-len means it.
@@ -1109,6 +1111,11 @@ class EugrBackend(EngineBackend):
 
         def wanted(flag: str) -> bool:
             return flag not in supplied
+
+        gpu = detect_gpu()
+        dtype_line = ""
+        if gpu and gpu.unified_memory and wanted("--dtype"):
+            dtype_line = "    --dtype bfloat16 \\\n"
 
         extra = ""
         if self.config.max_model_len and wanted("--max-model-len"):

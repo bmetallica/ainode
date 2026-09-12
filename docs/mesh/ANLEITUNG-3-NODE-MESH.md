@@ -588,6 +588,7 @@ Fine-Tuning brauchst. Umschalten ist dann ein Klick statt sechs.
 | Engine startet, stirbt beim ersten Prompt | GB10/sm120-FlashInfer unter CUDA-Graph-Capture | bekannt; `--enforce-eager` wird automatisch gesetzt. Tritt es trotzdem auf: Logs mitschicken |
 | Launcher-Fehler „ibdev2netdev not found" | unvollständige `.env` | sollte nicht mehr vorkommen — AINode bricht vorher mit klarer Meldung ab. Wenn doch: Meldung mitschicken |
 | Modelltransfer läuft über 10G statt Direktlink | kein gemeinsames Subnetz gefunden | Schritt 9, Feld `ib_ips` prüfen |
+| Launch endet mit „unrecognized arguments: --moe-backend b12x" o. ä. | Das Modell braucht das B12X-Image | [B12X-IMAGE.md](B12X-IMAGE.md) — einmal holen, dann nennt der Katalog es selbst |
 | Erster Start eines kuratierten Modells dauert sehr lange | das gepinnte Engine-Image (~20 GB) wird geladen | normal; die Karte zeigt es jetzt an. Dauerhaft schneller: [Registry-Cache](REGISTRY-CACHE.md) |
 | Profil anwenden meldet „did not answer on port …" | Modell lädt noch, der Start lief weiter | Instanzliste abwarten; im UI zeigt die Instanz ihre Ladephase |
 | Nach Neustart läuft ein altes Modell wieder mit | kein Standardprofil gesetzt, `instances.json` greift | Schritt 12.3 — Standardprofil setzen |

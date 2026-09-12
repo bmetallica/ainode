@@ -117,6 +117,14 @@ class NodeConfig:
     # so on that backend a recipe's image is a suggestion, while a caller's is
     # an instruction.
     engine_image_source: str = ""
+    # The image for THIS backend when the catalog supplied one. A recipe names
+    # an image per engine lineage: the NVIDIA backend needs a pin because its
+    # default is a 0.17 build, while the eugr backend's default is built here
+    # and is usually newer — but not always sufficient. GLM 5.3 Flash runs on
+    # an experimental B12X stack whose flags exist in no other image, and that
+    # is a locally built image the launcher can use. So the catalog names both,
+    # and each backend reads its own. Empty here means "the launcher default".
+    engine_image_eugr: str = ""
     # Per-instance environment for the engine container. Some engine features
     # are selected by env var, not by a `vllm serve` flag — the b12x FP4 kernel
     # path is VLLM_NVFP4_GEMM_BACKEND + friends, with no CLI equivalent. Merged
