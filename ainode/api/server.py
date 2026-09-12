@@ -41,6 +41,8 @@ from ainode.secrets import SecretsManager
 from ainode.secrets.api_routes import register_secrets_routes
 from ainode.embeddings.manager import EmbeddingManager
 from ainode.embeddings.api_routes import register_embedding_routes
+from ainode.profiles.api_routes import register_profile_routes
+from ainode.profiles.store import ProfileStore
 from ainode.api.server_routes import (
     register_server_routes,
     request_log_middleware,
@@ -134,6 +136,9 @@ def create_app(
     app["broadcast_listener"] = None
     app["secrets_manager"] = SecretsManager()
     app["embedding_manager"] = EmbeddingManager()
+    # Profiles are read at construction, before the app starts serving, so the
+    # startup restore and the routes share one store.
+    app["profiles"] = ProfileStore()
     # Ray autostart is only meaningful for the legacy eugr backend. The NVIDIA
     # backend manages its own Ray lifecycle via run_cluster.sh at model-load time;
     # running `ray start` here fights with that (session-name mismatch on peer
@@ -190,6 +195,9 @@ def create_app(
 
     # --- Embedding routes ----------------------------------------------------
     register_embedding_routes(app)
+
+    # --- Profile routes ------------------------------------------------------
+    register_profile_routes(app)
 
     # --- Server view routes --------------------------------------------------
     register_server_routes(app)
@@ -345,9 +353,24 @@ async def _on_startup(app: web.Application) -> None:
             except Exception:
                 logger.exception("embedding replay could not be scheduled")
 
+            # A default profile describes the whole deployment, including
+            # distributed instances the manifest cannot record. When one is
+            # set it replaces the replay rather than running alongside it —
+            # two sources for "what should be running" contradict each other.
             from ainode.models.api_routes import replay_instances_on_startup
+            from ainode.profiles.apply import startup_restore
+
+            async def _restore() -> None:
+                applied = False
+                try:
+                    applied = await startup_restore(app)
+                except Exception:
+                    logger.exception("default profile restore failed")
+                if not applied:
+                    await replay_instances_on_startup(app)
+
             app["_instance_replay_task"] = asyncio.get_event_loop().create_task(
-                replay_instances_on_startup(app)
+                _restore()
             )
         except Exception:
             logger.exception("Failed to schedule instance replay")
