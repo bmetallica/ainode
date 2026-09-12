@@ -427,6 +427,38 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         proven_tp=4, verified=False,
         context_length=131072, license="GLM",
     ),
+    "gemma4-31b-it-nvfp4": ModelInfo(
+        id="gemma4-31b-it-nvfp4",
+        name="Gemma 4 31B Instruct (NVFP4)",
+        hf_repo="nvidia/Gemma-4-31B-IT-NVFP4",
+        # Dense 31B at 4 bits/param is ~15.5 GB of weights; the rest is
+        # arithmetic, not a measurement, so min_memory_gb leaves room for a
+        # working KV cache rather than pretending to know the exact footprint.
+        size_gb=15.5, min_memory_gb=24,
+        description=(
+            "Dense 31B instruct model in NVFP4 — the larger, non-MoE sibling of "
+            "Gemma 4 26B-A4B. Dense means bandwidth-bound decode on GB10: fewer "
+            "tokens per second than the MoE at the same size, better at holding "
+            "a long instruction. Fits one node."
+        ),
+        quantization="NVFP4", family="gemma", params_b=31.0,
+        proven_tp=1, verified=False, curated=True,
+        context_length=262144, license="Gemma", recommended=False,
+        format="nvfp4", capabilities=["tool_use", "reasoning", "multilingual"],
+        # The parsers and loader are the Gemma 4 family's, taken from eugr's
+        # recipes/gemma4-26b-a4b-nvfp4.yaml (MIT) — same family, same output
+        # format. What is NOT carried over is that recipe's speculative config:
+        # its drafter belongs to the 26B-A4B and pairing it with this model
+        # would fail in a way that reads like a broken model.
+        extra_vllm_args=[
+            "--load-format", "instanttensor",
+            "--enable-prefix-caching",
+            "--enable-auto-tool-choice",
+            "--tool-call-parser", "gemma4",
+            "--reasoning-parser", "gemma4",
+        ],
+        recommended_gmu=0.80,
+    ),
     "glm-5.3-flash-nvfp4-spark": ModelInfo(
         id="glm-5.3-flash-nvfp4-spark",
         name="GLM 5.3 Flash (NVFP4, B12X) — 2 nodes",
