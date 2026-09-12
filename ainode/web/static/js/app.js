@@ -459,6 +459,9 @@ const AINode = {
     if (view === 'training' && prevView !== 'training') {
       this._autodataViewInitialized = false;   // force full render of the AutoData panel on entry
     }
+    if (view === 'config' && prevView !== 'config') {
+      this._configViewInitialized = false;     // render once on entry, then leave the forms alone
+    }
     // Update nav pill active state
     document.querySelectorAll('.nav-pill').forEach(function (el) {
       el.classList.toggle('active', el.dataset.view === view);
@@ -574,7 +577,16 @@ const AINode = {
         this.renderTraining();
         break;
       case 'config':
-        this.renderConfig();
+        // Rendered on entry and on a section switch, NOT on every poll.
+        // Rebuilding the section's innerHTML every few seconds destroyed
+        // whatever was half-typed into it — filling in the MQTT broker,
+        // username and password was close to impossible, and the same applied
+        // to every other form in here. Nothing on these pages ticks; a live
+        // status is worth less than being able to type.
+        if (!this._configViewInitialized) {
+          this._configViewInitialized = true;
+          this.renderConfig();
+        }
         break;
       case 'server':
         this.renderServer();
@@ -5032,6 +5044,7 @@ const AINode = {
           nav.querySelectorAll('.config-nav-item').forEach(function (b) {
             b.classList.toggle('active', b.dataset.section === self.state.configSection);
           });
+          self._configViewInitialized = true;
           self.renderConfigSection();
         });
       });
@@ -5715,6 +5728,7 @@ const AINode = {
       html += '    <div><div class="config-field-label">Last error</div><div style="color:#ff6b6b">' + this.esc(status.last_error) + '</div></div>';
     }
     html += '  </div>';
+    html += '  <div class="config-actions"><button class="config-btn" id="cfg-mqtt-refresh">Refresh status</button></div>';
     html += '</div>';
 
     html += '<div class="config-card"><div class="config-form-grid">';
@@ -5765,6 +5779,11 @@ const AINode = {
     var say = function (text, bad) {
       out.innerHTML = '<span style="color:' + (bad ? '#ff6b6b' : 'var(--nvidia-green)') + '">' + self.esc(text) + '</span>';
     };
+
+    // Explicit, because the page no longer rebuilds itself under the cursor.
+    document.getElementById('cfg-mqtt-refresh').addEventListener('click', function () {
+      self.renderConfigMonitoring();
+    });
 
     document.getElementById('cfg-mqtt-save').addEventListener('click', async function () {
       var body = {
