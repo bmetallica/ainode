@@ -56,6 +56,12 @@ from ainode.engine.load_phase import (
     LoadPhaseTracker,
 )
 from ainode.engine.parallelism import ParallelPlan, Strategy
+from ainode.engine.serve_args import (
+    effective_kv_cache_dtype,
+    is_multimodal_model,
+    local_model_dir,
+    supplied_flags,
+)
 from ainode.core.config import LOGS_DIR, NodeConfig
 from ainode.engine.backends.base import EngineBackend
 
@@ -703,64 +709,21 @@ class NvidiaBackend(EngineBackend):
         our downloader), container-side path — or None if not downloaded.
 
         When present we serve it DIRECTLY (mounted at MODELS_MOUNT) instead of
-        passing the HF repo-id, so vLLM never re-downloads 10s–100s of GB it
+        passing the HF repo-id, so vLLM never re-downloads 10s-100s of GB it
         already has on disk (the wart that nuked the WAN on a TP=2 launch)."""
-        if not self.config.model:
-            return None
-        slug = self.config.model.replace("/", "--")
-        d = Path(self.config.models_dir) / slug
-        try:
-            if d.is_dir() and any(d.iterdir()):
-                return str(d)
-        except OSError:
-            pass
-        return None
+        return local_model_dir(self.config.model, self.config.models_dir)
 
     def _is_multimodal_model(self) -> bool:
-        """Detect a vision/multimodal model from its on-disk ``config.json``.
-
-        True when config.json has a ``vision_config`` key, or any
-        ``architectures`` entry matches ``/VL|Vision|vision/``. Only the LOCAL
-        model dir is inspected: if config.json is unreadable (e.g. a remote
-        repo-id not yet downloaded), we return False so the caller keeps the fp8
-        default — we deliberately never fetch remote config here (no network in
-        the serve-args builder).
+        """True for a vision model, read from its local ``config.json``.
 
         CEILING: a not-yet-downloaded VLM served by repo-id won't be detected
         and will use the fp8 KV default until its weights are on disk.
         """
-        local = self._local_model_dir()
-        if not local:
-            return False
-        try:
-            cfg = json.loads((Path(local) / "config.json").read_text())
-        except Exception:
-            return False
-        if "vision_config" in cfg:
-            return True
-        import re
-        archs = cfg.get("architectures") or []
-        if isinstance(archs, str):
-            archs = [archs]
-        return any(re.search(r"VL|Vision|vision", str(a)) for a in archs)
+        return is_multimodal_model(self._local_model_dir())
 
     def _effective_kv_cache_dtype(self) -> str:
-        """Resolve the KV-cache dtype for serve args.
-
-        fp8 KV corrupts vision-model generation on GB10 (verified: Qwen2.5-VL
-        emits garbage on fp8, clean output on auto; text models are unaffected).
-        So the fp8 DEFAULT is downgraded to 'auto' for a multimodal model. Any
-        EXPLICIT ``kv_cache_dtype`` always wins — whether it's a non-fp8 value
-        (which isn't the default anyway) or an explicit 'fp8' flagged via
-        ``kv_cache_dtype_explicit`` (the user's opt-back-in for a VLM/vLLM combo
-        they know handles fp8 KV). A model whose config.json can't be read keeps
-        the fp8 default.
-        """
-        dtype = getattr(self.config, "kv_cache_dtype", "") or ""
-        explicit = getattr(self.config, "kv_cache_dtype_explicit", False)
-        if dtype == "fp8" and not explicit and self._is_multimodal_model():
-            return "auto"
-        return dtype
+        """KV-cache dtype after the vision-model fp8 downgrade."""
+        return effective_kv_cache_dtype(self.config, self._local_model_dir())
 
     def _engine_env(self, nccl_env: Dict[str, str]) -> Dict[str, str]:
         """Env for the engine container: computed NCCL env + per-instance extras.
@@ -1151,8 +1114,7 @@ class NvidiaBackend(EngineBackend):
         errors on duplicates, and the caller's explicit value is the intent.
         """
         extra: List[str] = [str(a) for a in (getattr(self.config, "extra_vllm_args", None) or [])]
-        # Flag names the caller supplied, in both `--flag value` and `--flag=value` forms.
-        supplied = {a.split("=", 1)[0] for a in extra if a.startswith("--")}
+        supplied = supplied_flags(extra)
 
         def wanted(flag: str) -> bool:
             return flag not in supplied

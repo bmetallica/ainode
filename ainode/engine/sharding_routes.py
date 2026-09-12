@@ -11,7 +11,11 @@ from aiohttp import web
 
 from ainode.api.params import as_object, int_field, str_field, str_list_field
 from ainode.discovery.cluster import ClusterState
-from ainode.engine.parallelism import ParallelPlanError, Strategy, plan_for
+from ainode.engine.parallelism import (
+    ParallelPlanError,
+    Strategy,
+    plan_for_model,
+)
 from ainode.engine.sharding import ShardingPlanner, ShardingStrategy, ShardingConfig
 from ainode.engine.ray_setup import get_ray_status
 
@@ -224,14 +228,20 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     # Resolve the split now that the node set is final. This is where a 3-node
     # tensor-parallel request is refused — with the alternatives named, before
     # anything is launched — instead of failing inside vLLM's engine startup.
+    from ainode.models.api_routes import catalog_proven_tp
+
     try:
-        plan = plan_for(strategy, 1 + len(chosen_peers))
+        plan, plan_note = plan_for_model(
+            strategy, 1 + len(chosen_peers), catalog_proven_tp(model)
+        )
     except ParallelPlanError as exc:
         return web.json_response({
             "error": str(exc),
             "strategy": strategy.value,
             "node_count": 1 + len(chosen_peers),
         }, status=422)
+    if plan_note:
+        logger.info("%s: %s", model, plan_note)
 
     # Second address list: where head and peer share a direct RoCE cable, bulk
     # transfer (model weights) goes over it instead of the coordination
@@ -295,7 +305,7 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     # drop all of them and honour only gpu_memory_utilization, so the launch
     # that most needs a batching flag or a context limit was the one that could
     # not carry them.
-    from ainode.models.api_routes import parse_load_overrides
+    from ainode.models.api_routes import apply_catalog_recipe, parse_load_overrides
 
     overrides, err = parse_load_overrides(body)
     if err is not None:
@@ -309,6 +319,15 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
             gmu = None
         if gmu is not None and 0.0 < gmu <= 1.0:
             overrides["gpu_memory_utilization"] = gmu
+
+    # The model's proven recipe fills whatever the caller left out — the same
+    # way the solo path does it, so the same model is configured identically
+    # however many nodes it spans.
+    overrides, recipe_gmu = apply_catalog_recipe(
+        model, overrides, overrides.get("gpu_memory_utilization")
+    )
+    if recipe_gmu is not None:
+        overrides["gpu_memory_utilization"] = recipe_gmu
 
     inst_config = replace(config, model=model, distributed_mode="head",
                           peer_ips=chosen_peers, peer_transfer_ips=peer_transfer_ips,
@@ -441,7 +460,9 @@ async def handle_sharding_relaunch(request: web.Request) -> web.Response:
     # instance down to 3 nodes has no valid tensor split).
     strategy = body.get("strategy")   # see the note in handle_sharding_launch
     try:
-        plan = plan_for(strategy, node_count)
+        from ainode.models.api_routes import catalog_proven_tp
+
+        plan, _ = plan_for_model(strategy, node_count, catalog_proven_tp(model))
     except ParallelPlanError as exc:
         return web.json_response({
             "error": str(exc), "model": model,

@@ -210,6 +210,63 @@ def _names_a_drafter(args, needle: str) -> bool:
     return False
 
 
+def apply_catalog_recipe(model: str, overrides: dict, gmu=None):
+    """Fill gaps in ``overrides`` from the model's proven recipe.
+
+    Returns ``(overrides, gpu_memory_utilization)``. Anything the caller stated
+    explicitly wins; the recipe only fills what was left out, so a bare
+    ``{"model": "..."}`` load — clicking it in the dashboard — launches with the
+    engine image and flags the model actually needs.
+
+    Shared by the solo and distributed launch routes. It used to live inline in
+    the solo one, so the same click produced two different commands depending
+    on how many nodes were selected: solo got Qwen3.8's engine image, reasoning
+    parser and speculative config, distributed got none of them and died on the
+    argparse error that configuration exists to avoid.
+    """
+    from ainode.engine.serve_args import merge_vllm_args
+
+    recipe = catalog_recipe(model)
+    if not recipe:
+        return overrides, gmu
+    if "engine_image" in recipe and "engine_image" not in overrides:
+        overrides["engine_image"] = recipe["engine_image"]
+    # Merged per flag, not replaced wholesale: typing one advanced field in the
+    # UI must not silently drop the rest of the model's recipe. Setting
+    # --max-num-seqs for Qwen3.8 used to take its reasoning parser, tool-call
+    # parser and speculative config with it.
+    if recipe.get("extra_vllm_args"):
+        overrides["extra_vllm_args"] = merge_vllm_args(
+            recipe["extra_vllm_args"], overrides.get("extra_vllm_args"))
+    if recipe.get("extra_env"):
+        merged_env = dict(recipe["extra_env"])
+        merged_env.update(overrides.get("extra_env") or {})
+        overrides["extra_env"] = merged_env
+    if gmu is None and "gpu_memory_utilization" in recipe:
+        gmu = recipe["gpu_memory_utilization"]
+    return overrides, gmu
+
+
+def catalog_proven_tp(model: str) -> int:
+    """Node count a curated model has actually been served at here, or 0.
+
+    Matched on catalog id OR hf_repo, the same way :func:`catalog_recipe` is.
+    Used by the launch paths to keep a model inside the split it was verified
+    with; 0 for anything uncurated, which imposes no limit.
+    """
+    from ainode.models.registry import CURATED_CLUSTER_MODELS
+    m = (model or "").strip()
+    if not m:
+        return 0
+    for info in CURATED_CLUSTER_MODELS.values():
+        if m in (info.id, info.hf_repo):
+            try:
+                return max(0, int(getattr(info, "proven_tp", 0) or 0))
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
 def catalog_recipe(model: str) -> dict:
     """Proven launch recipe for a curated model, matched on catalog id OR hf_repo.
 
@@ -684,16 +741,7 @@ async def handle_model_load(request: web.Request) -> web.Response:
     if err is not None:
         return err
 
-    # Curated models carry their proven recipe — apply it as DEFAULTS so a bare
-    # {"model": "..."} load (i.e. clicking it in the dashboard) launches with the
-    # engine image and flags it actually needs. Anything the caller stated
-    # explicitly above wins; the recipe only fills the gaps.
-    recipe = catalog_recipe(model)
-    for key in ("engine_image", "extra_vllm_args", "extra_env"):
-        if key in recipe and key not in overrides:
-            overrides[key] = recipe[key]
-    if gmu is None and "gpu_memory_utilization" in recipe:
-        gmu = recipe["gpu_memory_utilization"]
+    overrides, gmu = apply_catalog_recipe(model, overrides, gmu)
 
     # Decide: single-node or distributed?
     sharding_config = None

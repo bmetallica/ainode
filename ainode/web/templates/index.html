@@ -31,6 +31,7 @@
         <button class="nav-pill" data-view="chat">Chat</button>
         <button class="nav-pill" data-view="server">Server</button>
         <button class="nav-pill" data-view="downloads">Models</button>
+        <button class="nav-pill" data-view="profiles">Profiles</button>
         <button class="nav-pill" data-view="training">Training</button>
         <button class="nav-pill" data-view="config">Config</button>
       </nav>
@@ -97,6 +98,14 @@
       <!-- Server view -->
       <div id="view-server" class="view" style="display:none">
         <div id="server-content"></div>
+      </div>
+      <!-- Profiles view -->
+      <div id="view-profiles" class="view" style="display:none">
+        <div class="view-header">
+          <h2>Profiles</h2>
+          <p>A profile is the set of models this node should be serving. Apply one to bring the node to that state; make one the default and it comes back after a restart.</p>
+        </div>
+        <div id="profiles-content"></div>
       </div>
       <!-- Training view -->
       <div id="view-training" class="view" style="display:none">

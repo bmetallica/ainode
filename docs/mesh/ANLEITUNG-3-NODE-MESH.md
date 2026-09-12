@@ -489,6 +489,93 @@ journalctl -u ainode -n 50
 
 ---
 
+## Schritt 12 — Endausbau als Profil festhalten
+
+Der Zielzustand ist nicht ein Modell, sondern ein Satz: ein Chatmodell für das
+Team, ein Codemodell mit großem KV-Cache, ein Embedding-Modell für RAG — alle
+gleichzeitig, und nach einem Neustart wieder da. Ein **Profil** beschreibt genau
+das und lässt sich anwenden und als Standard setzen.
+
+### 12.1 Erst von Hand richtig einstellen
+
+Starte die Modelle so, wie sie laufen sollen. Ein Vorschlag für diese drei
+Knoten — die Speicheranteile sind der entscheidende Teil, weil sich mehrere
+Modelle auf einem Knoten den Unified Memory teilen:
+
+| Modell | Knoten | Aufteilung | GPU-Speicher | Gedacht für |
+|---|---|---|---|---|
+| `nvidia/Gemma-4-26B-A4B-NVFP4` | Spark1 | solo | 0.45 | Alltags-/Chatmodell für OpenWebUI |
+| `unsloth/Qwen3.8-27B-NVFP4` | Spark2 | solo | 0.80 | Programmieren, großer KV-Cache |
+| `nomic-ai/nomic-embed-text-v1.5` | Head | Embedding | — | RAG |
+
+Für parallele Anfragen zählt vor allem **`--max-num-seqs`** (im Launch-Panel
+unter *Advanced* → *Max concurrent sequences*): 20 für das Chatmodell, 10 für
+das Codemodell. Die KV-Cache-Größe ergibt sich aus `gpu_memory_utilization`
+minus den Gewichten — mehr Speicheranteil heißt mehr gleichzeitige Sessions bei
+gleicher Kontextlänge.
+
+Zwei Modelle auf **einem** Knoten gehen nur, wenn die Summe der Speicheranteile
+unter 0.90 bleibt; AINode lehnt sonst ab, statt den Knoten in ein OOM laufen zu
+lassen (ein OOM auf GB10 nimmt den ganzen Host mit).
+
+### 12.2 Zustand als Profil sichern
+
+Reiter **Profiles** → Name eintragen (z. B. `Endausbau`) → **Save current
+state**. Das nimmt jedes laufende Modell auf: Knoten, Aufteilung,
+Speicheranteil, Kontextlänge, Engine-Flags.
+
+Per API:
+
+```bash
+curl -s -X POST http://192.168.1.2:3000/api/profiles/capture \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Endausbau","description":"Chat + Code + Embeddings"}' | jq
+```
+
+### 12.3 Als Standard setzen
+
+**Set default** im Profil-Kopf. Danach stellt AINode diesen Satz nach jedem
+Neustart selbst wieder her — auch die **verteilten** Instanzen, die der alte
+Wiederanlauf über `instances.json` nicht abbilden konnte.
+
+```bash
+curl -s -X POST http://192.168.1.2:3000/api/profiles/Endausbau/default \
+  -H 'Content-Type: application/json' -d '{}' | jq
+```
+
+Ist ein Standardprofil gesetzt, **ersetzt** es den alten Wiederanlauf. Ohne
+Standardprofil bleibt alles wie vorher.
+
+### 12.4 Anwenden
+
+**Apply** bringt den Knoten auf den beschriebenen Zustand: Was im Profil steht
+und nicht läuft, wird gestartet; was läuft und **nicht** im Profil steht, wird
+**gestoppt**; was passt, bleibt unangetastet. Die Starts laufen nacheinander,
+und jedes Modell muss antworten, bevor das nächste beginnt — zwei vLLM-Engines,
+die gleichzeitig Unified Memory reservieren, enden damit, dass eine
+OOM-gekillt wird.
+
+Das dauert bei drei Modellen einige Minuten. Der Bericht steht danach pro
+Eintrag unter dem Profil; ein Modell, das nicht hochkommt, verhindert die
+anderen nicht.
+
+```bash
+curl -s -X POST http://192.168.1.2:3000/api/profiles/Endausbau/apply \
+  -H 'Content-Type: application/json' -d '{}' | jq
+```
+
+**Erfolg:** `"ok": true` und pro Eintrag `"action": "launched"` oder
+`"already_running"`. Bei `"ok": false` (HTTP 207) steht in `results[].error`,
+welcher Eintrag warum nicht kam.
+
+### 12.5 Mehrere Profile
+
+Sinnvolle Aufteilung: `Endausbau` als Standard für den Normalbetrieb, dazu ein
+Profil `Training` mit nur einem kleinen Modell, wenn du die Knoten zum
+Fine-Tuning brauchst. Umschalten ist dann ein Klick statt sechs.
+
+---
+
 ## Fehlerbehebung
 
 | Symptom | Ursache | Behebung |
@@ -501,6 +588,8 @@ journalctl -u ainode -n 50
 | Engine startet, stirbt beim ersten Prompt | GB10/sm120-FlashInfer unter CUDA-Graph-Capture | bekannt; `--enforce-eager` wird automatisch gesetzt. Tritt es trotzdem auf: Logs mitschicken |
 | Launcher-Fehler „ibdev2netdev not found" | unvollständige `.env` | sollte nicht mehr vorkommen — AINode bricht vorher mit klarer Meldung ab. Wenn doch: Meldung mitschicken |
 | Modelltransfer läuft über 10G statt Direktlink | kein gemeinsames Subnetz gefunden | Schritt 9, Feld `ib_ips` prüfen |
+| Profil anwenden meldet „did not answer on port …" | Modell lädt noch, der Start lief weiter | Instanzliste abwarten; im UI zeigt die Instanz ihre Ladephase |
+| Nach Neustart läuft ein altes Modell wieder mit | kein Standardprofil gesetzt, `instances.json` greift | Schritt 12.3 — Standardprofil setzen |
 
 Logs:
 
@@ -523,6 +612,8 @@ journalctl -u ainode -n 100                                       # Dienst selbs
 - Tensor-Parallel über beliebige **zwei** der drei (jedes Paar ist direkt
   verkabelt)
 - Ausfall eines Members: sichtbar, mit Ein-Klick-Neustart auf dem Rest
+- Profile: mehrere Modelle gemeinsam beschreiben, anwenden und beim Start
+  wiederherstellen (Schritt 12)
 
 **Läuft nicht / ungetestet:**
 - **Tensor-Parallel über drei Knoten** — kein gängiges Modell unterstützt TP=3.
@@ -534,5 +625,10 @@ journalctl -u ainode -n 100                                       # Dienst selbs
   automatische Übernahme durch einen anderen Knoten.
 - **Automatischer Neustart nach Knotenausfall** — bewusst nicht, siehe
   Schritt 11.
+- **Automatische Speicherplanung.** Welches Modell wie viel bekommt,
+  entscheidest du. Eine Automatik bräuchte verlässliche Größen pro
+  Quantisierung, die der Katalog nur für kuratierte Modelle hat.
+- **Profil-Abgleich über Knoten hinweg.** `profiles.json` liegt auf dem Head
+  und lässt sich kopieren; einen Sync gibt es nicht.
 
 ---

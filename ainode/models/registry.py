@@ -254,6 +254,42 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         ],
         recommended_gmu=0.60,
     ),
+    "gemma4-26b-a4b-nvfp4": ModelInfo(
+        id="gemma4-26b-a4b-nvfp4",
+        name="Gemma 4 26B-A4B (NVFP4)",
+        hf_repo="nvidia/Gemma-4-26B-A4B-NVFP4",
+        size_gb=18.0,
+        description=(
+            "MoE (4B active/token) in Blackwell-native NVFP4 with MTP speculative "
+            "decoding — the everyday chat model: MoE decode speed with 26B quality, "
+            "262K context, tool use and reasoning. Pairs with OpenWebUI for a team. "
+            "First launch also pulls the assistant drafter."
+        ),
+        quantization="NVFP4", min_memory_gb=24, family="gemma", params_b=26.0,
+        proven_tp=1, verified=False, curated=True,
+        context_length=262144, license="Gemma", recommended=True,
+        format="nvfp4", capabilities=["tool_use", "reasoning", "multilingual"],
+        # Flags taken from eugr/spark-vllm-docker's proven recipe
+        # recipes/gemma4-26b-a4b-nvfp4.yaml (MIT): the gemma4 reasoning and
+        # tool-call parsers, instanttensor loading and the MTP drafter are what
+        # make this model serve correctly rather than merely start. The recipe's
+        # -tp 2 is deliberately NOT carried over: it targets a two-GPU host,
+        # and on a one-GPU-per-node Spark the split is planned from the node
+        # selection instead.
+        extra_vllm_args=[
+            "--load-format", "instanttensor",
+            "--enable-prefix-caching",
+            "--enable-auto-tool-choice",
+            "--tool-call-parser", "gemma4",
+            "--reasoning-parser", "gemma4",
+            "--kv-cache-dtype", "fp8",
+            "--max-num-batched-tokens", "8192",
+            "--speculative-config",
+            '{"method":"mtp","model":"google/gemma-4-26B-A4B-it-assistant",'
+            '"num_speculative_tokens":4,"moe_backend":"triton"}',
+        ],
+        recommended_gmu=0.70,
+    ),
     # --- Fast single-node quantized chat models (AWQ-4bit, awq_marlin on GB10) ---
     # The everyday "always-on" tier: fit one node, serve at interactive speed, and
     # stack several per node. proven_tp=1 (no distribution). verified=True is set
