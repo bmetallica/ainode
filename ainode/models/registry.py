@@ -86,7 +86,11 @@ class ModelInfo:
     # Carrying that here is what makes them a one-click catalog load instead of a
     # hand-rolled container. A caller's explicit /api/models/load value always
     # wins over the recipe; the recipe only fills what wasn't specified.
-    engine_image: str = ""          # "" = fleet default engine image
+    engine_image: str = ""
+    #: Image for the eugr launcher path, when the launcher's own default will
+    #: not do. Empty means the default (`vllm-node`), which is what every
+    #: upstream recipe but the experimental ones asks for.
+    engine_image_eugr: str = ""          # "" = fleet default engine image
     extra_vllm_args: list = None    # verbatim `vllm serve` flags
     extra_env: dict = None          # engine-container env (e.g. b12x kernel selection)
     recommended_gmu: float = 0.0    # 0 = use node default gpu_memory_utilization
@@ -422,6 +426,77 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         quantization=None, min_memory_gb=900, family="glm", params_b=0.0,
         proven_tp=4, verified=False,
         context_length=131072, license="GLM",
+    ),
+    "glm-5.3-flash-nvfp4-spark": ModelInfo(
+        id="glm-5.3-flash-nvfp4-spark",
+        name="GLM 5.3 Flash (NVFP4, B12X) — 2 nodes",
+        hf_repo="local-inference-lab/GLM-5.3-Flash-NVFP4-Spark",
+        # Not published with a weight size we can verify; the recipe's own
+        # cluster_only + TP=2 + gpu_memory_utilization 0.87 is the honest
+        # statement of what it needs — more than one Spark. min_memory_gb says
+        # that, size_gb stays 0 rather than inventing a number the fit
+        # calculator would then present as fact.
+        size_gb=0.0, min_memory_gb=130,
+        description=(
+            "1M context on an EXPERIMENTAL B12X serving stack. Needs its own "
+            "engine image (vllm-node-b12x) and exactly two nodes — it does not "
+            "run on one. Build the image first: see docs/mesh/B12X-IMAGE.md. "
+            "Untested by us; the flags and environment come from the upstream "
+            "recipe verbatim."
+        ),
+        quantization="NVFP4", family="glm", params_b=0.0,
+        proven_tp=2, verified=False, curated=True,
+        context_length=1048576, license="MIT", recommended=False,
+        format="nvfp4", capabilities=["tool_use", "reasoning", "code"],
+        # Everything below is eugr/spark-vllm-docker's recipes/glm-5.3-flash.yaml
+        # (MIT), carried over verbatim apart from the parallelism flags, which
+        # AINode derives from the node selection. The b12x backends and load
+        # format exist ONLY in the vllm-node-b12x image — running these against
+        # the default image fails in argparse.
+        engine_image_eugr="vllm-node-b12x",
+        extra_vllm_args=[
+            "--mamba-cache-mode", "align",
+            "--enable-prefix-caching",
+            "--enable-chunked-prefill",
+            "--dtype", "bfloat16",
+            "--kv-cache-dtype", "fp8",
+            "--quantization", "modelopt_mixed",
+            "--attention-backend", "B12X",
+            "--block-size", "256",
+            "--moe-backend", "b12x",
+            "--linear-backend", "b12x",
+            "--no-enable-flashinfer-autotune",
+            "--load-format", "b12x",
+            "--max-model-len", "1048576",
+            "--max-num-seqs", "4",
+            "--max-num-batched-tokens", "4096",
+            "--speculative-config",
+            '{"method":"mtp","num_speculative_tokens":5,'
+            '"moe_backend":"humming","attention_backend":"B12X"}',
+            "--reasoning-parser", "glm45",
+            "--tool-call-parser", "glm47",
+            "--enable-auto-tool-choice",
+            "--kv-cache-memory-bytes", "8G",
+        ],
+        extra_env={
+            "CUTE_DSL_ARCH": "sm_121a",
+            "SAFETENSORS_FAST_GPU": "1",
+            "VLLM_ENABLE_ROCE_ALLREDUCE": "1",
+            "VLLM_ROCE_ALLREDUCE_MAX_SIZE": "2MB",
+            "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+            "VLLM_SSM_CONV_STATE_LAYOUT": "DS",
+            "VLLM_USE_AOT_COMPILE": "1",
+            "VLLM_USE_MEGA_AOT_ARTIFACT": "1",
+            "VLLM_USE_V2_MODEL_RUNNER": "1",
+            "VLLM_ENABLE_PCIE_ALLREDUCE": "0",
+            "B12X_POLICY_MODE": "auto",
+            "INSTANTTENSOR_BACKEND": "BUFFERED",
+            "INSTANTTENSOR_BUFFER_SIZE": "67108864",
+            "INSTANTTENSOR_CHUNK_SIZE": "8388608",
+            "INSTANTTENSOR_CONCURRENCY": "1",
+            "INSTANTTENSOR_IO_DEPTH": "3",
+        },
+        recommended_gmu=0.87,
     ),
     "glm-5.2-reap-504b-nvfp4": ModelInfo(
         id="glm-5.2-reap-504b-nvfp4",
