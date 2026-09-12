@@ -433,6 +433,10 @@ class TestStartDistributed:
             backend, "_launch_head_container", return_value="ctr_abc"
         ) as launch_head, mock.patch.object(
             backend, "_wait_for_head_container_ready", return_value=True
+        ), mock.patch.object(
+            # Image placement is its own step with its own tests; these cover
+            # the launch orchestration around it.
+            backend, "_distribute_engine_image_to_peers", return_value=None
         ) as wait_ready, mock.patch.object(
             backend, "_ssh_launch_worker", side_effect=fake_ssh_launch
         ), mock.patch(
@@ -484,6 +488,10 @@ class TestStartDistributed:
             backend, "_launch_head_container", return_value="ctr_abc"
         ), mock.patch.object(
             backend, "_wait_for_head_container_ready", return_value=True
+        ), mock.patch.object(
+            # Image placement is its own step with its own tests; these cover
+            # the launch orchestration around it.
+            backend, "_distribute_engine_image_to_peers", return_value=None
         ), mock.patch.object(
             backend, "_ssh_launch_worker", return_value=None
         ), mock.patch(
@@ -793,6 +801,10 @@ class TestLaunchDistributedShim:
             backend, "_launch_head_container", return_value="ctr_abc"
         ), mock.patch.object(
             backend, "_wait_for_head_container_ready", return_value=True
+        ), mock.patch.object(
+            # Image placement is its own step with its own tests; these cover
+            # the launch orchestration around it.
+            backend, "_distribute_engine_image_to_peers", return_value=None
         ), mock.patch.object(
             backend, "_ssh_launch_worker", return_value=None
         ), mock.patch(

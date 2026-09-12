@@ -20,6 +20,13 @@ Parent: `../../AGENTS.md` · State / "why" / history: Obsidian Vault → `Titani
 
 - **Never spawn `vllm` from AINode's own process.** The orchestrator container is `python:3.12-slim` — no CUDA, no vLLM, no NCCL — so `Popen(["vllm", ...])` fails with `[Errno 2] No such file or directory: 'vllm'`. Both backends run the engine in its own container: eugr through `launch-cluster.sh` (`--solo` for one node, plain for many), nvidia through `docker run`. `_build_solo_cmd` survives only as the argv builder for that script.
 
+## Engine images across nodes
+
+- **Every node runs the engine in a container, so every node needs that image.** `launch-cluster.sh` checks and aborts when one is missing or when the ids differ — the head places it first (`engine/distribute.py`) so that check passes instead of failing.
+- **Pull first, copy second.** A registry image is far cheaper pulled on each peer in parallel — layers dedupe — than streamed ~20 GB through the head. The copy is the fallback for a locally built image, and the correction when a pull lands a *different* build of the same tag.
+- **Ids must match, not just tags.** A tag that moved in the registry between two pulls leaves ranks on different builds, which fails later and far less clearly.
+- This is **not** best-effort, unlike weights: the launch fails anyway without it, so failing here with "could not place `<image>` on `<node>`" is strictly more useful.
+
 ## Values that reach launch-cluster.sh (security)
 
 - **Never write an unvalidated string into the launcher `.env` or into `VLLM_SPARK_EXTRA_DOCKER_ARGS`.** Upstream re-quotes every `CONTAINER_*` value by interpolating it into a Python one-liner (`launch-cluster.sh`: `python3 -c "…shlex.quote('$value')…"`), so a single quote in the value closes that literal and the rest runs as code. `VLLM_SPARK_EXTRA_DOCKER_ARGS` is worse: it is expanded **unquoted** into `docker run`, so whitespace injects flags — `-v /:/host` or `--privileged` is a host compromise.

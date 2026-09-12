@@ -67,6 +67,17 @@ Versions follow [Semantic Versioning](https://semver.org/).
   attribute 'draft_model_config'` instead of pointing at a root cause the
   reader then has to go and find. Falls back to the tail when there is no
   traceback at all, which is what an SSH or launcher failure looks like.
+- **The engine image is placed on every node.** Pinning an `engine_image`
+  without that was half a feature: `launch-cluster.sh` verifies the image on
+  the head and every worker and aborts when one lacks it, so a catalog recipe
+  that names an image could not run distributed until the operator had pulled
+  it on three machines by hand. The head now places it — pulling on each peer
+  where the image comes from a registry (far cheaper than streaming ~20 GB
+  through one link, and layers dedupe), copying from the head when it was built
+  locally or when a pull lands a different build of the same tag. Image **ids**
+  are compared, not tags, because that is what the launcher requires and a
+  moved tag would otherwise leave ranks on different builds. Both backends do
+  it, and both do it before starting anything.
 - **The eugr backend honours a model's `engine_image`.** The launcher defaults
   to `IMAGE_NAME="vllm-node"` and this backend passed no `-t`, so a catalog
   recipe's pinned engine was silently ignored and its flags ran against

@@ -45,6 +45,11 @@ from ainode.cluster.hca_discovery import (
     detect_fabric_ip,
 )
 from ainode.cluster.topology import TopologyInfo, topology_for_config
+from ainode.engine.distribute import (
+    DistributionError,
+    ensure_local_image,
+    ensure_peer_has_image,
+)
 from ainode.engine.load_phase import (
     LOAD_PHASE_MARKERS,
     LOAD_PHASE_ORDER,
@@ -336,6 +341,11 @@ class NvidiaBackend(EngineBackend):
             )
 
         # Step 3 — peer Ray workers over SSH (``ssh <peer> docker run -d``).
+        # Place the engine image before starting anything. This backend SSHes
+        # `docker run` to each peer; a missing image fails at the far end with
+        # a bare docker error and a half-started cluster behind it.
+        self._distribute_engine_image_to_peers()
+
         for peer_ip in self.config.peer_ips:
             self._ssh_launch_worker(
                 peer_ip=peer_ip,
@@ -1331,6 +1341,27 @@ class NvidiaBackend(EngineBackend):
                 f"ssh docker run -d for worker on {peer_ip} failed "
                 f"(rc={result.returncode}): {result.stderr.strip()}"
             )
+
+    def _distribute_engine_image_to_peers(self) -> None:
+        """Make the engine image available on this node and every peer.
+
+        Not best effort: without it the launch fails anyway, and failing here
+        with "could not place <image> on <node>" beats failing at a peer's
+        docker daemon with a bare pull error.
+        """
+        image = self._engine_image()
+        try:
+            ensure_local_image(image)
+            for peer_ip in self.config.peer_ips:
+                action = ensure_peer_has_image(
+                    ssh_user=self.config.ssh_user,
+                    coord_ip=peer_ip,
+                    transfer_ip=self._transfer_ip(peer_ip),
+                    image=image,
+                )
+                logger.info("Engine image %s on %s: %s", image, peer_ip, action)
+        except DistributionError as exc:
+            raise NvidiaBackendError(str(exc)) from exc
 
     def _transfer_ip(self, peer_ip: str) -> str:
         """Address to push bulk data to ``peer_ip`` over.

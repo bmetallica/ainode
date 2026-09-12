@@ -47,6 +47,8 @@ from ainode.engine.load_phase import LoadPhaseTracker
 from ainode.engine.distribute import (
     DistributionError,
     ensure_peer_has_dir,
+    ensure_local_image,
+    ensure_peer_has_image,
     hf_cache_dir_name,
 )
 from ainode.engine.parallelism import ParallelPlan, Strategy
@@ -211,6 +213,7 @@ class EugrBackend(EngineBackend):
 
         self._write_eugr_env()
         launch_script = self._write_distributed_launch_script()
+        self._distribute_engine_image_to_peers()
         self._distribute_model_to_peers()
 
         # Bug 3 fix: publish per-node shim to shared storage so every peer's
@@ -707,6 +710,33 @@ class EugrBackend(EngineBackend):
         return (getattr(self.config, "peer_transfer_ips", None) or {}).get(
             peer_ip, peer_ip
         )
+
+    def _distribute_engine_image_to_peers(self) -> None:
+        """Place the engine image on every peer before the launcher looks.
+
+        launch-cluster.sh aborts when a node lacks it, or when the ids differ —
+        correct, and no help: the operator is told to fix three machines by
+        hand. A catalog recipe pinning an engine_image makes that routine
+        rather than exceptional.
+
+        Unlike the weights, this is NOT best effort. The launcher will refuse
+        anyway, so failing here with "could not place <image> on <node>" is
+        strictly more useful than failing there with "image missing".
+        """
+        image = (getattr(self.config, "engine_image", "") or "").strip()
+        if not image:
+            return  # the launcher default is built locally on every node
+        # The head first: the launcher inspects it here and aborts before it
+        # ever looks at a worker.
+        logger.info("Engine image %s locally: %s", image, ensure_local_image(image))
+        for peer_ip in self.config.peer_ips:
+            action = ensure_peer_has_image(
+                ssh_user=self.config.ssh_user,
+                coord_ip=peer_ip,
+                transfer_ip=self._transfer_ip(peer_ip),
+                image=image,
+            )
+            logger.info("Engine image %s on %s: %s", image, peer_ip, action)
 
     def _distribute_model_to_peers(self) -> None:
         """Make sure every peer can read the model from its own local disk.
