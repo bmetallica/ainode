@@ -123,6 +123,27 @@ class NodeConfig:
     # the multimodal models, with headroom.
     max_request_mb: int = 64
 
+    # MQTT telemetry. Off by default: publishing a node's metrics to a broker
+    # is a deliberate act, and a wrong default host would have every install
+    # trying to reach a machine that is not theirs. The password is NOT here —
+    # it lives in the secrets store (secrets.json, obfuscated, masked in the
+    # UI), because config.json is world-readable in every support thread.
+    mqtt_enabled: bool = False
+    mqtt_host: str = ""
+    mqtt_port: int = 1883
+    mqtt_username: str = ""
+    mqtt_tls: bool = False
+    #: Topics are published under this prefix: <prefix>/<node_id>/<group>.
+    mqtt_topic_prefix: str = "ainode"
+    #: Seconds between publishes. Below ~5 s the sampling cost starts to show
+    #: up in the metrics themselves, which is its own kind of wrong.
+    mqtt_interval: int = 30
+    #: Retained messages mean a broker restart does not leave the dashboard
+    #: blank until the next interval. Off by default: a retained payload from a
+    #: node that has since gone away looks like a node that is still there.
+    mqtt_retain: bool = False
+    mqtt_qos: int = 0
+
     # Cluster
     cluster_enabled: bool = True
     cluster_secret: Optional[str] = None

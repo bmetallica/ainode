@@ -339,6 +339,7 @@ set the read token with `ainode config --hf-token hf_xxx`.
 | Proven catalog recipes applied to **distributed** launches too (engine image, parsers, spec-decode) | ✅ |
 | Profiles — describe several models as one deployment, apply it, restore it at startup | ✅ |
 | Tool calling configured automatically — parser derived from the model family, overridable per launch | ✅ |
+| MQTT telemetry — node (CPU/RAM/disk/per-NIC load) + cluster + per-model speed, configured in the UI | ✅ |
 
 ---
 
@@ -638,6 +639,26 @@ curl -X POST localhost:3000/api/profiles/Production/default -d '{}'
 
 Everything is also in the **Profiles** tab of the web UI, which is where the
 buttons that call these live.
+
+### Telemetry over MQTT
+
+A scrape needs the monitoring host to reach every node; a publish needs each
+node to reach one broker. On a switchless mesh that difference matters, and
+most labs already run a broker behind Home Assistant, Node-RED or Telegraf.
+
+Configured in **Config → Monitoring** (broker, credentials, topic prefix,
+interval), with *Test connection*, *Publish now* and a payload preview. The
+password is kept in the secrets store, not in `config.json`.
+
+```
+<prefix>/<node-id>/system    CPU, load, memory, disk, per-interface Mbit/s and % of link, temperatures
+<prefix>/<node-id>/gpu       utilization, memory, temperature
+<prefix>/<node-id>/models    what is loaded, requests, errors, per-model average speed
+<prefix>/cluster             head only: nodes, status, aggregate VRAM
+```
+
+Per-model speed is tokens divided by the time spent generating them, not by
+uptime — a model that served one request an hour ago is idle, not slow.
 
 ### Metrics — `/metrics` (Prometheus) and `/api/metrics` (JSON)
 

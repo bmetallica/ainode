@@ -43,6 +43,8 @@ from ainode.embeddings.manager import EmbeddingManager
 from ainode.embeddings.api_routes import register_embedding_routes
 from ainode.profiles.api_routes import register_profile_routes
 from ainode.profiles.store import ProfileStore
+from ainode.telemetry.api_routes import register_telemetry_routes
+from ainode.telemetry.mqtt import MqttPublisher
 from ainode.api.server_routes import (
     register_server_routes,
     request_log_middleware,
@@ -139,6 +141,7 @@ def create_app(
     # Profiles are read at construction, before the app starts serving, so the
     # startup restore and the routes share one store.
     app["profiles"] = ProfileStore()
+    app["mqtt_publisher"] = MqttPublisher(app)
     # Ray autostart is only meaningful for the legacy eugr backend. The NVIDIA
     # backend manages its own Ray lifecycle via run_cluster.sh at model-load time;
     # running `ray start` here fights with that (session-name mismatch on peer
@@ -198,6 +201,9 @@ def create_app(
 
     # --- Profile routes ------------------------------------------------------
     register_profile_routes(app)
+
+    # --- Telemetry routes ----------------------------------------------------
+    register_telemetry_routes(app)
 
     # --- Server view routes --------------------------------------------------
     register_server_routes(app)
@@ -330,6 +336,17 @@ def _build_announcement(config: NodeConfig, engine=None) -> NodeAnnouncement:
 
 async def _on_startup(app: web.Application) -> None:
     app["client_session"] = aiohttp.ClientSession()
+
+    # Telemetry, if it is configured. Started before the engine work below so
+    # a node that fails to bring a model up still reports why it is unhappy.
+    publisher = app.get("mqtt_publisher")
+    if publisher is not None:
+        try:
+            if publisher.start():
+                logger.info("MQTT telemetry publishing every %ss",
+                            app["config"].mqtt_interval)
+        except Exception:
+            logger.exception("could not start MQTT telemetry")
 
     config: NodeConfig = app["config"]
     announcement: NodeAnnouncement = app["announcement"]
@@ -572,6 +589,13 @@ async def _cluster_sync_loop(app: web.Application) -> None:
 
 
 async def _on_cleanup(app: web.Application) -> None:
+    publisher = app.get("mqtt_publisher")
+    if publisher is not None:
+        try:
+            await publisher.stop()
+        except Exception:
+            logger.exception("could not stop MQTT telemetry")
+
     # Stop the instance-replay task if still running
     replay_task = app.get("_instance_replay_task")
     if replay_task:
@@ -960,6 +984,23 @@ async def handle_v1_models(request: web.Request) -> web.Response:
     return web.json_response({"object": "list", "data": data})
 
 
+def _completion_tokens(body: bytes) -> int:
+    """Tokens generated, from an OpenAI-shaped response body. 0 if absent.
+
+    The body has already been read here, so this is a parse of bytes in hand
+    rather than extra work on the wire. Anything unexpected — an error
+    response, an endpoint with no usage block — counts as nothing rather than
+    raising inside the proxy.
+    """
+    import json as _json
+
+    try:
+        usage = _json.loads(body).get("usage") or {}
+        return max(0, int(usage.get("completion_tokens") or 0))
+    except Exception:
+        return 0
+
+
 async def proxy_to_vllm(request: web.Request) -> web.StreamResponse:
     """Forward the request to the node serving the requested model (F1 federation)."""
     config: NodeConfig = request.app["config"]
@@ -1027,13 +1068,24 @@ async def proxy_to_vllm(request: web.Request) -> web.StreamResponse:
                         },
                     )
                     await resp.prepare(request)
+                    streamed_tokens = 0
                     async for chunk in upstream.content.iter_any():
+                        # vLLM emits one SSE event per token, so counting the
+                        # event markers counts tokens without parsing JSON in
+                        # the streaming hot path. A chunk boundary landing
+                        # inside a marker can miscount by one; this feeds an
+                        # average speed gauge, not a bill.
+                        streamed_tokens += chunk.count(b"data: ")
                         await resp.write(chunk)
                     await resp.write_eof()
-                    collector.record_request(model, (time.time() - start_time) * 1000, error=False)
+                    collector.record_request(
+                        model, (time.time() - start_time) * 1000,
+                        tokens_generated=streamed_tokens, error=False)
                     return resp
                 body = await upstream.read()
-                collector.record_request(model, (time.time() - start_time) * 1000, error=False)
+                collector.record_request(
+                    model, (time.time() - start_time) * 1000,
+                    tokens_generated=_completion_tokens(body), error=False)
                 return web.Response(
                     status=upstream.status, body=body,
                     content_type=upstream.headers.get("Content-Type", "application/json").split(";")[0].strip(),

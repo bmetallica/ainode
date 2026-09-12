@@ -20,6 +20,13 @@ class MetricsCollector:
         self._total_requests: int = 0
         self._error_count: int = 0
         self._requests_by_model: dict[str, int] = defaultdict(int)
+        # Per-model totals. "How fast is this model" is the question an
+        # operator running three models actually asks, and a fleet-wide
+        # tokens-per-second cannot answer it: a chat model and an embedding
+        # model averaged together describe neither.
+        self._tokens_by_model: dict[str, int] = defaultdict(int)
+        self._latency_sum_by_model: dict[str, float] = defaultdict(float)
+        self._errors_by_model: dict[str, int] = defaultdict(int)
 
         # Latency tracking (bounded to prevent unbounded growth)
         self._latencies: deque[float] = deque(maxlen=10000)
@@ -44,8 +51,11 @@ class MetricsCollector:
             self._requests_by_model[model] += 1
             self._latencies.append(latency_ms)
             self._total_tokens += tokens_generated
+            self._tokens_by_model[model] += max(0, int(tokens_generated or 0))
+            self._latency_sum_by_model[model] += max(0.0, float(latency_ms or 0))
             if error:
                 self._error_count += 1
+                self._errors_by_model[model] += 1
 
     # ------------------------------------------------------------------
     # Snapshots
@@ -60,6 +70,7 @@ class MetricsCollector:
             "uptime_seconds": round(time.time() - self._start_time, 1),
             "requests": request_stats,
             "gpu": gpu,
+            "models": self.model_stats(),
         }
 
     def get_request_stats(self) -> dict[str, Any]:
@@ -145,6 +156,37 @@ class MetricsCollector:
             stats["tokens_per_second"] = 0
 
         return stats
+
+    def model_stats(self) -> dict[str, Any]:
+        """Per-model counts, average latency and average generation speed.
+
+        Speed is tokens divided by the time actually spent generating them,
+        not by uptime: a model that served ten requests in an hour is not slow,
+        it is idle, and dividing by uptime says the opposite.
+
+        Absent rather than zero where nothing has been measured — no requests
+        yet, or a route that reports no token count.
+        """
+        with self._lock:
+            models = set(self._requests_by_model) | set(self._tokens_by_model)
+            out: dict[str, Any] = {}
+            for model in models:
+                count = self._requests_by_model.get(model, 0)
+                tokens = self._tokens_by_model.get(model, 0)
+                seconds = self._latency_sum_by_model.get(model, 0.0) / 1000.0
+                entry: dict[str, Any] = {
+                    "requests": count,
+                    "errors": self._errors_by_model.get(model, 0),
+                }
+                if count:
+                    entry["avg_latency_ms"] = round(
+                        self._latency_sum_by_model.get(model, 0.0) / count, 1)
+                if tokens:
+                    entry["tokens_generated"] = tokens
+                    if seconds > 0:
+                        entry["avg_tokens_per_second"] = round(tokens / seconds, 2)
+                out[model] = entry
+            return out
 
     @staticmethod
     def _percentile(sorted_data: list[float], pct: int) -> float:
