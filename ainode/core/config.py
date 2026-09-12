@@ -108,6 +108,15 @@ class NodeConfig:
     # Setting this also disables the 0.17-era GB10 workarounds that would
     # otherwise be forced on (see NvidiaBackend._is_pinned_default_image).
     engine_image: str = ""
+    # Where engine_image came from: "catalog" (a curated recipe filled it in)
+    # or "caller" (someone typed it, or an API client sent it). The two are not
+    # interchangeable. A recipe names an image that satisfies the model's vLLM
+    # requirement on the NVIDIA backend, whose own default is a 0.17 build. The
+    # eugr backend's default (`vllm-node`, built here from vLLM main) already
+    # satisfies it AND is the image eugr's own recipes for these models use —
+    # so on that backend a recipe's image is a suggestion, while a caller's is
+    # an instruction.
+    engine_image_source: str = ""
     # Per-instance environment for the engine container. Some engine features
     # are selected by env var, not by a `vllm serve` flag — the b12x FP4 kernel
     # path is VLLM_NVFP4_GEMM_BACKEND + friends, with no CLI equivalent. Merged

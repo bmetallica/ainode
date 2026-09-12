@@ -652,6 +652,26 @@ class EugrBackend(EngineBackend):
     # Distributed (eugr) wiring
     # ------------------------------------------------------------------
 
+    def _effective_engine_image(self) -> str:
+        """The image this backend will actually run, or "" for the default.
+
+        One decision, used by both the launcher arguments and the distribution
+        step — otherwise the head pulls and ships 20 GB of an image the
+        launcher then does not use.
+        """
+        image = (getattr(self.config, "engine_image", "") or "").strip()
+        if not image:
+            return ""
+        if (getattr(self.config, "engine_image_source", "") or "") == "catalog":
+            logger.info(
+                "Ignoring the catalog's engine image %s: this backend launches "
+                "through eugr, whose default image already satisfies the model "
+                "and is what the model's own upstream recipe uses. Set the "
+                "engine image explicitly in the launch panel to override.",
+                image)
+            return ""
+        return image
+
     def _launcher_image_args(self) -> List[str]:
         """``-t <image>`` when the instance pins an engine image, else nothing.
 
@@ -664,8 +684,24 @@ class EugrBackend(EngineBackend):
 
         The image must be present on every participating node; the launcher
         checks that itself and reports a mismatch clearly.
+
+        A CATALOG image is declined here, and this is the interesting part. A
+        recipe pins ``vllm/vllm-openai:v0.27.1`` because the *NVIDIA* backend
+        defaults to a 0.17 build that rejects the model's flags. This backend's
+        default is ``vllm-node``, built here from vLLM main — new enough, and
+        the image eugr's own recipes for these very models name
+        (``recipes/qwen3.8-27b-nvfp4-dflash2.yaml``, ``nemotron-3.5-lightning
+        .yaml``: ``container: vllm-node``).
+
+        It is not only redundant but wrong: the launcher copies its exec script
+        into ``/workspace`` inside the container, which ``vllm-node`` has as
+        its working directory and ``vllm/vllm-openai`` does not have at all —
+        observed as "Could not find the file /workspace in container
+        vllm_node", after a 20 GB pull of an image that was never going to
+        work. A CALLER's image is still honoured exactly as given: someone who
+        types an image means it.
         """
-        image = (getattr(self.config, "engine_image", "") or "").strip()
+        image = self._effective_engine_image()
         if not image:
             return []
         if not _is_safe_path_arg(image):
@@ -735,7 +771,7 @@ class EugrBackend(EngineBackend):
         anyway, so failing here with "could not place <image> on <node>" is
         strictly more useful than failing there with "image missing".
         """
-        image = (getattr(self.config, "engine_image", "") or "").strip()
+        image = self._effective_engine_image()
         if not image:
             return  # the launcher default is built locally on every node
         # The head first: the launcher inspects it here and aborts before it
