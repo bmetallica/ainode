@@ -171,3 +171,50 @@ class TestFailuresNameTheEvidence:
     def test_teardown_noise_is_still_not_the_explanation(self):
         reason = self._failed("Stopping cluster...", "Cluster stopped.")
         assert "Stopping cluster" not in reason or "exited" in reason
+
+
+class TestThePhaseFollowsThisVllm:
+    """The markers have to match the phrasing the engine actually prints.
+
+    "Loading model from scratch..." is what the current build says, and it
+    matched nothing — so a launch reading 23 GB off disk showed "starting ·
+    12%" for its whole duration, which is what a hang looks like. Reported as
+    one, twice.
+    """
+
+    def _phase_after(self, *lines):
+        tracker = LoadPhaseTracker()
+        tracker.reset()
+        for line in lines:
+            tracker.observe(line)
+        return tracker
+
+    def test_loading_model_from_scratch_advances_the_phase(self):
+        t = self._phase_after("INFO [model_runner.py:396] Loading model from scratch...")
+        assert t.current() == "loading_weights"
+
+    def test_init_engine_counts_as_profiling(self):
+        t = self._phase_after(
+            "INFO [core.py:372] init engine (profile, create kv cache, warmup model) took 150.72 s")
+        assert t.current() == "profiling"
+
+    def test_a_download_is_called_a_download(self):
+        # Reading 23 GB off disk and pulling it over the internet are both
+        # "loading weights", and the operator wants to know which one.
+        t = self._phase_after(
+            "INFO Loading model from scratch...",
+            "Warning: You are sending unauthenticated requests to the HF Hub.")
+        assert "Hugging Face" in t.detail
+
+    def test_reading_from_disk_says_so(self):
+        t = self._phase_after("INFO Loading safetensors checkpoint shards: 10%")
+        assert "from disk" in t.detail
+
+    def test_compilation_is_named_as_a_one_off(self):
+        t = self._phase_after("INFO torch.compile takes 38.49 s in total")
+        assert "first launch" in t.detail
+
+    def test_readiness_still_wins(self):
+        t = self._phase_after("INFO Loading model from scratch...",
+                              "INFO:     Application startup complete.")
+        assert t.current() == "ready"
