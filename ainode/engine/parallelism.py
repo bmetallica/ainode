@@ -236,8 +236,50 @@ def validate_plan(plan: ParallelPlan, node_count: int) -> None:
         )
 
 
+def plan_for_model(strategy, node_count: int, proven_tp: int = 0):
+    """Plan a split, respecting what the catalog says the model was proven at.
+
+    Returns ``(plan, note)``; ``note`` is "" or one plain sentence for the
+    operator explaining a downgrade.
+
+    ``proven_tp`` is the node count a curated model has actually been served
+    at here. Spreading it wider along the *tensor* axis than that is not a
+    matter of taste: TP re-shards attention heads, and a model whose recipe
+    carries a speculative draft (Qwen3.8's MTP, Nemotron's DSpark) carries
+    draft-side assumptions with it that were only ever checked at that width.
+    So a tensor request beyond ``proven_tp`` becomes a pipeline split over the
+    same nodes — every node still contributes memory, no head is re-sharded,
+    and pipeline works at any node count.
+
+    Not a downgrade in the other direction: ``proven_tp`` larger than the node
+    count usually means the model needs that many nodes to fit at all, which
+    is the memory planner's call, not this function's.
+    """
+    resolved = Strategy.parse(strategy)
+    limit = max(0, int(proven_tp or 0))
+
+    if limit >= 1 and node_count > limit:
+        wants_tensor = resolved is Strategy.TENSOR or (
+            resolved is Strategy.AUTO
+            and recommend_strategy(node_count) is Strategy.TENSOR
+        )
+        if wants_tensor:
+            plan = plan_for(Strategy.PIPELINE, node_count)
+            note = (
+                f"This model is proven at tensor-parallel {limit} on this "
+                f"hardware, so {node_count} nodes are served as {plan.label()} "
+                f"(pipeline) instead of TP={node_count}. Pooled memory is the "
+                f"same; the attention heads and any speculative draft stay in "
+                f"the layout the model was verified with."
+            )
+            return plan, note
+
+    return plan_for(resolved, node_count), ""
+
+
 __all__ = [
     "TENSOR_PARALLEL_SIZES",
+    "plan_for_model",
     "ParallelPlan",
     "ParallelPlanError",
     "Strategy",
