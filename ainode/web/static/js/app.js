@@ -205,6 +205,233 @@ const AINode = {
   },
 
   // ========================================================================
+  //  PROFILES — the set of models this node should be serving
+  // ========================================================================
+
+  _profileState: { editing: null, applying: '' },
+
+  async renderProfiles() {
+    var mount = document.getElementById('profiles-content');
+    if (!mount) return;
+    var self = this;
+    var data = await this.fetchJSON('/api/profiles');
+    var profiles = (data && data.profiles) || [];
+    var defaultName = (data && data.default) || '';
+
+    var html = '';
+
+    // Capture is the realistic way to a first profile: get the deployment
+    // right by hand, then keep it — rather than filling in a dozen fields
+    // per model in a form and hoping it matches what worked.
+    html += '<section class="server-section">';
+    html += '  <div class="server-section-header">';
+    html += '    <h3 class="server-section-title">Save what is running</h3>';
+    html += '  </div>';
+    html += '  <div class="profile-capture-row">';
+    html += '    <input class="form-input" id="profile-capture-name" placeholder="Profile name (e.g. Endausbau)">';
+    html += '    <input class="form-input" id="profile-capture-desc" placeholder="What it is for (optional)">';
+    html += '    <button class="btn-nvidia" id="profile-capture-btn">Save current state</button>';
+    html += '  </div>';
+    html += '  <div class="server-hint">Records every model running right now — which nodes it spans, its memory fraction, context length and engine flags.</div>';
+    html += '</section>';
+
+    html += '<section class="server-section">';
+    html += '  <div class="server-section-header">';
+    html += '    <h3 class="server-section-title">Profiles</h3>';
+    html += '    <span class="server-section-meta">' + profiles.length + ' saved</span>';
+    html += '  </div>';
+    if (!profiles.length) {
+      html += '  <div class="server-empty">No profiles yet. Load the models you want, then click <strong>Save current state</strong>.</div>';
+    } else {
+      profiles.forEach(function (p) {
+        html += self._renderProfileCard(p, defaultName);
+      });
+    }
+    html += '</section>';
+
+    mount.innerHTML = html;
+    this._bindProfileActions();
+  },
+
+  _renderProfileCard(profile, defaultName) {
+    var self = this;
+    var isDefault = profile.name === defaultName;
+    var h = '<div class="profile-card" data-profile="' + this.esc(profile.name) + '">';
+    h += '  <div class="profile-card-head">';
+    h += '    <span class="profile-name">' + this.esc(profile.name) + '</span>';
+    if (isDefault) h += '    <span class="profile-default-badge">DEFAULT · loaded at startup</span>';
+    h += '    <span class="profile-card-actions">';
+    h += '      <button class="btn-nvidia server-btn-sm" data-profile-apply="' + this.esc(profile.name) + '">Apply</button>';
+    h += '      <button class="btn-ghost server-btn-sm" data-profile-default="' + this.esc(profile.name) + '">' + (isDefault ? 'Unset default' : 'Set default') + '</button>';
+    h += '      <button class="btn-ghost server-btn-sm" data-profile-delete="' + this.esc(profile.name) + '">Delete</button>';
+    h += '    </span>';
+    h += '  </div>';
+    if (profile.description) {
+      h += '  <div class="profile-desc">' + this.esc(profile.description) + '</div>';
+    }
+    var entries = profile.entries || [];
+    if (!entries.length) {
+      h += '  <div class="server-empty">Empty profile — applying it stops everything.</div>';
+    } else {
+      h += '  <table class="profile-table"><thead><tr>' +
+           '<th>Model</th><th>Nodes</th><th>Split</th><th>Memory</th><th>Context</th><th>KV</th>' +
+           '</tr></thead><tbody>';
+      entries.forEach(function (e) {
+        var nodes = (e.node_ids && e.node_ids.length) ? e.node_ids.join(', ') : 'this node';
+        var split = e.kind === 'embedding' ? 'embedding' : (e.strategy || 'auto');
+        var mem = e.gpu_memory_utilization ? Math.round(e.gpu_memory_utilization * 100) + '%' : '—';
+        var ctx = e.max_model_len ? self.formatNumber(e.max_model_len) : '—';
+        h += '<tr>' +
+             '<td class="mono">' + self.esc(e.model) + '</td>' +
+             '<td>' + self.esc(nodes) + '</td>' +
+             '<td>' + self.esc(split) + '</td>' +
+             '<td>' + mem + '</td>' +
+             '<td>' + ctx + '</td>' +
+             '<td>' + self.esc(e.kv_cache_dtype || 'auto') + '</td>' +
+             '</tr>';
+      });
+      h += '  </tbody></table>';
+    }
+    h += '  <div class="profile-report" id="profile-report-' + this.esc(profile.name) + '"></div>';
+    h += '</div>';
+    return h;
+  },
+
+  _bindProfileActions() {
+    var self = this;
+
+    var captureBtn = document.getElementById('profile-capture-btn');
+    if (captureBtn) {
+      captureBtn.addEventListener('click', function () { self.captureProfile(); });
+    }
+
+    document.querySelectorAll('[data-profile-apply]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        self.applyProfile(btn.getAttribute('data-profile-apply'), btn);
+      });
+    });
+    document.querySelectorAll('[data-profile-default]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        self.setDefaultProfile(btn.getAttribute('data-profile-default'),
+                               btn.textContent.indexOf('Unset') === 0);
+      });
+    });
+    document.querySelectorAll('[data-profile-delete]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        self.deleteProfile(btn.getAttribute('data-profile-delete'));
+      });
+    });
+  },
+
+  async captureProfile() {
+    var nameEl = document.getElementById('profile-capture-name');
+    var descEl = document.getElementById('profile-capture-desc');
+    var name = (nameEl && nameEl.value || '').trim();
+    if (!name) {
+      this.toast('Give the profile a name first', 'error');
+      return;
+    }
+    var body = { name: name, description: (descEl && descEl.value || '').trim() };
+    var resp = await fetch('/api/profiles/capture', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    var data = await resp.json().catch(function () { return {}; });
+    if (resp.status === 409) {
+      if (!confirm('A profile named "' + name + '" already exists. Replace it?')) return;
+      body.overwrite = true;
+      resp = await fetch('/api/profiles/capture', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      data = await resp.json().catch(function () { return {}; });
+    }
+    if (!resp.ok) {
+      this.toast(data.error || 'Could not save the profile', 'error');
+      return;
+    }
+    this.toast('Saved "' + name + '" with ' + (data.captured || 0) + ' model(s)', 'success');
+    if (nameEl) nameEl.value = '';
+    if (descEl) descEl.value = '';
+    this.renderProfiles();
+  },
+
+  async applyProfile(name, btn) {
+    if (!name || this._profileState.applying) return;
+    // Applying converges: it stops what the profile does not list. Say so
+    // before doing it, because "apply" reads like "add" to most people.
+    if (!confirm('Apply "' + name + '"?\n\nModels this profile does not list will be stopped, and missing ones started one after another. This can take several minutes.')) return;
+
+    this._profileState.applying = name;
+    var original = btn ? btn.textContent : '';
+    if (btn) { btn.textContent = 'Applying…'; btn.disabled = true; }
+    var report = document.getElementById('profile-report-' + name);
+    if (report) report.innerHTML = '<div class="profile-report-line">Applying — each model has to answer before the next one starts.</div>';
+
+    try {
+      var resp = await fetch('/api/profiles/' + encodeURIComponent(name) + '/apply', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      var data = await resp.json().catch(function () { return {}; });
+      if (report) report.innerHTML = this._renderApplyReport(data);
+      this.toast(data.ok ? 'Applied "' + name + '"' : 'Applied "' + name + '" with errors',
+                 data.ok ? 'success' : 'error');
+    } catch (e) {
+      if (report) report.innerHTML = '<div class="profile-report-line error">Request failed: ' + this.esc(String(e)) + '</div>';
+      this.toast('Applying the profile failed', 'error');
+    } finally {
+      this._profileState.applying = '';
+      if (btn) { btn.textContent = original || 'Apply'; btn.disabled = false; }
+      this.refresh();
+    }
+  },
+
+  _renderApplyReport(data) {
+    var self = this;
+    if (!data || (!data.results && !data.error)) return '';
+    if (data.error) return '<div class="profile-report-line error">' + this.esc(data.error) + '</div>';
+    var h = '';
+    (data.stopped || []).forEach(function (m) {
+      h += '<div class="profile-report-line">■ stopped ' + self.esc(m) + '</div>';
+    });
+    (data.results || []).forEach(function (r) {
+      var mark = r.ok ? '✓' : '✕';
+      var cls = r.ok ? '' : ' error';
+      var line = mark + ' ' + self.esc(r.model) + ' — ' + self.esc(r.action);
+      if (r.error) line += ': ' + self.esc(r.error);
+      h += '<div class="profile-report-line' + cls + '">' + line + '</div>';
+    });
+    return h;
+  },
+
+  async setDefaultProfile(name, clear) {
+    var resp = await fetch('/api/profiles/' + encodeURIComponent(name) + '/default', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(clear ? { default: false } : {}),
+    });
+    var data = await resp.json().catch(function () { return {}; });
+    if (!resp.ok) {
+      this.toast(data.error || 'Could not change the default', 'error');
+      return;
+    }
+    this.toast(data.default ? '"' + data.default + '" is loaded at startup' : 'No profile is loaded at startup',
+               'success');
+    this.renderProfiles();
+  },
+
+  async deleteProfile(name) {
+    if (!confirm('Delete the profile "' + name + '"? Running models are not touched.')) return;
+    var resp = await fetch('/api/profiles/' + encodeURIComponent(name), { method: 'DELETE' });
+    if (!resp.ok) {
+      this.toast('Could not delete "' + name + '"', 'error');
+      return;
+    }
+    this.toast('Deleted "' + name + '"', 'info');
+    this.renderProfiles();
+  },
+
+  // ========================================================================
   //  NAVIGATION
   // ========================================================================
 
@@ -351,6 +578,9 @@ const AINode = {
         break;
       case 'server':
         this.renderServer();
+        break;
+      case 'profiles':
+        this.renderProfiles();
         break;
     }
 
