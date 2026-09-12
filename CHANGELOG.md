@@ -67,6 +67,21 @@ Versions follow [Semantic Versioning](https://semver.org/).
   attribute 'draft_model_config'` instead of pointing at a root cause the
   reader then has to go and find. Falls back to the tail when there is no
   traceback at all, which is what an SSH or launcher failure looks like.
+- **A speculative-decoding draft model is refused before it wastes a launch.**
+  A drafter is not servable on its own: vLLM loads it, reaches for the
+  `speculative_config` that would name its base, finds None and dies minutes
+  later with `AttributeError: 'NoneType' object has no attribute
+  'draft_model_config'` — accurate, and no help in working out what to do.
+  Both launch routes now check the catalog first, which already knows which
+  repos are drafters because a curated entry that pairs with one names it in
+  its speculative-config flags, and refuse with the base model to load instead.
+  Matched as a whole value, never a substring: a base repo id is a *prefix* of
+  its drafter's, so a substring test flags the correct model and sends the
+  operator in a circle. For drafters outside the catalog the log is still
+  watched — by architecture name (the two real cases, `DFlashDraftModel` and
+  `Qwen3DSparkModel`, share no suffix) and by the `draft_model_config` crash
+  itself, which any drafter reaches regardless of what its architecture is
+  called.
 - **A launch that dies is reported as dead.** When the engine or the launcher
   exited without ever reporting readiness, nothing noticed: the log stream
   simply ended and the instance card sat at whatever phase it had reached,
