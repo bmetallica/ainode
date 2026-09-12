@@ -169,7 +169,8 @@ class EugrBackend(EngineBackend):
             )
 
         launch_script = self._write_launch_script(ParallelPlan(), solo=True)
-        cmd = [str(EUGR_LAUNCHER), "--solo", "--launch-script", str(launch_script)]
+        cmd = [str(EUGR_LAUNCHER), "--solo", *self._launcher_image_args(),
+               "--launch-script", str(launch_script)]
         env = self._launcher_env()
 
         logger.info("Starting solo vLLM via the launcher: %s", " ".join(cmd))
@@ -218,7 +219,8 @@ class EugrBackend(EngineBackend):
         # detection (bugs 1/2/4 still fixed).
         shim_container_path = self._publish_nccl_init_script()
 
-        cmd = [str(EUGR_LAUNCHER), "--launch-script", str(launch_script)]
+        cmd = [str(EUGR_LAUNCHER), *self._launcher_image_args(),
+               "--launch-script", str(launch_script)]
         env = self._launcher_env(shim_container_path=shim_container_path)
 
         logger.info(
@@ -634,6 +636,30 @@ class EugrBackend(EngineBackend):
     # ------------------------------------------------------------------
     # Distributed (eugr) wiring
     # ------------------------------------------------------------------
+
+    def _launcher_image_args(self) -> List[str]:
+        """``-t <image>`` when the instance pins an engine image, else nothing.
+
+        The launcher defaults to IMAGE_NAME="vllm-node", and this backend used
+        to pass nothing — so a catalog recipe's ``engine_image`` was silently
+        ignored and its flags ran against whatever vLLM the local base image
+        happens to contain. A recipe proven on vllm/vllm-openai:v0.27.1 then
+        fails with exit code 2, argparse's "unrecognized arguments", which says
+        nothing about the engine being the wrong one.
+
+        The image must be present on every participating node; the launcher
+        checks that itself and reports a mismatch clearly.
+        """
+        image = (getattr(self.config, "engine_image", "") or "").strip()
+        if not image:
+            return []
+        if not _is_safe_path_arg(image):
+            raise EugrBackendError(
+                f"Refusing to pass engine_image {image!r} to the launcher: an "
+                f"image reference is [A-Za-z0-9_./@+:-], and this value is "
+                f"expanded unquoted into a docker command line."
+            )
+        return ["-t", image]
 
     def _launcher_env(self, shim_container_path: Optional[str] = None) -> dict:
         """Environment for a ``launch-cluster.sh`` invocation.

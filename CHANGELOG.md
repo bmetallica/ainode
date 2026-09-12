@@ -67,6 +67,20 @@ Versions follow [Semantic Versioning](https://semver.org/).
   attribute 'draft_model_config'` instead of pointing at a root cause the
   reader then has to go and find. Falls back to the tail when there is no
   traceback at all, which is what an SSH or launcher failure looks like.
+- **The eugr backend honours a model's `engine_image`.** The launcher defaults
+  to `IMAGE_NAME="vllm-node"` and this backend passed no `-t`, so a catalog
+  recipe's pinned engine was silently ignored and its flags ran against
+  whatever vLLM the local base image happens to contain. A recipe proven on
+  `vllm/vllm-openai:v0.27.1` then dies with exit code 2 — argparse's
+  "unrecognized arguments" — which says nothing about the engine being the
+  wrong one. That failure is also named now, since a rejected flag almost
+  always means a recipe/engine mismatch.
+- **A failed launch no longer quotes its own cleanup as the explanation.** The
+  launcher tears the cluster down after a failure, so the last lines of the log
+  are "Stopping cluster… | Stopping head node… | Cluster stopped." — which is
+  exactly what got reported as the cause of a launch that died on a rejected
+  argument. Teardown lines are skipped when picking what to quote, and the
+  retained tail is deep enough to see past the banner.
 - **A speculative-decoding draft model is refused before it wastes a launch.**
   A drafter is not servable on its own: vLLM loads it, reaches for the
   `speculative_config` that would name its base, finds None and dies minutes

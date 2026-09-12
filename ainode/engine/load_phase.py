@@ -19,7 +19,21 @@ __all__ = ["LOAD_PHASE_MARKERS", "LOAD_PHASE_ORDER", "PHASE_FAILED",
            "LoadPhaseTracker"]
 
 # How much of the tail to keep for a failure message.
-_TAIL_LINES = 12
+_TAIL_LINES = 24
+
+# Lines the launcher prints while tearing down after a failure. They are the
+# LAST thing in the log and describe the cleanup, not the cause — quoting them
+# produced "Stopping cluster... | Stopping head node... | Cluster stopped." as
+# the explanation for a launch that died on an unrecognised vLLM argument.
+_TEARDOWN_MARKERS = (
+    "stopping cluster", "stopping head node", "stopping worker",
+    "cluster stopped", "cleanup", "removing container",
+)
+
+
+def _is_teardown(line: str) -> bool:
+    low = line.lower()
+    return any(m in low for m in _TEARDOWN_MARKERS)
 
 # An exception line, with vLLM's process prefix tolerated:
 #   (EngineCore pid=143) AttributeError: 'NoneType' object has no attribute ...
@@ -83,6 +97,15 @@ _DRAFTER_HINT = (
 # name-independent pattern below.
 _DRAFTER_ARCHS = ("draftmodel", "dsparkmodel", "dflash", "eagle", "mtpmodel")
 
+# vLLM exits 2 from argparse on an unknown flag, and prints the offending one.
+# Worth naming because the usual cause is a recipe written for a different
+# engine build than the one actually running.
+_ARGPARSE_HINT = (
+    "the engine rejected a command-line flag. A catalog recipe is written for a "
+    "specific engine build (its engine_image); running it against a different "
+    "one fails exactly like this."
+)
+
 _FATAL_PATTERNS = [
     ("resolved architecture:", arch, _DRAFTER_HINT) for arch in _DRAFTER_ARCHS
 ] + [
@@ -90,6 +113,8 @@ _FATAL_PATTERNS = [
     # called, it dies reaching through a speculative_config that is None —
     #   AttributeError: 'NoneType' object has no attribute 'draft_model_config'
     ("draft_model_config", "nonetype", _DRAFTER_HINT),
+    ("unrecognized arguments", "unrecognizedarguments", _ARGPARSE_HINT),
+    ("error: argument", "error:argument", _ARGPARSE_HINT),
 ]
 
 
@@ -186,5 +211,7 @@ class LoadPhaseTracker:
         """
         if self.phase != PHASE_FAILED:
             return ""
-        detail = self.fatal_hint or self.root_cause or " | ".join(self.tail[-3:])
+        interesting = [ln for ln in self.tail if not _is_teardown(ln)]
+        detail = (self.fatal_hint or self.root_cause
+                  or " | ".join(interesting[-3:] or self.tail[-3:]))
         return f"{self.error}{(' — ' + detail) if detail else ''}"
