@@ -207,6 +207,11 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         format="safetensors", capabilities=["tool_use", "reasoning", "code"],
         engine_image="vllm/vllm-openai:v0.27.1",
         extra_vllm_args=[
+            # From eugr/spark-vllm-docker's recipes/nemotron-3.5-lightning.yaml
+            # (MIT): instanttensor loads an NVFP4 checkpoint directly instead of
+            # going through the generic safetensors path, and a 30 GB checkpoint
+            # pays the difference on every launch.
+            "--load-format", "instanttensor",
             "--moe-backend", "marlin",
             "--enable-prefix-caching",
             "--speculative_config.model",
@@ -239,6 +244,9 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         capabilities=["vision", "tool_use", "reasoning", "code", "multilingual"],
         engine_image="vllm/vllm-openai:v0.27.1",
         extra_vllm_args=[
+            # As in eugr's recipes/qwen3.8-27b-nvfp4-dflash2.yaml (MIT) — see the
+            # note on the Nemotron entry above.
+            "--load-format", "instanttensor",
             "--enable-prefix-caching",
             # Vision models must NOT get fp8 KV on GB10 — it corrupts generation
             # (proven 2026-07-06). The automatic fp8→auto downgrade only fires
