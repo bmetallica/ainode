@@ -133,7 +133,7 @@ def test_live_instance_records_flips_starting_to_serving():
     assert [r.to_dict()["status"] for r in live] == ["serving"]
 
 
-def test_live_instance_records_drops_dead_instance():
+def test_live_instance_records_advertises_a_dead_instance_as_failed():
     from ainode.api.server import _live_instance_records
     from ainode.engine.instance_manager import InstanceManager
 
@@ -148,6 +148,8 @@ def test_live_instance_records_drops_dead_instance():
     finally:
         loop.close()
 
-    # A non-answering engine is neither advertised nor promoted to serving.
-    assert live == []
-    assert rec.status == "starting"
+    # A non-answering engine is never promoted to serving — and it is still
+    # advertised, as failed, so the dashboard can show it and offer UNLOAD.
+    # This fake reports no process at all, which is the dead case.
+    assert [r.status for r in live] == ["failed"]
+    assert rec.status == "failed"

@@ -321,7 +321,16 @@ class EugrBackend(EngineBackend):
         return self.start_distributed()
 
     def stop(self) -> None:
-        """Graceful shutdown. For distributed, also invokes eugr's ``stop``."""
+        """Shut the engine down — the launcher AND the container it started.
+
+        Killing the launcher was all this did, and the launcher is not the
+        engine: ``vllm serve`` runs inside the engine container, started by
+        ``docker exec``. So an unloaded model kept its container up and its
+        weights resident, the node stayed full, and the next launch found its
+        port taken and its container name in use by a model the operator had
+        already dismissed. An engine that outlived an orchestrator restart came
+        from the same place.
+        """
         if self._process and self._process.poll() is None:
             self._process.send_signal(signal.SIGTERM)
             try:
@@ -334,19 +343,51 @@ class EugrBackend(EngineBackend):
                     pass
             self._process = None
 
+        # Distributed: the launcher's own stop reaches the peers' containers
+        # over SSH, which nothing here can do. It needs to be told which
+        # container, now that instances no longer share one name.
         if self.config.distributed_mode == "head" and EUGR_LAUNCHER.exists():
             try:
                 subprocess.run(
-                    [str(EUGR_LAUNCHER), "stop"],
+                    [str(EUGR_LAUNCHER), "stop", *self._container_args()],
                     cwd=str(EUGR_LAUNCHER.parent),
                     capture_output=True,
                     text=True,
-                    timeout=60,
+                    timeout=120,
+                    env=self._build_env(),
                 )
             except Exception:  # pragma: no cover - best-effort teardown
                 logger.exception("eugr launch-cluster.sh stop failed")
 
+        # And locally, whatever the mode: the launcher's stop is best effort
+        # and a solo launch never went through it at all.
+        self._stop_container()
         self._ready = False
+
+    def _stop_container(self) -> None:
+        """Stop and remove this instance's engine container.
+
+        Removed, not just stopped: the launcher reuses a container it finds by
+        name, so a stopped one left behind is the next launch silently
+        inheriting an old container's mounts and environment.
+        """
+        name = self.container_name
+        for cmd, timeout in (
+            (["docker", "stop", "-t", "30", name], 60),
+            (["docker", "rm", "-f", name], 30),
+        ):
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True,
+                                        timeout=timeout)
+            except Exception:
+                logger.exception("%s failed", " ".join(cmd))
+                continue
+            if result.returncode != 0:
+                stderr = (result.stderr or "").strip()
+                # "No such container" is the normal case when a launch failed
+                # before the container existed, or a previous stop won.
+                if "No such container" not in stderr:
+                    logger.warning("%s: %s", " ".join(cmd), stderr[:200])
 
     def wait_ready(self, timeout: float = 300.0) -> bool:
         """Poll ``/v1/models`` on the API port until 2xx or timeout."""

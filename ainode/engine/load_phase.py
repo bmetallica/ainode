@@ -136,6 +136,20 @@ _ARGPARSE_HINT = (
     "one fails exactly like this."
 )
 
+# GB10/sm120: FlashInfer's prefill kernel illegal-instructions under CUDA-graph
+# capture and takes EngineCore with it (verified 2026-06-17, and again on a
+# three-node cluster where it killed a launch at the graph-capture step). The
+# NVIDIA backend forces --enforce-eager for the engine build where this is
+# known; a model without a curated recipe gets no such protection, and the
+# crash says nothing about what to do.
+_EAGER_HINT = (
+    "the GPU rejected a captured CUDA graph — the known GB10/sm120 failure in "
+    "FlashInfer's prefill kernel. Add --enforce-eager to the model's extra "
+    "vLLM args (Advanced in the launch panel). It costs some throughput and "
+    "makes the launch work; a model whose recipe is proven on this hardware "
+    "already carries what it needs."
+)
+
 _FATAL_PATTERNS = [
     ("resolved architecture:", arch, _DRAFTER_HINT) for arch in _DRAFTER_ARCHS
 ] + [
@@ -143,6 +157,8 @@ _FATAL_PATTERNS = [
     # called, it dies reaching through a speculative_config that is None —
     #   AttributeError: 'NoneType' object has no attribute 'draft_model_config'
     ("draft_model_config", "nonetype", _DRAFTER_HINT),
+    ("cudaerrorillegalinstruction", "cudaerrorillegalinstruction", _EAGER_HINT),
+    ("illegal instruction", "illegalinstruction", _EAGER_HINT),
     ("unrecognized arguments", "unrecognizedarguments", _ARGPARSE_HINT),
     ("error: argument", "error:argument", _ARGPARSE_HINT),
 ]

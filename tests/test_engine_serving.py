@@ -89,21 +89,25 @@ def test_live_flips_starting_to_serving():
 def test_live_resets_stale_serving_latch_to_failed():
     # F3 both-directions: an instance stamped `serving` whose engine no longer
     # answers must NOT keep reading `serving` (that painted a dead stacked
-    # instance READY forever in the Server view). It drops out of the live list
-    # AND its status latch is cleared.
+    # instance READY forever in the Server view). The latch is cleared — and
+    # the record is still advertised, as failed. Dropping it made a crashed
+    # model vanish from the dashboard entirely, with no card and no way to
+    # unload it; the fix for the phantom READY is the truthful status, not the
+    # disappearance.
     inst = _Instance({"api_responding": False, "process_alive": False}, "serving")
     live = _run_live(_Manager([inst]))
     assert inst.record.status == "failed"
-    assert live == []
+    assert [r.status for r in live] == ["failed"]
 
 
 def test_live_leaves_never_served_starting_untouched():
-    # A still-loading instance (never reached serving) is not falsely failed —
-    # it's simply excluded from the live list until its api answers.
+    # A still-loading instance is not falsely failed, and it IS advertised —
+    # otherwise a model that takes twenty minutes to load does not exist for
+    # those twenty minutes.
     inst = _Instance({"api_responding": False, "process_alive": True}, "starting")
     live = _run_live(_Manager([inst]))
     assert inst.record.status == "starting"
-    assert live == []
+    assert [r.status for r in live] == ["starting"]
 
 
 if __name__ == "__main__":
