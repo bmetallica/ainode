@@ -477,6 +477,20 @@ async def _engine_serving(backend, loop) -> bool:
         return False
 
 
+def _instance_is_starting(inst) -> bool:
+    """True while an instance's engine process is alive but not yet answering."""
+    backend = getattr(inst, "backend", None)
+    if backend is None:
+        return False
+    phase = str(getattr(backend, "load_phase", "") or "")
+    if phase == "failed":
+        return False
+    try:
+        return bool(backend.is_running())
+    except Exception:
+        return False
+
+
 async def _live_instance_records(manager, loop) -> list:
     """Probe every managed instance; return the records whose engine answers.
 
@@ -493,6 +507,15 @@ async def _live_instance_records(manager, loop) -> list:
         if await _engine_serving(inst.backend, loop):
             if inst.record.status != "serving":
                 inst.record.status = "serving"
+            live.append(inst.record)
+        elif _instance_is_starting(inst):
+            # Still coming up: advertise it as such. Dropping it made a model
+            # that takes twenty minutes to load invisible from the head for
+            # those twenty minutes — on a node that was working exactly as
+            # asked, which reads as "nothing happened when I clicked load".
+            # Only an instance whose process is gone stops being advertised.
+            if inst.record.status not in ("starting", "failed"):
+                inst.record.status = "starting"
             live.append(inst.record)
         elif inst.record.status == "serving":
             # Truthful reset (the other half of F3): the `serving` stamp is a
@@ -543,9 +566,16 @@ async def _cluster_sync_loop(app: web.Application) -> None:
                 # liveness — fixes both the stale `model` field (BUG A) and the
                 # phantom-READY-after-crash case (FIX 2). Members serve via the head's
                 # sharded engine, not their own model.
-                updates["model"] = "" if (dmode == "member" or not engine_serving) else (config.model or "")
+                # A member used to be blanked unconditionally — "members serve
+                # via the head's sharded engine, not their own model". That is
+                # true of a member participating in a distributed launch and
+                # false of the deployment people actually build: one model per
+                # node, each serving on its own. The liveness probe already
+                # covers the case the blanking was for, since a member that
+                # runs no engine of its own does not answer.
+                updates["model"] = "" if not engine_serving else (config.model or "")
                 if dmode == "member":
-                    updates["status"] = "member-ready"
+                    updates["status"] = "serving" if engine_serving else "member-ready"
                 elif engine is not None:
                     updates["status"] = (
                         "serving" if engine_serving
