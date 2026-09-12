@@ -426,17 +426,31 @@ class TestRootCauseBeatsTheTail:
         return t
 
     def test_the_real_exception_is_reported(self):
-        reason = self._fail_with(self.REAL_LOG).failure_reason()
-        assert "AttributeError" in reason
-        assert "draft_model_config" in reason
+        """A crash with no recognised cause falls back to its own exception —
+        the drafter case has a named hint that outranks it, tested separately."""
+        reason = self._fail_with([
+            "(EngineCore pid=143)   File \".../model_runner.py\", line 400",
+            "(EngineCore pid=143) torch.cuda.OutOfMemoryError: CUDA out of memory. "
+            "Tried to allocate 4.00 GiB",
+            "(APIServer pid=91) RuntimeError: Engine core initialization failed. "
+            "See root cause above.",
+        ]).failure_reason()
+        assert "OutOfMemoryError" in reason
+        assert "4.00 GiB" in reason
 
     def test_the_useless_supervisor_error_is_not(self):
         reason = self._fail_with(self.REAL_LOG).failure_reason()
         assert "See root cause above" not in reason
 
+    def test_the_root_cause_is_still_captured_under_a_hint(self):
+        """The hint is what gets shown, but the exception is not discarded —
+        a future caller may want both."""
+        t = self._fail_with(self.REAL_LOG)
+        assert "draft_model_config" in t.root_cause
+
     def test_the_process_prefix_is_stripped(self):
-        reason = self._fail_with(self.REAL_LOG).failure_reason()
-        assert "EngineCore pid=" not in reason
+        t = self._fail_with(self.REAL_LOG)
+        assert "EngineCore pid=" not in t.root_cause
 
     def test_the_first_exception_wins(self):
         t = self._fail_with([
@@ -546,3 +560,91 @@ class TestKnownMistakesAreNamed:
         t.fail("the launcher exited (code 0)")
         assert t.phase == "ready"
         assert t.failure_reason() == ""
+
+
+class TestDrafterIsRefusedBeforeLaunching:
+    """Catching it in the log costs two minutes of loading first. The catalog
+    already knows which repos are drafters — a curated entry that pairs with
+    one names it in its speculative-config flags."""
+
+    def test_a_known_drafter_names_its_base(self):
+        from ainode.models.api_routes import drafter_base_model
+
+        assert drafter_base_model(
+            "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DSpark"
+        ) == "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"
+
+    def test_the_base_is_not_mistaken_for_its_own_drafter(self):
+        """A base repo id is a PREFIX of its drafter's, so a substring test
+        flags the correct model and sends the operator in a circle."""
+        from ainode.models.api_routes import drafter_base_model
+
+        assert drafter_base_model(
+            "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"
+        ) == ""
+
+    @pytest.mark.parametrize("model", [
+        "QuantTrio/Qwen3.5-4B-AWQ", "unsloth/Qwen3.8-27B-NVFP4",
+        "google/gemma-4-26B-A4B-it", "", "   ",
+    ])
+    def test_ordinary_models_pass(self, model):
+        from ainode.models.api_routes import drafter_base_model
+
+        assert drafter_base_model(model) == ""
+
+    def test_json_style_speculative_config_is_understood(self):
+        """Two spellings are in use: a flat --speculative_config.model pair and
+        a --speculative-config JSON blob."""
+        from ainode.models.api_routes import _names_a_drafter
+
+        assert _names_a_drafter(
+            ["--speculative-config", '{"method":"dflash","model":"org/drafter"}'],
+            "org/drafter",
+        )
+        assert _names_a_drafter(
+            ["--speculative_config.model", "org/drafter"], "org/drafter"
+        )
+        assert not _names_a_drafter(
+            ["--speculative-config", '{"model":"org/other"}'], "org/drafter"
+        )
+
+    def test_malformed_json_does_not_throw(self):
+        from ainode.models.api_routes import _names_a_drafter
+
+        assert not _names_a_drafter(["--speculative-config", "{not json"], "x")
+
+    def test_both_launch_routes_refuse_it(self):
+        """/api/models/load and /api/sharding/launch are separate entry points
+        and an operator can reach either from the UI."""
+        from ainode.models import api_routes as m
+        from ainode.engine import sharding_routes as sh
+
+        assert "drafter_base_model" in Path(m.__file__).read_text()
+        assert "drafter_base_model" in Path(sh.__file__).read_text()
+        assert "load_instead" in Path(m.__file__).read_text()
+
+    @pytest.mark.parametrize("arch", [
+        "DFlashDraftModel",      # z-lab gemma DFlash
+        "Qwen3DSparkModel",      # nvidia Nemotron DSpark
+        "SomeEagle3Model",
+    ])
+    def test_the_log_net_covers_architectures_that_share_no_suffix(self, arch):
+        """The two real cases here spelled it differently, and the next vendor
+        will too."""
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        t = LoadPhaseTracker()
+        t.reset()
+        t.observe(f"INFO [model.py:692] Resolved architecture: {arch}")
+        assert t.fatal_hint
+
+    def test_the_log_net_catches_an_unenumerated_drafter(self):
+        """Whatever the architecture is called, it dies reaching through a
+        speculative_config that is None."""
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        t = LoadPhaseTracker()
+        t.reset()
+        t.observe("(EngineCore pid=1) AttributeError: 'NoneType' object has no "
+                  "attribute 'draft_model_config'")
+        assert t.fatal_hint

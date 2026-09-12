@@ -71,14 +71,25 @@ READY_MARKERS = ("uvicorn running on", "application startup complete")
 # and dies with "AttributeError: 'NoneType' object has no attribute
 # 'draft_model_config'" — which says nothing about what the operator actually
 # did wrong. The draft belongs in --speculative-config alongside a base model.
+_DRAFTER_HINT = (
+    "this repository is a speculative-decoding DRAFT model, not a servable "
+    "model. Load the base model it belongs to, and pass this one in "
+    "--speculative-config if you want speculative decoding."
+)
+
+# Architecture names that mean "drafter". Enumerated because they do not share
+# a suffix: two real cases here were DFlashDraftModel and Qwen3DSparkModel, and
+# the next vendor will spell it differently again — hence the second,
+# name-independent pattern below.
+_DRAFTER_ARCHS = ("draftmodel", "dsparkmodel", "dflash", "eagle", "mtpmodel")
+
 _FATAL_PATTERNS = [
-    (
-        "resolved architecture:",
-        "draftmodel",
-        "this repository is a speculative-decoding DRAFT model, not a servable "
-        "model. Load the base model it belongs to, and pass this one in "
-        "--speculative-config if you want speculative decoding.",
-    ),
+    ("resolved architecture:", arch, _DRAFTER_HINT) for arch in _DRAFTER_ARCHS
+] + [
+    # The net for a drafter nobody has enumerated: whatever its architecture is
+    # called, it dies reaching through a speculative_config that is None —
+    #   AttributeError: 'NoneType' object has no attribute 'draft_model_config'
+    ("draft_model_config", "nonetype", _DRAFTER_HINT),
 ]
 
 

@@ -110,6 +110,19 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     if not model:
         return web.json_response({"error": "model field required"}, status=400)
 
+    from ainode.models.api_routes import drafter_base_model
+
+    base = drafter_base_model(model)
+    if base:
+        return web.json_response({
+            "error": (
+                f"{model} is a speculative-decoding draft model, not a servable "
+                f"one. Load {base} instead — its catalog recipe pairs this "
+                f"drafter automatically."
+            ),
+            "load_instead": base,
+        }, status=422)
+
     min_nodes = int_field(body, "min_nodes", default=1, minimum=1) or 1
 
     # Explicit node selection (preferred): the exact nodes to span, head = this

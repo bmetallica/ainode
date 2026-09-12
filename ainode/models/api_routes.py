@@ -149,6 +149,67 @@ _OVERRIDE_KEYS = ("served_model_name", "max_model_len", "kv_cache_dtype",
                   "extra_vllm_args", "engine_image", "extra_env")
 
 
+def drafter_base_model(model: str) -> str:
+    """If ``model`` is a speculative-decoding DRAFT, return the base to load.
+
+    A drafter is not servable on its own: vLLM loads it, reaches for the
+    ``speculative_config`` that would name its base, finds None and dies with
+    ``AttributeError: 'NoneType' object has no attribute 'draft_model_config'``
+    — accurate, and no help at all in working out what to do instead.
+
+    Detected from the catalog rather than from the repository name. A curated
+    entry that pairs with a drafter names it in ``--speculative_config.model``
+    or inside a ``--speculative-config`` JSON blob, so a repo appearing there is
+    by definition the drafter for that entry. Name suffixes were the obvious
+    alternative and are not reliable: two real cases here were ``-DFlash``
+    (architecture ``DFlashDraftModel``) and ``-DSpark`` (architecture
+    ``Qwen3DSparkModel``), and the next one will be spelled differently again.
+
+    Returns "" when the model is not a known drafter, which includes every
+    drafter whose base is not in the catalog — the log-based check in
+    engine/load_phase.py is the net for those.
+    """
+    from ainode.models.registry import CURATED_CLUSTER_MODELS
+
+    needle = (model or "").strip()
+    if not needle:
+        return ""
+    for info in CURATED_CLUSTER_MODELS.values():
+        if _names_a_drafter(getattr(info, "extra_vllm_args", None) or [], needle):
+            return info.hf_repo or ""
+    return ""
+
+
+def _names_a_drafter(args, needle: str) -> bool:
+    """True if ``needle`` appears as a speculative model in ``args``.
+
+    Matched as a whole value, never as a substring: a base model's repo id is a
+    PREFIX of its drafter's (…-NVFP4 and …-NVFP4-DSpark), so a substring test
+    flags the correct model as a drafter for itself and sends the operator in a
+    circle.
+
+    Two spellings are in use — a flat ``--speculative_config.model <repo>`` pair
+    and a ``--speculative-config '{"model": "<repo>", …}'`` JSON blob.
+    """
+    import json as _json
+
+    values = [str(a) for a in args]
+    for i, arg in enumerate(values):
+        if arg in ("--speculative_config.model", "--speculative-config.model"):
+            if i + 1 < len(values) and values[i + 1] == needle:
+                return True
+        if arg.startswith("--speculative"):
+            blob = arg.split("=", 1)[1] if "=" in arg else (
+                values[i + 1] if i + 1 < len(values) else "")
+            try:
+                parsed = _json.loads(blob)
+            except Exception:
+                continue
+            if isinstance(parsed, dict) and parsed.get("model") == needle:
+                return True
+    return False
+
+
 def catalog_recipe(model: str) -> dict:
     """Proven launch recipe for a curated model, matched on catalog id OR hf_repo.
 
@@ -581,6 +642,20 @@ async def handle_model_load(request: web.Request) -> web.Response:
     model = str_field(body, "model")
     if not model:
         return web.json_response({"error": "model field required"}, status=400)
+
+    # A drafter is not servable on its own and fails minutes later with a
+    # traceback that describes the symptom, not the mistake. Refuse now and
+    # name the model to load instead.
+    base = drafter_base_model(model)
+    if base:
+        return web.json_response({
+            "error": (
+                f"{model} is a speculative-decoding draft model, not a servable "
+                f"one. Load {base} instead — its catalog recipe pairs this "
+                f"drafter automatically."
+            ),
+            "load_instead": base,
+        }, status=422)
 
     strategy_str = str_field(body, "strategy", default="auto")
     try:
