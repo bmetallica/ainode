@@ -348,7 +348,9 @@ class TestADeadLaunchIsReportedAsDead:
         for i in range(5000):
             t.observe(f"line {i}")
         t.fail("died")
-        assert len(t.tail) <= 12
+        from ainode.engine.load_phase import _TAIL_LINES
+
+        assert len(t.tail) <= _TAIL_LINES
         assert len(t.failure_reason()) < 500
 
     def test_blank_lines_are_not_quoted_back(self):
@@ -648,3 +650,85 @@ class TestDrafterIsRefusedBeforeLaunching:
         t.observe("(EngineCore pid=1) AttributeError: 'NoneType' object has no "
                   "attribute 'draft_model_config'")
         assert t.fatal_hint
+
+
+class TestTeardownNoiseIsNotTheExplanation:
+    """The launcher prints its cleanup after a failure, so the last lines of
+    the log describe the teardown, not the cause. A real failure reported
+    "Stopping cluster... | Stopping head node... | Cluster stopped." as the
+    explanation for a launch that died on an unrecognised vLLM argument."""
+
+    def _fail_with(self, lines, code=1):
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        t = LoadPhaseTracker()
+        t.reset()
+        for line in lines:
+            t.observe(line)
+        t.fail(f"the launcher exited (code {code})")
+        return t
+
+    TEARDOWN = ["Stopping cluster...", "Stopping head node (127.0.0.1)...",
+                "Cluster stopped."]
+
+    def test_the_cause_survives_the_teardown_banner(self):
+        reason = self._fail_with(
+            ["Error: Passwordless SSH to 192.168.1.3 failed."] + self.TEARDOWN
+        ).failure_reason()
+        assert "Passwordless SSH" in reason
+        assert "Stopping cluster" not in reason
+
+    def test_teardown_only_still_says_something(self):
+        """If there is genuinely nothing else, quoting it beats quoting
+        nothing."""
+        reason = self._fail_with(self.TEARDOWN).failure_reason()
+        assert reason
+
+    def test_an_argparse_failure_is_explained(self):
+        """vLLM exits 2 from argparse on an unknown flag. The usual cause is a
+        recipe written for a different engine build than the one running."""
+        reason = self._fail_with([
+            "vllm serve: error: unrecognized arguments: --speculative_config",
+        ] + self.TEARDOWN, code=2).failure_reason()
+        assert "engine_image" in reason
+        assert "Stopping cluster" not in reason
+
+    def test_the_tail_reaches_past_a_long_banner(self):
+        """Three lines of tail could not see past the teardown at all."""
+        from ainode.engine.load_phase import _TAIL_LINES
+
+        assert _TAIL_LINES > len(self.TEARDOWN) * 3
+
+
+class TestEugrHonoursEngineImage:
+    """The launcher defaults to IMAGE_NAME="vllm-node" and this backend passed
+    nothing, so a catalog recipe's engine_image was silently ignored and its
+    flags ran against whatever vLLM the local base image contains."""
+
+    def _args(self, **cfg):
+        from ainode.core.config import NodeConfig
+        from ainode.engine.backends.eugr import EugrBackend
+
+        return EugrBackend(NodeConfig(node_id="n", **cfg))._launcher_image_args()
+
+    def test_no_image_means_no_flag(self):
+        assert self._args() == []
+
+    def test_a_pinned_image_is_passed(self):
+        assert self._args(engine_image="vllm/vllm-openai:v0.27.1") == [
+            "-t", "vllm/vllm-openai:v0.27.1"
+        ]
+
+    def test_a_hostile_image_ref_is_refused(self):
+        """It is expanded unquoted into a docker command line."""
+        from ainode.engine.backends.eugr import EugrBackendError
+
+        with pytest.raises(EugrBackendError, match="engine_image"):
+            self._args(engine_image="img; docker run --privileged x")
+
+    def test_both_launch_paths_pass_it(self):
+        from ainode.engine.backends import eugr
+
+        src = Path(eugr.__file__).read_text()
+        # solo and distributed each build a launcher argv
+        assert src.count("_launcher_image_args()") >= 2
