@@ -62,6 +62,23 @@ warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 run()  { if [[ $CHECK -eq 1 ]]; then printf '   would run: %s\n' "$*"; else "$@"; fi; }
 
+# Root on another node. `ssh node "sudo ..."` fails with "sudo: a terminal is
+# required" unless that node has passwordless sudo: ssh allocates no TTY for a
+# command and sudo will not read a password without one. Try the
+# non-interactive form, fall back to `ssh -t` so sudo can prompt.
+remote_sudo() {
+    local node="$1"; shift
+    if [[ $CHECK -eq 1 ]]; then
+        printf '   would run on %s: sudo %s\n' "$node" "$*"
+        return 0
+    fi
+    if ssh -o BatchMode=yes -o ConnectTimeout=10 "$node" "sudo -n true" 2>/dev/null; then
+        ssh -o BatchMode=yes "$node" "sudo $*"
+    else
+        ssh -t "$node" "sudo $*"
+    fi
+}
+
 NODE_LIST=()
 if [[ -n "$NODES" ]]; then
     IFS=',' read -r -a NODE_LIST <<< "$NODES"
@@ -86,8 +103,24 @@ for node in "${NODE_LIST[@]}"; do
         || die "cannot ssh to '${node}' without a password. Fix that first: ssh-copy-id ${node}"
     ssh -o BatchMode=yes "$node" "command -v docker >/dev/null" \
         || die "'${node}' has no docker"
-    say "${node}: reachable, docker present"
+    if ssh -o BatchMode=yes "$node" "sudo -n true" 2>/dev/null; then
+        say "${node}: reachable, docker present, sudo without a password"
+    else
+        # Said now rather than discovered after a fifteen-minute build.
+        warn "${node}: sudo will ask for a password — you will be prompted during the run"
+        NEEDS_PASSWORD=1
+        say "${node}: reachable, docker present"
+    fi
 done
+
+if [[ $CHECK -eq 0 ]]; then
+    # Ask for the local password once, at the start.
+    sudo -n true 2>/dev/null || { warn "this node: sudo needs a password"; sudo -v; }
+fi
+if [[ ${NEEDS_PASSWORD:-0} -eq 1 ]]; then
+    warn "Passwordless sudo on the peers makes this unattended:"
+    warn "  echo \"\$USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl, /usr/bin/python3\" | sudo tee /etc/sudoers.d/ainode-update"
+fi
 
 # --- 2. code ----------------------------------------------------------------
 
@@ -181,7 +214,8 @@ fi
 step "Restarting"
 for node in "${NODE_LIST[@]}"; do
     say "${node}: restarting ainode"
-    run ssh -o BatchMode=yes "$node" "sudo systemctl restart ainode"
+    remote_sudo "$node" "systemctl restart ainode" \
+        || warn "${node}: restart failed — check 'journalctl -u ainode -n 50' there"
 done
 say "this node: restarting ainode"
 run sudo systemctl restart ainode
