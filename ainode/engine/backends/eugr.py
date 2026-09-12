@@ -52,6 +52,11 @@ from ainode.engine.distribute import (
     hf_cache_dir_name,
 )
 from ainode.engine.parallelism import ParallelPlan, Strategy
+from ainode.engine.serve_args import (
+    effective_kv_cache_dtype,
+    local_model_dir,
+    supplied_flags,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -954,11 +959,36 @@ class EugrBackend(EngineBackend):
         if gpu and gpu.unified_memory:
             dtype_line = "    --dtype bfloat16 \\\n"
 
+        # A flag the caller supplied in extra_vllm_args suppresses the built-in
+        # one: vLLM rejects duplicates, and a recipe that pins --kv-cache-dtype
+        # or --max-model-len means it.
+        supplied = supplied_flags(getattr(self.config, "extra_vllm_args", None))
+
+        def wanted(flag: str) -> bool:
+            return flag not in supplied
+
         extra = ""
-        if self.config.max_model_len:
+        if self.config.max_model_len and wanted("--max-model-len"):
             extra += f"    --max-model-len {self.config.max_model_len} \\\n"
-        if self.config.quantization:
+        if self.config.quantization and wanted("--quantization"):
             extra += f"    --quantization {self.config.quantization} \\\n"
+        # The knobs below used to be dropped on this backend, which is the
+        # default one: an API alias typed in the UI never reached vLLM, the KV
+        # dtype picker did nothing, and a model needing trust_remote_code could
+        # not be served without hand-writing the flag into extra args.
+        if wanted("--kv-cache-dtype"):
+            kv_dtype = effective_kv_cache_dtype(
+                self.config,
+                local_model_dir(self.config.model, self.config.models_dir),
+            )
+            if kv_dtype:
+                extra += f"    --kv-cache-dtype {kv_dtype} \\\n"
+        if getattr(self.config, "trust_remote_code", False) and wanted("--trust-remote-code"):
+            extra += "    --trust-remote-code \\\n"
+        names = [str(n) for n in (getattr(self.config, "served_model_name", None) or [])
+                 if str(n).strip()]
+        if names and wanted("--served-model-name"):
+            extra += "    --served-model-name " + " ".join(names) + " \\\n"
 
         # Note: --enforce-eager intentionally omitted. CUDA graphs add ~60s
         # to initial warmup but give 2-3x steady-state throughput, which
