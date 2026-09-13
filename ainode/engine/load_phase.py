@@ -197,12 +197,24 @@ _B12X_LOADER_HINT = (
     "way."
 )
 
+# vLLM implements pipeline parallelism per architecture, and a model that does
+# not gets minutes into a launch before saying so. The planner refuses this for
+# curated models; the log net covers everything else.
+_NO_PIPELINE_HINT = (
+    "this model cannot be split along the pipeline axis — vLLM implements that "
+    "per architecture. Tensor-parallel is the only axis left, and it needs a "
+    "power-of-two rank count, so select 1, 2, 4 or 8 nodes rather than the "
+    "number you picked."
+)
+
 _FATAL_PATTERNS = [
     # Whatever a drafter's architecture is called, serving one alone dies
     # reaching through a speculative_config that is None —
     #   AttributeError: 'NoneType' object has no attribute 'draft_model_config'
     # A symptom, and unlike a name it does not also occur in healthy launches.
     ("draft_model_config", "nonetype", _DRAFTER_HINT),
+    ("pipeline parallelism is not supported", "pipelineparallelismisnotsupported",
+     _NO_PIPELINE_HINT),
     ("b12x loader requires", "b12xloaderrequires", _B12X_LOADER_HINT),
     ("cudaerrorillegalinstruction", "cudaerrorillegalinstruction", _ILLEGAL_INSTRUCTION_HINT),
     ("illegal instruction", "illegalinstruction", _ILLEGAL_INSTRUCTION_HINT),

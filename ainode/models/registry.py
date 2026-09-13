@@ -70,6 +70,12 @@ class ModelInfo:
     # actually served it on this hardware (drives the picker default + a ✓ badge).
     proven_tp: int = 0
     verified: bool = False
+    #: False for a model vLLM cannot split along the pipeline axis — it has to
+    #: implement the SupportsPP interface and not every architecture does.
+    #: Without this the planner's helpful downgrade ("three nodes cannot do
+    #: tensor-parallel, so pipeline it") produces a launch that loads for
+    #: minutes and then raises NotImplementedError.
+    supports_pipeline: bool = True
     # True for our hand-picked CURATED_CLUSTER_MODELS — drives the "Catalog"
     # (known-good to grab) list, separate from on-disk / HF-sweep entries.
     curated: bool = False
@@ -503,6 +509,12 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         ),
         quantization="NVFP4", family="glm", params_b=0.0,
         proven_tp=2, verified=False, curated=True,
+        # Measured: "NotImplementedError: Pipeline parallelism is not supported
+        # for this model. Supported models implement the SupportsPP interface."
+        # So the only axis is tensor, and tensor needs a power-of-two rank
+        # count — which makes exactly two nodes the only shape this model has
+        # on a three-node cluster, whatever the memory situation.
+        supports_pipeline=False,
         context_length=262144, license="MIT", recommended=False,
         format="nvfp4", capabilities=["tool_use", "reasoning", "code"],
         # Everything below is eugr/spark-vllm-docker's recipes/glm-5.3-flash.yaml
