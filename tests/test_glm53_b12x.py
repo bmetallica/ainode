@@ -213,3 +213,46 @@ def _env_values(src: str) -> str:
         if src.startswith("extra_env={", start):
             out.append(src[start:src.index("}", start)])
     return "\n".join(out)
+
+
+class TestTheB12xLoaderFailureIsNamed:
+    """Observed on the cluster, with two hundred lines of fallout after it:
+
+        RuntimeError: the initial b12x loader requires GPU host page tables
+
+    Then Ray workers dying and actor handles from a dead session — none of
+    which an operator can act on. The first line is the whole story.
+    """
+
+    def _failure(self, *lines):
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        tracker = LoadPhaseTracker()
+        tracker.reset()
+        for line in lines:
+            tracker.observe(line)
+        tracker.fail("the launcher exited (code 1)")
+        return tracker.failure_reason()
+
+    def test_it_names_the_loader_and_the_way_out(self):
+        reason = self._failure(
+            "(EngineCore pid=681) RuntimeError: the initial b12x loader "
+            "requires GPU host page tables")
+        assert "b12x loader" in reason
+        assert "--load-format auto" in reason
+
+    def test_the_ray_fallout_does_not_become_the_explanation(self):
+        reason = self._failure(
+            "(EngineCore pid=681) RuntimeError: the initial b12x loader "
+            "requires GPU host page tables",
+            "(EngineCore pid=681) ray.exceptions.ActorHandleNotFoundError: "
+            "ActorHandle objects are not valid across Ray sessions",
+        )
+        assert "ActorHandle" not in reason
+
+    def test_an_ordinary_failure_gets_no_b12x_hint(self):
+        # With no exception in the log the reason quotes the tail, which is
+        # the existing behaviour; what must not happen is this hint appearing
+        # on a failure that has nothing to do with the loader.
+        reason = self._failure("INFO [core.py:372] init engine took 150 s")
+        assert "--load-format auto" not in reason

@@ -54,6 +54,31 @@ Die 16 Umgebungsvariablen (`CUTE_DSL_ARCH`, `B12X_POLICY_MODE`, die
 
 ---
 
+## Bekannte Hürden
+
+**`RuntimeError: the initial b12x loader requires GPU host page tables`**
+
+Der schnelle B12X-Lader verlangt eine Plattformfähigkeit, die der
+Engine-Container nicht in jeder Umgebung hat. Der restliche B12X-Stack hängt
+nicht daran — Attention-, MoE- und Linear-Backend funktionieren weiter. Im
+Launch-Panel unter *Advanced → Extra vLLM args*:
+
+```
+--load-format auto
+```
+
+Dein Wert gewinnt über den des Rezepts, alles andere bleibt.
+
+**`Repo id must be in the form 'repo_name' or 'namespace/repo_name': '/models/…'`**
+
+AINode serviert ein heruntergeladenes Modell aus seinem Verzeichnis statt über
+die Repo-ID — das spart bei jedem Start einen Neudownload. Der B12X-Lader
+erwartet an dieser Stelle eine Repo-ID und kommt mit dem Pfad nicht zurecht.
+Tritt zusammen mit dem obigen Fehler auf; verschwindet mit `--load-format auto`
+ebenfalls.
+
+---
+
 ## Für ein anderes B12X-Modell
 
 Ohne Katalogeintrag geht es auch, es ist nur Handarbeit — im Launch-Panel unter
