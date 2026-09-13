@@ -1344,11 +1344,11 @@ class ModelManager:
         if info is None:
             raise ValueError(f"Unknown model: {model_id}")
 
-        model_dir = self.models_dir / self._repo_to_dirname(info.hf_repo)
-        if model_dir.exists():
+        removed = False
+        for model_dir in self.model_dirs_for_repo(info.hf_repo):
             shutil.rmtree(model_dir)
-            return True
-        return False
+            removed = True
+        return removed
 
     # -- Internal helpers -----------------------------------------------------
 
@@ -1356,6 +1356,34 @@ class ModelManager:
     def _repo_to_dirname(hf_repo: str) -> str:
         """Convert 'org/model-name' to 'org--model-name' for filesystem safety."""
         return hf_repo.replace("/", "--")
+
+    def model_dirs_for_repo(self, hf_repo: str) -> list[Path]:
+        """Every directory a copy of ``hf_repo`` can occupy, that exists.
+
+        Weights arrive by several routes and land in different layouts: the
+        UI's file-by-file download writes ``models_dir/<org>--<name>``, while
+        anything going through huggingface_hub's cache — an out-of-band pull,
+        an engine that resolved the repo itself, an aborted download — writes
+        ``models--<org>--<name>`` under ``models_dir``, ``models_dir/hub`` or
+        ``models_dir/hf-cache/hub``.
+
+        list_downloaded() has always scanned all four. Deleting knew only the
+        first, so a model the UI listed could not be removed through the UI:
+
+            Delete failed: Model not downloaded: nvidia/Gemma-4-26B-A4B-NVFP4
+
+        One definition, used by both, is the only way those two stay in
+        agreement.
+        """
+        slug = self._repo_to_dirname(hf_repo)
+        hf_slug = f"models--{slug}"
+        candidates = [
+            self.models_dir / slug,
+            self.models_dir / hf_slug,
+            self.models_dir / "hub" / hf_slug,
+            self.models_dir / "hf-cache" / "hub" / hf_slug,
+        ]
+        return [path for path in candidates if path.is_dir()]
 
     def _model_dir_info(self, info: ModelInfo) -> Path:
         return self.models_dir / self._repo_to_dirname(info.hf_repo)
