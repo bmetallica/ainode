@@ -891,10 +891,22 @@ async def handle_nodes(request: web.Request) -> web.Response:
                 # 8001+). The node card renders a sub-row per stacked instance so
                 # they're no longer invisible in the dashboard. Same source the
                 # proxy's _routing_candidates uses, so views and routing agree.
+                # Carry the per-instance load state too. The member computes
+                # it correctly (LoadPhaseTracker reads the engine's own
+                # output), serialises it onto the record, and broadcasts it —
+                # and this projection dropped it, keeping only three keys. So
+                # a node genuinely sitting in `loading_weights` reached the
+                # dashboard with no phase at all, and the card fell back to
+                # the status word: "STARTING · 12%" for the whole of a load,
+                # which is exactly the hang-or-working question the phase was
+                # added to answer.
                 "instances": [
                     {"model": inst.get("model"),
                      "api_port": inst.get("api_port"),
-                     "status": inst.get("status")}
+                     "status": inst.get("status"),
+                     "load_phase": inst.get("load_phase") or "",
+                     "load_detail": inst.get("load_detail") or "",
+                     "load_error": inst.get("load_error") or ""}
                     for inst in (getattr(n, "instances", []) or [])
                     if isinstance(inst, dict) and inst.get("model")
                 ],
