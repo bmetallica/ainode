@@ -35,6 +35,12 @@ def _is_teardown(line: str) -> bool:
     low = line.lower()
     return any(m in low for m in _TEARDOWN_MARKERS)
 
+# Exceptions whose own line says nothing actionable — the detail follows.
+# pydantic is the case that matters here: "1 validation error for ModelConfig"
+# is the same sentence whichever argument was wrong.
+_CONTINUES_RE = re.compile(r"validation error|ValidationError", re.I)
+_CONTINUATION_LINES = 4
+
 # An exception line, with vLLM's process prefix tolerated:
 #   (EngineCore pid=143) AttributeError: 'NoneType' object has no attribute ...
 # The FIRST match in a launch is the root cause. What follows it is usually a
@@ -198,6 +204,16 @@ class LoadPhaseTracker:
         #: First exception line of this launch — the root cause. Preferred over
         #: the tail, which is usually a supervising process's own traceback.
         self.root_cause = ""
+        #: How many further lines still belong to that root cause. Some
+        #: exceptions put nothing useful on their own line:
+        #:
+        #:   ValidationError: 1 validation error for ModelConfig
+        #:   quantization
+        #:     Input should be 'awq', 'gptq', ... [input_value='modelopt_mixed']
+        #:
+        #: The first line names the class and the count; the field and the
+        #: rejected value — the only parts anyone can act on — come after it.
+        self._root_cause_continues = 0
         #: A known mistake recognised from the log, explained in the operator's
         #: terms rather than the engine's. Accompanies the evidence; it does
         #: not replace it.
@@ -221,6 +237,7 @@ class LoadPhaseTracker:
         self.error = ""
         self.tail = []
         self.root_cause = ""
+        self._root_cause_continues = 0
         self.fatal_hint = ""
         self.offending_line = ""
         self.detail = ""
@@ -264,6 +281,12 @@ class LoadPhaseTracker:
                 match = _EXCEPTION_RE.match(stripped)
                 if match:
                     self.root_cause = f"{match.group(1)}: {match.group(2)}".strip()
+                    if _CONTINUES_RE.search(self.root_cause):
+                        self._root_cause_continues = _CONTINUATION_LINES
+            elif self._root_cause_continues and not _is_teardown(stripped):
+                self._root_cause_continues -= 1
+                if len(self.root_cause) < 600:
+                    self.root_cause = f"{self.root_cause} | {stripped[:200]}"
         low = line.lower()
         for lead, needle, message in _FATAL_PATTERNS:
             if lead in low and needle in low.replace(" ", ""):
