@@ -70,6 +70,22 @@ dem Katalog, den der eugr-Pfad nur beachtet, wenn er für ihn gedacht ist.
 
 ---
 
+## Warum zwei eugr-Commits
+
+Das B12X-Image wird aus einem **neueren** eugr-Stand geholt als das
+Basis-Image: `--exp-b12x` gibt es erst seit einem späteren Commit, der
+gepinnte Stand des Basis-Images kennt den Schalter nicht und antwortet mit
+seinem Usage-Text. Deshalb hat das Skript einen eigenen Pin
+(`EUGR_B12X_COMMIT`, per Umgebungsvariable überschreibbar) und einen eigenen
+Checkout unter `scripts/_eugr-b12x` — der des Basis-Images wird gepatcht und
+verträgt keinen Commit-Wechsel.
+
+Das ist unkritisch: Der **Launcher** kommt aus unserem eigenen Image (dort auf
+`EUGR_COMMIT` gepinnt) und muss sich mit dem Engine-Image nur über die `.env`
+einig sein, nicht darüber, welche Kernel einkompiliert wurden.
+
+---
+
 ## Warum das ein eigenes Skript ist
 
 `scripts/build-base-image.sh` baut aus Quellen und hängt an upstreams

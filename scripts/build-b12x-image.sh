@@ -21,13 +21,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-WORKTREE="$SCRIPT_DIR/_eugr"
+# A worktree of its own. build-base-image.sh PATCHES its checkout (the NCCL
+# re-pin, the uv override), so its tree is dirty and a `git checkout` of a
+# different commit there fails — or worse, succeeds and leaves that build
+# pointing at the wrong source.
+WORKTREE="$SCRIPT_DIR/_eugr-b12x"
 EUGR_REPO="${EUGR_REPO:-https://github.com/eugr/spark-vllm-docker.git}"
-# The same commit the base image is built from: two engine images from
-# different launcher generations would disagree about the .env contract.
-EUGR_COMMIT="${EUGR_COMMIT:-$(sed -n 's/^EUGR_COMMIT="${EUGR_COMMIT:-\(.*\)}"/\1/p' "$SCRIPT_DIR/build-base-image.sh" | head -1)}"
+BASE_COMMIT="$(sed -n 's/^EUGR_COMMIT="${EUGR_COMMIT:-\(.*\)}"/\1/p' "$SCRIPT_DIR/build-base-image.sh" | head -1)"
 IMAGE="${AINODE_B12X_IMAGE:-vllm-node-b12x}"
 NODES=""
+
+# --exp-b12x does not exist at the commit the BASE image is pinned to; it
+# arrived upstream later. The engine image and the launcher are pinned
+# separately for exactly this reason: the launcher comes from our own image
+# (Dockerfile.ainode fetches it at EUGR_COMMIT) and only has to agree with the
+# engine about the .env contract, not about which kernels were compiled in.
+# Verified to carry the flag: 346dc04 (2026-09-10).
+EUGR_B12X_COMMIT="${EUGR_B12X_COMMIT:-346dc04fa11a4e1cb343153557e8b699b8488d30}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -41,17 +51,32 @@ say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 
 command -v docker >/dev/null || die "docker is not installed here"
-[[ -n "$EUGR_COMMIT" ]] || die "could not read EUGR_COMMIT from build-base-image.sh"
 
-say "eugr @ ${EUGR_COMMIT:0:8}"
+say "eugr @ ${EUGR_B12X_COMMIT:0:8} for the image (base image is at ${BASE_COMMIT:0:8})"
+EUGR_COMMIT="$EUGR_B12X_COMMIT"
 if [[ -d "$WORKTREE/.git" ]]; then
     git -C "$WORKTREE" fetch --depth=1 origin "$EUGR_COMMIT" 2>/dev/null || true
+    # Upstream's build writes into its own tree (wheels, .env); discard that
+    # rather than let it block the checkout on a re-run.
+    git -C "$WORKTREE" checkout -q -- . 2>/dev/null || true
     git -C "$WORKTREE" checkout -q "$EUGR_COMMIT"
 else
     git clone --depth=1 "$EUGR_REPO" "$WORKTREE"
     git -C "$WORKTREE" fetch --depth=50 origin "$EUGR_COMMIT" || \
         git -C "$WORKTREE" fetch --unshallow
     git -C "$WORKTREE" checkout -q "$EUGR_COMMIT"
+fi
+
+# Check the flag exists before invoking it, so a pin that predates B12X fails
+# with a sentence rather than with upstream's usage text.
+if ! grep -q -- "--exp-b12x" "$WORKTREE/build-and-copy.sh"; then
+    die "eugr @ ${EUGR_COMMIT:0:8} has no --exp-b12x. That option arrived
+   upstream later. Pass a newer commit:
+
+       EUGR_B12X_COMMIT=<sha> $0
+
+   The image and the launcher are pinned separately on purpose — see the note
+   at the top of this script."
 fi
 
 # No Dockerfile patching here. The NCCL re-pin and the wheel override in
