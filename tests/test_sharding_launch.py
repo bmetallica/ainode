@@ -360,3 +360,78 @@ def test_instance_record_carries_every_axis():
     assert (cfg.tensor_parallel_size, cfg.pipeline_parallel_size,
             cfg.data_parallel_size) == (1, 3, 1)
     assert cfg.parallel_strategy == "pipeline"
+
+
+# --- Eligibility ------------------------------------------------------------
+#
+# From the cluster: "Selected node(s) not available as members: ['10c0520d']",
+# whichever nodes were picked. Every node reported distributed_mode "solo",
+# because loading one solo model sets that field and nothing sets it back — so
+# a node that had ever served anything could never join a distributed launch
+# again. On a cluster that has been used, that is every node.
+
+
+def _solo_member(node_id, fabric_ip, model="", status=NodeStatus.ONLINE):
+    node = _member(node_id, fabric_ip)
+    node.distributed_mode = "solo"
+    node.model = model
+    node.status = status
+    return node
+
+
+def test_a_node_that_has_served_solo_can_still_be_chosen():
+    config, resp = _run(
+        {"model": "m", "node_ids": ["head", "m1"]},
+        [_solo_member("m1", "10.100.0.13", model="some/model")],
+    )
+    assert resp.status == 200
+    assert config.peer_ips == ["10.100.0.13"]
+
+
+def test_the_head_is_never_its_own_peer():
+    # Eligibility by reachability has to keep excluding this node, or a
+    # count-mode launch picks the head as its own worker.
+    config, resp = _run(
+        {"model": "m", "min_nodes": 2},
+        [_solo_member("m1", "10.100.0.13")],
+    )
+    assert resp.status == 200
+    assert config.peer_ips == ["10.100.0.13"]
+
+
+def test_an_offline_node_is_still_refused():
+    config, resp = _run(
+        {"model": "m", "node_ids": ["head", "m1"]},
+        [_solo_member("m1", "10.100.0.13", status=NodeStatus.OFFLINE)],
+    )
+    assert resp.status == 422
+    assert "cannot take part" in json.loads(resp.body)["error"]
+
+
+def test_the_refusal_names_the_node_and_the_reason():
+    # Three causes need three different actions; "not available" named none.
+    config, resp = _run({"model": "m", "node_ids": ["head", "ghost"]}, [])
+    assert resp.status == 422
+    error = json.loads(resp.body)["error"]
+    assert "ghost" in error
+    assert "not discovered" in error
+
+
+def test_a_busy_peer_is_a_warning_not_a_refusal():
+    # The operator may be about to unload it, and the engine reports an
+    # out-of-memory far more precisely than a guess here could.
+    config, resp = _run(
+        {"model": "m", "node_ids": ["head", "m1"]},
+        [_solo_member("m1", "10.100.0.13", model="other/model")],
+    )
+    assert resp.status == 200
+    note = json.loads(resp.body)["note"]
+    assert "Already serving" in note and "other/model" in note
+
+
+def test_an_idle_peer_produces_no_warning():
+    config, resp = _run(
+        {"model": "m", "node_ids": ["head", "m1"]},
+        [_solo_member("m1", "10.100.0.13")],
+    )
+    assert json.loads(resp.body)["note"] == ""

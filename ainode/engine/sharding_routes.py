@@ -177,17 +177,36 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     # non-GPU address). Two selection modes:
     #   node_ids  — explicit set chosen in the UI; head = this node, peers = rest
     #   min_nodes — legacy count: take the first (N-1) discovered members
-    members = [
-        n for n in cluster.members()
-        if getattr(n, "distributed_mode", "solo") == "member"
-        and (n.status.value if hasattr(n.status, "value") else str(n.status)) in ("online", "member-ready", "serving")
-    ]
+    def _status_of(n):
+        return n.status.value if hasattr(n.status, "value") else str(n.status)
+
     def fabric_of(n):
         return (getattr(n, "fabric_ip", "") or "").strip()
+
+    # Eligibility is being reachable, not being idle.
+    #
+    # This used to require distributed_mode == "member". That field records
+    # what a node LAST DID, not what it can do: loading one solo model sets it
+    # to "solo" and it never goes back, so a node that had ever served
+    # anything could never join a distributed launch again. On a cluster where
+    # every node had served a model — which is every cluster that has been
+    # used — every selection was refused with "not available as members",
+    # whichever nodes were picked.
+    #
+    # Whether a node has the MEMORY is a different question, answered below
+    # and by the engine itself. A node that is busy is still a node.
+    members = [
+        n for n in cluster.members()
+        if n.node_id != config.node_id
+        and _status_of(n) in ("online", "member-ready", "serving")
+    ]
+    everyone = list(cluster.members())
     members_dump = [
         {"node_id": n.node_id, "node_name": n.node_name, "fabric_ip": fabric_of(n),
-         "status": n.status.value if hasattr(n.status, "value") else str(n.status)}
-        for n in members
+         "status": _status_of(n),
+         "distributed_mode": getattr(n, "distributed_mode", ""),
+         "model": getattr(n, "model", "") or ""}
+        for n in everyone
     ]
 
     if node_ids:
@@ -196,8 +215,20 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         by_id = {n.node_id: n for n in members}
         missing = [nid for nid in wanted if nid not in by_id]
         if missing:
+            # Say which node and why, not just that something is wrong. The
+            # three reasons need three different actions from the operator.
+            known = {n.node_id: n for n in everyone}
+            reasons = []
+            for nid in missing:
+                node = known.get(nid)
+                if node is None:
+                    reasons.append(f"{nid}: not discovered — check the cluster_id "
+                                   f"and that AINode is running there")
+                else:
+                    reasons.append(f"{nid} ({getattr(node, 'node_name', '')}): "
+                                   f"status {_status_of(node)}")
             return web.json_response({
-                "error": f"Selected node(s) not available as members: {missing}",
+                "error": "Selected node(s) cannot take part: " + "; ".join(reasons),
                 "discovered_members": members_dump,
             }, status=422)
         chosen = [by_id[nid] for nid in wanted]
@@ -242,6 +273,18 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         }, status=422)
     if plan_note:
         logger.info("%s: %s", model, plan_note)
+
+    # A peer that is already serving has its memory committed to that model.
+    # Not a refusal — the operator may be about to unload it, and the engine
+    # reports an out-of-memory far more precisely than a guess here could —
+    # but worth saying before twenty minutes of loading.
+    busy = [f"{n.node_name or n.node_id} ({n.model})"
+            for n in chosen if getattr(n, "model", "")]
+    if busy:
+        busy_note = ("Already serving, so their memory is committed: "
+                     + ", ".join(busy) + ". Unload first if this launch needs it.")
+        plan_note = f"{plan_note} {busy_note}".strip() if plan_note else busy_note
+        logger.info("%s: %s", model, busy_note)
 
     # Second address list: where head and peer share a direct RoCE cable, bulk
     # transfer (model weights) goes over it instead of the coordination
