@@ -136,18 +136,32 @@ _ARGPARSE_HINT = (
     "one fails exactly like this."
 )
 
-# GB10/sm120: FlashInfer's prefill kernel illegal-instructions under CUDA-graph
-# capture and takes EngineCore with it (verified 2026-06-17, and again on a
-# three-node cluster where it killed a launch at the graph-capture step). The
-# NVIDIA backend forces --enforce-eager for the engine build where this is
-# known; a model without a curated recipe gets no such protection, and the
-# crash says nothing about what to do.
-_EAGER_HINT = (
-    "the GPU rejected a captured CUDA graph — the known GB10/sm120 failure in "
-    "FlashInfer's prefill kernel. Add --enforce-eager to the model's extra "
-    "vLLM args (Advanced in the launch panel). It costs some throughput and "
-    "makes the launch work; a model whose recipe is proven on this hardware "
-    "already carries what it needs."
+# An illegal instruction means the GPU was handed machine code it will not
+# execute. On this hardware the traceback from a real launch put it precisely:
+#
+#   cudagraph_utils.py:385 in capture: forward_fn(CUDAGraphMode.NONE)
+#   ... /root/.cache/vllm/torch_compile_cache/torch_aot_compile/<hash>/
+#       inductor_cache/x7/cx7....py:1067 in call
+#       triton_red_fused__to_copy_abs_clamp_cutlass_scaled_mm_...run(...)
+#   RuntimeError: CUDA driver error: an illegal instruction was encountered
+#
+# — a Triton kernel that Inductor generated and cached on disk. That cache
+# lives on the HOST (/root/.cache/vllm, mounted into every engine container),
+# so it outlives an image swap: a kernel compiled by one toolchain can be
+# loaded by another. Which is the first thing to rule out, and the cheapest.
+#
+# This was previously attributed to FlashInfer's prefill kernel under graph
+# capture, a different known GB10/sm120 failure. The remedy for that one
+# (--enforce-eager) does not necessarily help here: the crash happens in the
+# warmup call, CUDAGraphMode.NONE, before any graph is captured.
+_ILLEGAL_INSTRUCTION_HINT = (
+    "the GPU refused to run a compiled kernel. Most often a stale torch.compile "
+    "cache: it lives on the host at ~/.cache/vllm and survives engine-image "
+    "changes, so a kernel built by one toolchain gets loaded by another. Clear "
+    "it and relaunch: docker exec ainode rm -rf /root/.cache/vllm/"
+    "torch_compile_cache. If it comes back, add --enforce-eager to the model's "
+    "extra vLLM args; if it still comes back, add --compilation-config "
+    "'{\"mode\":0}' to stop Inductor generating kernels at all."
 )
 
 _FATAL_PATTERNS = [
@@ -157,8 +171,8 @@ _FATAL_PATTERNS = [
     # called, it dies reaching through a speculative_config that is None —
     #   AttributeError: 'NoneType' object has no attribute 'draft_model_config'
     ("draft_model_config", "nonetype", _DRAFTER_HINT),
-    ("cudaerrorillegalinstruction", "cudaerrorillegalinstruction", _EAGER_HINT),
-    ("illegal instruction", "illegalinstruction", _EAGER_HINT),
+    ("cudaerrorillegalinstruction", "cudaerrorillegalinstruction", _ILLEGAL_INSTRUCTION_HINT),
+    ("illegal instruction", "illegalinstruction", _ILLEGAL_INSTRUCTION_HINT),
     ("unrecognized arguments", "unrecognizedarguments", _ARGPARSE_HINT),
     ("error: argument", "error:argument", _ARGPARSE_HINT),
 ]

@@ -256,6 +256,7 @@ class EugrBackend(EngineBackend):
         # of a first launch. Leaving the phase on its previous value made them
         # look like a launch that had not started.
         self._phase.reset()
+        self._ensure_ssh_user()
         self._write_eugr_env()
         launch_script = self._write_distributed_launch_script()
         self._distribute_engine_image_to_peers()
@@ -848,6 +849,35 @@ class EugrBackend(EngineBackend):
         return (getattr(self.config, "peer_transfer_ips", None) or {}).get(
             peer_ip, peer_ip
         )
+
+    def _ensure_ssh_user(self) -> None:
+        """Make plain ``ssh <peer>`` from this container use the right account.
+
+        The launcher checks connectivity with ``ssh <ip> true`` — no user — so
+        it inherits this container's, which is root, while the keys belong to
+        the install user. The entrypoint writes this at container start; doing
+        it again here covers the case that matters in practice: ssh_user was
+        set, or corrected, in the UI after the container came up.
+        """
+        ssh_user = (getattr(self.config, "ssh_user", "") or "").strip()
+        if not ssh_user or not re.match(r"^[a-z_][a-z0-9_-]*$", ssh_user):
+            return
+        path = Path("/root/.ssh/config")
+        marker = f"# ainode: ssh as {ssh_user}"
+        try:
+            existing = path.read_text() if path.exists() else ""
+            if marker in existing:
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                f"{marker}\nHost *\n    User {ssh_user}\n"
+                f"    StrictHostKeyChecking no\n"
+                f"    UserKnownHostsFile /root/.ssh/known_hosts\n\n{existing}"
+            )
+            path.chmod(0o600)
+            logger.info("ssh from this container will use the %s account", ssh_user)
+        except OSError:
+            logger.exception("could not write /root/.ssh/config")
 
     def _distribute_engine_image_to_peers(self) -> None:
         """Place the engine image on every peer before the launcher looks.
