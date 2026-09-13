@@ -280,7 +280,8 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         quantization="NVFP4", min_memory_gb=24, family="gemma", params_b=26.0,
         proven_tp=1, verified=False, curated=True,
         context_length=262144, license="Gemma", recommended=True,
-        format="nvfp4", capabilities=["tool_use", "reasoning", "multilingual"],
+        format="nvfp4",
+        capabilities=["vision", "audio", "tool_use", "reasoning", "multilingual"],
         # Flags taken from eugr/spark-vllm-docker's proven recipe
         # recipes/gemma4-26b-a4b-nvfp4.yaml (MIT): the gemma4 reasoning and
         # tool-call parsers, instanttensor loading and the MTP drafter are what
@@ -294,7 +295,16 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "--enable-auto-tool-choice",
             "--tool-call-parser", "gemma4",
             "--reasoning-parser", "gemma4",
-            "--kv-cache-dtype", "fp8",
+            # eugr's recipe says fp8 here. We deviate, deliberately: Gemma 4
+            # is multimodal, and fp8 KV corrupts vision-model generation on
+            # GB10 — proven on this fleet 2026-07-06 with Qwen2.5-VL, which
+            # emitted garbage on fp8 and clean output on auto. The automatic
+            # downgrade in serve_args cannot help here, because an explicit
+            # value in a recipe is exactly what it must not override. auto
+            # costs roughly half the concurrent sequences at the same context
+            # length; wrong output costs more. Set --kv-cache-dtype fp8 in the
+            # launch panel to take the recipe's value back.
+            "--kv-cache-dtype", "auto",
             "--max-num-batched-tokens", "8192",
             "--speculative-config",
             '{"method":"mtp","model":"google/gemma-4-26B-A4B-it-assistant",'
@@ -449,7 +459,8 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         quantization="NVFP4", family="gemma", params_b=31.0,
         proven_tp=1, verified=False, curated=True,
         context_length=262144, license="Gemma", recommended=False,
-        format="nvfp4", capabilities=["tool_use", "reasoning", "multilingual"],
+        format="nvfp4",
+        capabilities=["vision", "audio", "tool_use", "reasoning", "multilingual"],
         # The parsers and loader are the Gemma 4 family's, taken from eugr's
         # recipes/gemma4-26b-a4b-nvfp4.yaml (MIT) — same family, same output
         # format. What is NOT carried over is that recipe's speculative config:
@@ -461,6 +472,12 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "--enable-auto-tool-choice",
             "--tool-call-parser", "gemma4",
             "--reasoning-parser", "gemma4",
+            # Stated rather than left to the automatic downgrade. That
+            # downgrade reads the model's config.json to decide whether it is
+            # multimodal, which only works once the weights are on local disk
+            # — so a first launch straight from the Hub would have served this
+            # vision model on the fp8 default. See the note on the 26B entry.
+            "--kv-cache-dtype", "auto",
         ],
         recommended_gmu=0.80,
     ),
