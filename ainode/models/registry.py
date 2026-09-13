@@ -492,12 +492,14 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         # calculator would then present as fact.
         size_gb=0.0, min_memory_gb=130,
         description=(
-            "256K context on an EXPERIMENTAL B12X serving stack. Needs its own "
-            "engine image (vllm-node-b12x) and exactly two nodes — it does not "
-            "run on one. Build the image first: see docs/mesh/B12X-IMAGE.md. "
-            "Untested by us; the flags and environment come from the upstream "
-            "recipe verbatim, apart from the context length, which the "
-            "checkpoint itself contradicts."
+            "256K context on an EXPERIMENTAL B12X serving stack, and 175 GB of "
+            "weights. Needs its own engine image (vllm-node-b12x) — see "
+            "docs/mesh/B12X-IMAGE.md — and more than one node. Two is what the "
+            "upstream recipe uses and it is very tight: measured here, a "
+            "two-node launch reached warmup and was then killed for memory. "
+            "Three nodes (pipeline) leave room. Not verified by us; the flags "
+            "come from the upstream recipe apart from three the hardware and "
+            "the checkpoint contradicted."
         ),
         quantization="NVFP4", family="glm", params_b=0.0,
         proven_tp=2, verified=False, curated=True,
@@ -521,7 +523,12 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "--moe-backend", "b12x",
             "--linear-backend", "b12x",
             "--no-enable-flashinfer-autotune",
-            "--load-format", "b12x",
+            # Also measured: the b12x fast loader refused to start here with
+            #   RuntimeError: the initial b12x loader requires GPU host page
+            #   tables
+            # and the rest of the B12X stack — attention, MoE, linear — does
+            # not depend on it. auto loads the same weights the ordinary way.
+            "--load-format", "auto",
             # The recipe asks for 1048576. The checkpoint's own config.json
             # says max_position_embeddings=262144, and vLLM refuses the
             # mismatch outright:
@@ -536,9 +543,23 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "--max-model-len", "262144",
             "--max-num-seqs", "4",
             "--max-num-batched-tokens", "4096",
-            "--speculative-config",
-            '{"method":"mtp","num_speculative_tokens":5,'
-            '"moe_backend":"humming","attention_backend":"B12X"}',
+            # The recipe's --speculative-config is deliberately absent, and
+            # this is measured, not assumed. With it, every launch died in
+            #
+            #   HFValidationError: Repo id must be in the form 'repo_name' or
+            #   'namespace/repo_name': '/models/local-inference-lab--GLM-5.3-…'
+            #
+            # For built-in MTP vLLM resolves the draft from the same string
+            # the model was given, and that string is a local path here —
+            # AINode serves a downloaded model from its directory so it does
+            # not fetch 175 GB again on every launch. The resolver it reaches
+            # accepts only a Hub repo id.
+            #
+            # Dropping it, the same launch reached multi-modal warmup. Putting
+            # it back means serving this model by repo id, which on this setup
+            # means downloading it a second time; nobody has shown that the
+            # speculative tokens are worth that. Add it in the launch panel to
+            # try: --speculative-config '{"method":"mtp",...}'.
             "--reasoning-parser", "glm45",
             "--tool-call-parser", "glm47",
             "--enable-auto-tool-choice",
