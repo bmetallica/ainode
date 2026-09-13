@@ -155,13 +155,13 @@ _ARGPARSE_HINT = (
 # (--enforce-eager) does not necessarily help here: the crash happens in the
 # warmup call, CUDAGraphMode.NONE, before any graph is captured.
 _ILLEGAL_INSTRUCTION_HINT = (
-    "the GPU refused to run a compiled kernel. Most often a stale torch.compile "
-    "cache: it lives on the host at ~/.cache/vllm and survives engine-image "
-    "changes, so a kernel built by one toolchain gets loaded by another. Clear "
-    "it and relaunch: docker exec ainode rm -rf /root/.cache/vllm/"
-    "torch_compile_cache. If it comes back, add --enforce-eager to the model's "
-    "extra vLLM args; if it still comes back, add --compilation-config "
-    "'{\"mode\":0}' to stop Inductor generating kernels at all."
+    "the GPU refused to run a compiled kernel. Most often a stale compile "
+    "cache: it keys on the model and its settings but not on the toolchain "
+    "that built the kernels, so changing the engine image can leave one the "
+    "GPU will not execute. Use Clear compile cache below, then relaunch. If it "
+    "comes back, add --enforce-eager to the model's extra vLLM args; if it "
+    "still comes back, add --compilation-config '{\"mode\":0}' to stop "
+    "Inductor generating kernels at all."
 )
 
 _FATAL_PATTERNS = [

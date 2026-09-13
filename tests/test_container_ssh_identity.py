@@ -120,7 +120,8 @@ class TestTheBackendWritesItToo:
     def test_it_runs_before_the_launcher(self):
         # After would be too late: the launcher's first act is the ssh check.
         src = (REPO / "ainode" / "engine" / "backends" / "eugr.py").read_text()
-        assert src.index("self._ensure_ssh_user()") < src.index("EUGR_LAUNCHER), *self._launcher_image_args()")
+        assert src.index("self._ensure_ssh_user()") < src.index(
+            'cmd = [str(EUGR_LAUNCHER), "--no-cache-dirs"')
 
 
 class TestTheHintMatchesTheEvidence:
@@ -135,8 +136,8 @@ class TestTheHintMatchesTheEvidence:
         tracker.observe("RuntimeError: CUDA driver error: an illegal instruction was encountered")
         tracker.fail("the launcher exited (code 1)")
         reason = tracker.failure_reason()
-        assert "torch_compile_cache" in reason
+        assert "compile cache" in reason
         assert "FlashInfer" not in reason
         # And the fallbacks, in order.
-        assert reason.index("torch_compile_cache") < reason.index("--enforce-eager")
+        assert reason.index("compile cache") < reason.index("--enforce-eager")
         assert "compilation-config" in reason

@@ -162,6 +162,11 @@ def create_app(
     app.router.add_post("/api/cluster/role", handle_cluster_set_role)
     app.router.add_post("/api/cluster/id", handle_cluster_set_id)
     app.router.add_post("/api/cluster/load", handle_cluster_load)
+    # Clearing the compile cache: local, and node-targeted through the same
+    # dispatch the load routes use, because the cache that matters is on the
+    # node whose launch failed.
+    app.router.add_post("/api/engine/compile-cache", _clear_compile_cache)
+    app.router.add_post("/api/cluster/compile-cache", handle_cluster_compile_cache)
     app.router.add_post("/api/cluster/unload", handle_cluster_unload)
     app.router.add_post("/api/cluster/update-all", handle_cluster_update_all)
     app.router.add_get("/api/cluster/update-status", handle_cluster_update_status)
@@ -937,7 +942,12 @@ async def _cluster_dispatch(request: web.Request, path: str):
                 return getattr(self._o, k)
             async def json(self):
                 return self._b
-        handler = handle_model_load if path.endswith("/load") else handle_model_unload
+        if path.endswith("/compile-cache"):
+            handler = _clear_compile_cache
+        elif path.endswith("/load"):
+            handler = handle_model_load
+        else:
+            handler = handle_model_unload
         return await handler(_Shim(request, body))
 
     node = cluster.get_node(node_id) if cluster is not None else None
@@ -963,6 +973,17 @@ async def _cluster_dispatch(request: web.Request, path: str):
 async def handle_cluster_load(request: web.Request) -> web.Response:
     """POST /api/cluster/load {node_id, model} — load a model on any node (F2)."""
     return await _cluster_dispatch(request, "/api/models/load")
+
+
+async def _clear_compile_cache(request: web.Request) -> web.Response:
+    from ainode.models.api_routes import handle_clear_compile_cache
+
+    return await handle_clear_compile_cache(request)
+
+
+async def handle_cluster_compile_cache(request: web.Request) -> web.Response:
+    """POST /api/cluster/compile-cache {node_id} — clear it on any node."""
+    return await _cluster_dispatch(request, "/api/engine/compile-cache")
 
 
 async def handle_cluster_unload(request: web.Request) -> web.Response:
