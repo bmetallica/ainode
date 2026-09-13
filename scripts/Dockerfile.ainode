@@ -128,10 +128,27 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 # Then the code. --no-deps because the line above already resolved everything,
 # so this layer is a few hundred kilobytes of Python and takes a second — which
 # is what a code change should cost.
+#
+# --force-reinstall --no-cache-dir is not belt and braces, it is the fix for a
+# shipped bug: pip's wheel cache keys a locally built wheel on the source PATH
+# and version, and the stub above is built from the same /src at the same
+# version. Without these, pip reused the cached STUB wheel here and the image
+# shipped an empty ainode package — the service then crash-looped with
+# "ImportError: cannot import name '__version__' from 'ainode'".
 COPY ainode /src/ainode
-RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    pip install --no-deps /src \
+RUN pip install --no-deps --no-cache-dir --force-reinstall /src \
     && rm -rf /src
+
+# Prove the real package is the one installed. This costs a second and makes
+# the failure above impossible to ship again: an empty package passes every
+# test that runs against the repository and fails only on the node.
+RUN python -c "import pathlib, ainode, ainode.cli.main, ainode.api.server, ainode.models.registry as reg; \
+assert ainode.__version__ and ainode.__version__ != '0.0.0+unknown', ainode.__version__; \
+assert reg.CURATED_CLUSTER_MODELS, 'catalog is empty'; \
+web = pathlib.Path(ainode.__file__).parent / 'web'; \
+assert (web / 'templates' / 'index.html').exists(), 'web assets missing'; \
+assert (web / 'static' / 'js' / 'app.js').exists(), 'web assets missing'; \
+print('ainode', ainode.__version__, 'installed with', len(reg.CURATED_CLUSTER_MODELS), 'curated models')"
 
 # -- Bundled scripts -------------------------------------------------------
 # run_cluster.sh is NVIDIA/vLLM upstream's canonical Ray-in-Docker launcher.
