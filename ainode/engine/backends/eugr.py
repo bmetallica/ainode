@@ -41,7 +41,12 @@ from ainode.cluster.topology import (
     is_safe_device_name,
     topology_for_config,
 )
-from ainode.core.config import LOGS_DIR, NodeConfig, host_path
+from ainode.core.config import (
+    ENGINE_CACHE_DIR,
+    LOGS_DIR,
+    NodeConfig,
+    host_path,
+)
 from ainode.core.gpu import detect_gpu
 from ainode.engine.backends.base import EngineBackend
 from ainode.engine.load_phase import LoadPhaseTracker
@@ -211,8 +216,9 @@ class EugrBackend(EngineBackend):
             )
 
         launch_script = self._write_launch_script(ParallelPlan(), solo=True)
-        cmd = [str(EUGR_LAUNCHER), "--solo", *self._launcher_image_args(),
-               *self._container_args(), "--launch-script", str(launch_script)]
+        cmd = [str(EUGR_LAUNCHER), "--solo", "--no-cache-dirs",
+               *self._launcher_image_args(), *self._container_args(),
+               "--launch-script", str(launch_script)]
         env = self._launcher_env()
 
         logger.info("Starting solo vLLM via the launcher: %s", " ".join(cmd))
@@ -270,8 +276,9 @@ class EugrBackend(EngineBackend):
         # detection (bugs 1/2/4 still fixed).
         shim_container_path = self._publish_nccl_init_script()
 
-        cmd = [str(EUGR_LAUNCHER), *self._launcher_image_args(),
-               *self._container_args(), "--launch-script", str(launch_script)]
+        cmd = [str(EUGR_LAUNCHER), "--no-cache-dirs",
+               *self._launcher_image_args(), *self._container_args(),
+               "--launch-script", str(launch_script)]
         env = self._launcher_env(shim_container_path=shim_container_path)
 
         logger.info(
@@ -825,6 +832,7 @@ class EugrBackend(EngineBackend):
                 f"flags rather than naming a directory."
             )
         extra_docker_args = ["-v", f"{models_dir_host}:{ENGINE_MODELS_DIR}"]
+        extra_docker_args.extend(self._cache_mounts())
         if shim_container_path is not None:
             # Mount the shared dir read-only and replace the vllm_node
             # container's default entrypoint with the shim. The shim detects
@@ -837,6 +845,36 @@ class EugrBackend(EngineBackend):
         env = self._build_env()
         env["VLLM_SPARK_EXTRA_DOCKER_ARGS"] = " ".join(extra_docker_args)
         return env
+
+    #: Engine cache directories, as ``(our subdirectory, container path)``.
+    #: The launcher mounts these itself from ``$HOME/.cache`` — which, called
+    #: from inside this container, is the HOST's /root/.cache. We mount them
+    #: from AINODE_HOME instead and pass --no-cache-dirs, so the caches are
+    #: where the operator's other state is: visible, backed up, and clearable.
+    CACHE_MOUNTS = (
+        ("vllm", "/root/.cache/vllm"),
+        ("flashinfer", "/root/.cache/flashinfer"),
+        ("triton", "/root/.triton"),
+        ("tilelang", "/root/.tilelang"),
+    )
+
+    def _cache_mounts(self) -> List[str]:
+        """``-v`` arguments placing the engine caches under AINODE_HOME."""
+        args: List[str] = []
+        for name, target in self.CACHE_MOUNTS:
+            local = ENGINE_CACHE_DIR / name
+            try:
+                local.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                logger.exception("could not create %s", local)
+                continue
+            source = host_path(str(local))
+            if not _is_safe_path_arg(source):
+                logger.warning("skipping cache mount for %s: unsafe path %r",
+                               name, source)
+                continue
+            args.extend(["-v", f"{source}:{target}"])
+        return args
 
     def _transfer_ip(self, peer_ip: str) -> str:
         """Address to push bulk data to ``peer_ip`` over.

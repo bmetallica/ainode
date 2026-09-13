@@ -7,6 +7,7 @@ import aiohttp
 import json
 import logging
 import shlex
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -250,6 +251,52 @@ def apply_catalog_recipe(model: str, overrides: dict, gmu=None):
     if gmu is None and "gpu_memory_utilization" in recipe:
         gmu = recipe["gpu_memory_utilization"]
     return overrides, gmu
+
+
+async def handle_clear_compile_cache(request):
+    """POST /api/engine/compile-cache — delete the engine's compiled kernels.
+
+    A stale entry here is a real failure mode, not a theoretical one: the cache
+    keys on the model and its configuration but not on the toolchain that built
+    the kernels, so swapping the engine image can leave a kernel the GPU will
+    not execute — "an illegal instruction was encountered", deep inside a
+    Triton launcher, with nothing pointing at the cache.
+
+    Clearing it costs the next launch its compile time and nothing else.
+    """
+    from aiohttp import web
+
+    from ainode.core.config import ENGINE_CACHE_DIR
+
+    freed = 0
+    removed = []
+    errors = []
+    for child in sorted(Path(ENGINE_CACHE_DIR).glob("*")):
+        if not child.is_dir():
+            continue
+        try:
+            size = sum(f.stat().st_size for f in child.rglob("*") if f.is_file())
+        except OSError:
+            size = 0
+        try:
+            shutil.rmtree(child)
+        except OSError as exc:
+            errors.append(f"{child.name}: {exc}")
+            continue
+        child.mkdir(parents=True, exist_ok=True)
+        removed.append(child.name)
+        freed += size
+
+    return web.json_response({
+        "ok": not errors,
+        "cleared": removed,
+        "freed_mb": round(freed / (1024 * 1024), 1),
+        "errors": errors,
+        # Said plainly, because the next launch being slow is otherwise the
+        # second surprise of the day.
+        "note": ("The next launch of each model recompiles its kernels — "
+                 "expect it to take a few minutes longer, once."),
+    }, status=200 if not errors else 500)
 
 
 def apply_tool_calling(model: str, overrides: dict, choice: str = "") -> dict:
@@ -679,7 +726,16 @@ def parse_load_overrides(body: dict):
     if body.get("extra_vllm_args") is not None:
         raw = body["extra_vllm_args"]
         if isinstance(raw, str):
-            raw = shlex.split(raw)
+            try:
+                raw = shlex.split(raw)
+            except ValueError as exc:
+                # An unbalanced quote. The UI sends this field verbatim so a
+                # JSON argument can keep its quotes, which means a typo in one
+                # arrives here — as a 400 naming the problem, not a 500.
+                return None, web.json_response(
+                    {"error": f"extra_vllm_args could not be parsed as a "
+                              f"command line ({exc}). Check the quotes."},
+                    status=400)
         if not isinstance(raw, list) or not all(isinstance(a, (str, int, float)) for a in raw):
             return None, web.json_response(
                 {"error": "extra_vllm_args must be a list of strings "

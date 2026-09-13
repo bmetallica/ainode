@@ -1093,7 +1093,15 @@ const AINode = {
       var instError = inst.error !== undefined ? inst.error : loadError;
       var instDetail = inst.detail || '';
       var failNote = (instPhase === 'failed' && instError)
-        ? '<div class="instance-failed-note">' + self.esc(instError) + '</div>'
+        ? '<div class="instance-failed-note">' + self.esc(instError) +
+          // The one repair the message asks for, as a button. Telling someone
+          // to run a docker command is the opposite of what this panel is for.
+          (/compile cache|illegal instruction|compiled kernel/i.test(instError)
+            ? '<div style="margin-top:8px"><button class="btn-ghost server-btn-sm" ' +
+              'data-clear-cache="' + self.esc((inst.nodes && inst.nodes[0]) || '') +
+              '">Clear compile cache</button></div>'
+            : '') +
+          '</div>'
         : '';
       var degradedNote = inst.degraded
         ? '<div class="instance-degraded">Lost ' +
@@ -1130,6 +1138,32 @@ const AINode = {
         '</div>' +
         '</div>';
     }).join('');
+
+    container.querySelectorAll('[data-clear-cache]').forEach(function (btn) {
+      btn.addEventListener('click', async function (e) {
+        e.stopPropagation();
+        if (!confirm('Clear the compiled-kernel cache?\n\nThe next launch of ' +
+                     'each model recompiles, which takes a few minutes once.')) return;
+        var label = btn.textContent;
+        btn.textContent = 'Clearing…';
+        btn.disabled = true;
+        // Node-targeted: the cache that matters is on the node that failed.
+        var nodeId = self._nodeIdForLabel(btn.getAttribute('data-clear-cache'));
+        var resp = await fetch('/api/cluster/compile-cache', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(nodeId ? { node_id: nodeId } : {}),
+        });
+        var data = await resp.json().catch(function () { return {}; });
+        btn.textContent = label;
+        btn.disabled = false;
+        if (!resp.ok || data.error) {
+          self.toast(data.error || 'Could not clear the cache', 'error');
+          return;
+        }
+        self.toast('Cleared ' + (data.freed_mb || 0) + ' MB — relaunch the model',
+                   'success');
+      });
+    });
 
     container.querySelectorAll('.instance-delete').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
@@ -1541,14 +1575,19 @@ const AINode = {
     var maxLen = numField('launch-max-len');
     if (maxLen != null) advanced.max_model_len = maxLen;
 
-    var extraArgs = [];
+    // Sent as ONE command-line string, not a pre-split array. Splitting on
+    // whitespace here could not express a quoted argument, so
+    //     --compilation-config '{"mode":0}'
+    // arrived at vLLM as the two words `--compilation-config` and
+    // `'{"mode":0}'`, quotes included, and failed to parse as JSON. The server
+    // shell-splits the string properly (shlex), which is what the API has
+    // always accepted.
+    var extraArgs = '';
     var maxSeqs = numField('launch-max-seqs');
-    if (maxSeqs != null) extraArgs.push('--max-num-seqs', String(maxSeqs));
+    if (maxSeqs != null) extraArgs += '--max-num-seqs ' + maxSeqs + ' ';
     var freeForm = document.getElementById('launch-extra-args');
-    if (freeForm && freeForm.value.trim()) {
-      freeForm.value.trim().split(/\s+/).forEach(function (tok) { extraArgs.push(tok); });
-    }
-    if (extraArgs.length) advanced.extra_vllm_args = extraArgs;
+    if (freeForm && freeForm.value.trim()) extraArgs += freeForm.value.trim();
+    if (extraArgs.trim()) advanced.extra_vllm_args = extraArgs.trim();
 
     // Text and select fields: an empty one is omitted so the catalog recipe's value
     // survives. Sending "" would override a proven setting with nothing.
@@ -4955,6 +4994,18 @@ const AINode = {
   // ========================================================================
   //  UTILITIES
   // ========================================================================
+
+  _nodeIdForLabel(label) {
+    // Cards show the friendly name (and sometimes name:port); the API wants
+    // the id. An unknown label means the local node, which is the right
+    // default for a card with no node information.
+    if (!label) return '';
+    var name = String(label).split(':')[0];
+    var match = (this.state.nodes || []).find(function (n) {
+      return n.node_name === name || n.hostname === name || n.node_id === name;
+    });
+    return match ? match.node_id : '';
+  },
 
   esc(str) {
     var div = document.createElement('div');

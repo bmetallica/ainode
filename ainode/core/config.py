@@ -41,6 +41,13 @@ def host_path(container_path: str) -> str:
 CONFIG_FILE = AINODE_HOME / "config.json"
 MODELS_DIR = AINODE_HOME / "models"
 LOGS_DIR = AINODE_HOME / "logs"
+# Where the engine's compile caches live. Under AINODE_HOME on purpose: the
+# launcher's default is $HOME/.cache inside whatever process calls it, which
+# for us resolves to the HOST's /root/.cache — root's home, invisible to the
+# operator, outside every backup, and not deletable from this container. A
+# stale entry there is one of the ways a launch dies, so it has to be somewhere
+# we can look at and clear.
+ENGINE_CACHE_DIR = AINODE_HOME / "cache"
 DATASETS_DIR = AINODE_HOME / "datasets"
 TRAINING_DIR = AINODE_HOME / "training"
 
