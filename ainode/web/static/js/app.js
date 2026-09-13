@@ -5854,7 +5854,14 @@ const AINode = {
             '<button class="config-btn" id="cfg-mqtt-test">Test connection</button>' +
             '<button class="config-btn" id="cfg-mqtt-publish">Publish now</button>' +
             '<button class="config-btn" id="cfg-mqtt-preview">Show payload</button>' +
+            '<button class="config-btn" id="cfg-mqtt-cluster">Apply to all nodes</button>' +
             '</div>';
+    html += '<div class="config-card-desc" style="margin-top:8px">Each node ' +
+            'publishes its own CPU, memory, disk and network — no other node ' +
+            'can see those. Configured here alone, you get telemetry from this ' +
+            'node only. <strong>Apply to all nodes</strong> copies these ' +
+            'settings, password included, to every node over the cluster ' +
+            'network.</div>';
     html += '<div id="cfg-mqtt-result" class="config-card-desc" style="margin-top:10px"></div>';
     html += '</div>';
 
@@ -5900,6 +5907,22 @@ const AINode = {
       if (!resp.ok) { say(d.error || 'Could not save', true); return; }
       self.toast('Monitoring settings saved', 'success');
       self.renderConfigMonitoring();
+    });
+
+    document.getElementById('cfg-mqtt-cluster').addEventListener('click', async function () {
+      if (!confirm('Copy these settings to every other node?\n\nThe broker ' +
+                   'password travels over the cluster network in the clear.')) return;
+      say('Applying…');
+      var resp = await fetch('/api/telemetry/mqtt/apply-to-cluster', { method: 'POST' });
+      var d = await resp.json().catch(function () { return {}; });
+      if (d.error) { say(d.error, true); return; }
+      var lines = (d.results || []).map(function (r) {
+        return (r.ok ? '✓ ' : '✕ ') + r.node + (r.error ? ': ' + r.error : '');
+      });
+      out.innerHTML = lines.map(function (l) {
+        return '<div class="profile-report-line' + (l.charAt(0) === '✕' ? ' error' : '') +
+               '">' + self.esc(l) + '</div>';
+      }).join('') || '<span>No other nodes.</span>';
     });
 
     document.getElementById('cfg-mqtt-test').addEventListener('click', async function () {

@@ -353,3 +353,91 @@ class TestUi:
         # Building a dashboard needs the message shape before the publishing
         # works, not after.
         assert "/api/telemetry/preview" in APP_JS
+
+
+class TestClusterWideSettings:
+    """Each node publishes its own vital signs; no other node can see them.
+
+    Configuring the broker on the head alone produced telemetry from one of
+    three machines — no CPU, memory, disk or network from the peers, because
+    the discovery announcement carries GPU and status and nothing else.
+    """
+
+    def test_the_route_exists(self):
+        from ainode.api.server import create_app
+
+        app = create_app(config=NodeConfig(node_id="head"), engine=None)
+        paths = {getattr(r.resource, "canonical", "") for r in app.router.routes()}
+        assert "/api/telemetry/mqtt/apply-to-cluster" in paths
+
+    def test_it_sends_the_password_too(self):
+        # Settings without the password would leave every peer unable to
+        # connect, which looks like the feature not working.
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parent.parent / "ainode" / "telemetry" /
+               "api_routes.py").read_text()
+        block = src[src.index("async def handle_apply_to_cluster"):]
+        block = block[:block.index("async def handle_preview")]
+        assert 'payload["mqtt_password"] = password' in block
+        # and it says so — the docstring wraps, so compare on words
+        assert "clear" in " ".join(block.split())
+
+    def test_it_reports_per_node(self):
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parent.parent / "ainode" / "telemetry" /
+               "api_routes.py").read_text()
+        assert '"results": results' in src
+
+    def test_the_ui_warns_before_copying_the_password(self):
+        assert "cfg-mqtt-cluster" in APP_JS
+        assert "in the clear" in APP_JS
+
+
+class TestTheClusterPayloadIsTruthful:
+    def test_gpu_use_is_computed_from_megabytes(self):
+        # gpu_memory_used_pct does not exist on a cluster node; reading it
+        # returned 0.0 for every node on a cluster with two models loaded.
+        from unittest import mock
+
+        from ainode.telemetry.payloads import _cluster
+
+        node = mock.Mock(node_id="n2", node_name="spark-2", status="online",
+                         model="a/b", gpu_memory_gb=121.7,
+                         gpu_memory_used_mb=78000, gpu_memory_total_mb=124610,
+                         gpu_utilization=42.0, instances=[])
+        app = {"config": NodeConfig(node_id="head"),
+               "cluster_state": mock.Mock(members=lambda: [node])}
+        entry = _cluster(app)["nodes"][0]
+        assert entry["gpu_memory_used_percent"] == pytest.approx(62.6, abs=0.2)
+        assert entry["gpu_memory_used_mb"] == 78000
+        assert entry["gpu_utilization_percent"] == 42.0
+
+    def test_a_node_without_readings_omits_them(self):
+        from unittest import mock
+
+        from ainode.telemetry.payloads import _cluster
+
+        node = mock.Mock(node_id="n2", node_name="spark-2", status="online",
+                         model="", gpu_memory_gb=121.7, gpu_memory_used_mb=0,
+                         gpu_memory_total_mb=0, gpu_utilization=None,
+                         instances=[])
+        app = {"config": NodeConfig(node_id="head"),
+               "cluster_state": mock.Mock(members=lambda: [node])}
+        entry = _cluster(app)["nodes"][0]
+        assert "gpu_memory_used_percent" not in entry
+
+    def test_the_instances_come_along(self):
+        from unittest import mock
+
+        from ainode.telemetry.payloads import _cluster
+
+        node = mock.Mock(node_id="n2", node_name="spark-2", status="online",
+                         model="a/b", gpu_memory_gb=121.7, gpu_memory_used_mb=1,
+                         gpu_memory_total_mb=2, gpu_utilization=0,
+                         instances=[{"model": "a/b", "api_port": 8000,
+                                     "status": "serving"}])
+        app = {"config": NodeConfig(node_id="head"),
+               "cluster_state": mock.Mock(members=lambda: [node])}
+        assert _cluster(app)["nodes"][0]["instances"][0]["model"] == "a/b"
