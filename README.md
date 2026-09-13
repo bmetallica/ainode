@@ -341,6 +341,7 @@ set the read token with `ainode config --hf-token hf_xxx`.
 | Tool calling configured automatically — parser derived from the model family, overridable per launch | ✅ |
 | MQTT telemetry — node (CPU/RAM/disk/per-NIC load) + cluster + per-model speed, configured in the UI | ✅ |
 | One-command cluster update (`scripts/update-cluster.sh`) — build, distribute, restart, verify; repeatable | ✅ |
+| One-command diagnostic report (`scripts/diagnose.sh`) — read-only, secrets redacted, peers included | ✅ |
 | Image cache on the head — Hub pull-through + local registry, so an image is fetched once, not once per node | ✅ |
 
 ---
