@@ -166,6 +166,18 @@ class TestGemma31B:
         assert dense.proven_tp == 1
         assert dense.min_memory_gb < 122
 
+    def test_its_size_is_the_measured_one(self):
+        # 31 GB on disk, not the 15.5 GB that four bits a parameter suggests.
+        # On bandwidth-bound hardware the weight size IS the decode speed:
+        # 273 GB/s over 31 GB is ~8.8 tok/s, and 7.82 was measured. Halving
+        # the number in the catalog predicts twice the speed and makes the
+        # placement advice wrong in the same direction.
+        from ainode.models.registry import CURATED_CLUSTER_MODELS
+
+        dense = CURATED_CLUSTER_MODELS["gemma4-31b-it-nvfp4"]
+        assert dense.size_gb == 31.0
+        assert dense.min_memory_gb > dense.size_gb
+
 
 class TestThePlanNoteReachesTheOperator:
     """A split that is not the one asked for has to be visible.
