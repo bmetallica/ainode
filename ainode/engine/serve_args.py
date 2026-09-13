@@ -22,6 +22,8 @@ from typing import Iterable, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "DROP_PREFIX",
+    "dropped_flags",
     "effective_kv_cache_dtype",
     "is_multimodal_model",
     "local_model_dir",
@@ -114,6 +116,25 @@ def split_vllm_args(args: Optional[Iterable]) -> List[List[str]]:
     return groups
 
 
+#: Written in the extra-args field to REMOVE a flag the recipe supplies,
+#: e.g. ``drop:--speculative-config``. Overriding a flag was possible from the
+#: start; removing one was not, and there is no value that means "not set" for
+#: flags like --quantization or --speculative-config. Diagnosing a model whose
+#: recipe carries a flag its engine build cannot use needed exactly this.
+DROP_PREFIX = "drop:"
+
+
+def dropped_flags(caller_args: Optional[Iterable]) -> Set[str]:
+    """Flags the caller asked to remove from the recipe."""
+    dropped = set()
+    for arg in [str(a) for a in (caller_args or [])]:
+        if arg.startswith(DROP_PREFIX):
+            flag = arg[len(DROP_PREFIX):].strip().split("=", 1)[0]
+            if flag:
+                dropped.add(flag if flag.startswith("-") else f"--{flag}")
+    return dropped
+
+
 def merge_vllm_args(recipe_args: Optional[Iterable],
                     caller_args: Optional[Iterable]) -> List[str]:
     """Caller arguments, plus the recipe flags the caller did not mention.
@@ -123,13 +144,19 @@ def merge_vllm_args(recipe_args: Optional[Iterable],
     recipe — reasoning parser, tool-call parser and speculative config gone —
     because the caller's list simply took the place of the recipe's. Now the
     caller wins per flag, and the rest of the recipe survives.
+
+    A ``drop:--flag`` entry removes a recipe flag instead of replacing it, and
+    is itself never passed on.
     """
     caller = [str(a) for a in (caller_args or [])]
+    dropped = dropped_flags(caller)
+    caller = [a for a in caller if not a.startswith(DROP_PREFIX)]
     if not recipe_args:
         return caller
     supplied = supplied_flags(caller)
     merged = list(caller)
     for group in split_vllm_args(recipe_args):
-        if group[0].split("=", 1)[0] not in supplied:
+        flag = group[0].split("=", 1)[0]
+        if flag not in supplied and flag not in dropped:
             merged.extend(group)
     return merged
