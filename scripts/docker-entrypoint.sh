@@ -35,6 +35,38 @@ try:
     cfg = json.loads(cfg_path.read_text())
 except Exception:
     cfg = {}
+# The host's ssh config can name its keys by ABSOLUTE path — nvidia-sync
+# writes e.g. "IdentityFile /home/admin/.ssh/id_ed25519_nvsync_cluster_assistant".
+# The keys were copied to /root/.ssh above, and /home/admin does not exist in
+# this container, so ssh reported
+#
+#   no such identity: /home/admin/.ssh/id_ed25519_...: No such file or directory
+#   admin@10.100.36.2: Permission denied (publickey,password)
+#
+# and every transfer to a peer failed on authentication. Point such lines at
+# the copy, by file name, leaving anything that does resolve alone.
+ssh_config_path = pathlib.Path("/root/.ssh/config")
+if ssh_config_path.exists():
+    rewritten = []
+    changed = False
+    for line in ssh_config_path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("identityfile"):
+            parts = stripped.split(None, 1)
+            if len(parts) == 2:
+                named = pathlib.Path(parts[1].strip().strip('"').strip("'"))
+                if not named.expanduser().exists():
+                    local = pathlib.Path("/root/.ssh") / named.name
+                    if local.exists():
+                        indent = line[: len(line) - len(line.lstrip())]
+                        line = f"{indent}IdentityFile {local}"
+                        changed = True
+        rewritten.append(line)
+    if changed:
+        ssh_config_path.write_text("\n".join(rewritten) + "\n")
+        ssh_config_path.chmod(0o600)
+        print("ainode: pointed ssh IdentityFile entries at /root/.ssh")
+
 ssh_user = cfg.get("ssh_user") or ""
 if ssh_user:
     # Host * rather than the peer list. The peer list is empty in config.json
