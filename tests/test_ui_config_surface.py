@@ -525,18 +525,25 @@ class TestKnownMistakesAreNamed:
         assert "DRAFT model" in reason
         assert "--speculative-config" in reason
 
-    def test_it_outranks_the_raw_traceback(self):
-        """The AttributeError is accurate and useless; the hint is neither."""
+    def test_it_accompanies_the_traceback_rather_than_replacing_it(self):
+        """The AttributeError is accurate and useless on its own; the hint
+        explains it. Both, because a hint without evidence cannot be checked."""
         reason = self._fail_with(self.REAL).failure_reason()
-        assert "draft_model_config" not in reason
+        assert "draft_model_config" in reason
+        assert "DRAFT model" in reason
 
     @pytest.mark.parametrize("arch", [
+        "Resolved architecture: Glm5NextMTPModel",
         "Resolved architecture: DFlashDraftModel",
-        "Resolved architecture: Qwen3DraftModel",
-        "resolved architecture: SomeDraftModel",
+        "Resolved architecture: SomeEagle3Model",
     ])
-    def test_draft_architectures_recognised(self, arch):
-        assert self._fail_with([arch]).fatal_hint
+    def test_an_architecture_name_is_not_a_verdict(self, arch):
+        """A model with BUILT-IN multi-token prediction resolves exactly such
+        a name during a healthy launch — GLM 5.3 Flash logs Glm5NextMTPModel
+        while doing what its recipe asks. The name used to be treated as proof
+        that a drafter had been loaded alone, and the hint then hijacked an
+        unrelated failure to send the operator after a different model."""
+        assert not self._fail_with([arch]).fatal_hint
 
     @pytest.mark.parametrize("arch", [
         "Resolved architecture: Gemma3ForCausalLM",
@@ -625,20 +632,20 @@ class TestDrafterIsRefusedBeforeLaunching:
         assert "drafter_base_model" in Path(sh.__file__).read_text()
         assert "load_instead" in Path(m.__file__).read_text()
 
-    @pytest.mark.parametrize("arch", [
-        "DFlashDraftModel",      # z-lab gemma DFlash
-        "Qwen3DSparkModel",      # nvidia Nemotron DSpark
-        "SomeEagle3Model",
-    ])
-    def test_the_log_net_covers_architectures_that_share_no_suffix(self, arch):
-        """The two real cases here spelled it differently, and the next vendor
-        will too."""
+    def test_the_catalog_is_the_guard_not_the_architecture_name(self):
+        """Refusing up front, from the catalog, costs nothing and cannot
+        misfire. Matching the architecture in the log fired on models with
+        built-in MTP, which are servable and common."""
         from ainode.engine.load_phase import LoadPhaseTracker
+        from ainode.models.api_routes import drafter_base_model
+
+        assert drafter_base_model(
+            "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DSpark")
 
         t = LoadPhaseTracker()
         t.reset()
-        t.observe(f"INFO [model.py:692] Resolved architecture: {arch}")
-        assert t.fatal_hint
+        t.observe("INFO [model.py:692] Resolved architecture: Qwen3DSparkModel")
+        assert not t.fatal_hint
 
     def test_the_log_net_catches_an_unenumerated_drafter(self):
         """Whatever the architecture is called, it dies reaching through a

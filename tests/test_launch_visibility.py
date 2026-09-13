@@ -161,11 +161,13 @@ class TestFailuresNameTheEvidence:
         assert "--nope" in reason
         assert "catalog recipe" in reason
 
-    def test_a_drafter_failure_names_the_architecture_line(self):
+    def test_a_drafter_failure_names_the_symptom_and_the_remedy(self):
+        # Not the architecture name: a model with built-in MTP resolves one of
+        # those during a healthy launch, so the name is not evidence.
         reason = self._failed(
             "INFO Resolved architecture: Qwen3DSparkModel",
             "AttributeError: 'NoneType' object has no attribute 'draft_model_config'")
-        assert "Qwen3DSparkModel" in reason
+        assert "draft_model_config" in reason
         assert "DRAFT model" in reason
 
     def test_teardown_noise_is_still_not_the_explanation(self):
