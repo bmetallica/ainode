@@ -127,11 +127,22 @@ _DRAFTER_HINT = (
     "--speculative-config if you want speculative decoding."
 )
 
-# Architecture names that mean "drafter". Enumerated because they do not share
-# a suffix: two real cases here were DFlashDraftModel and Qwen3DSparkModel, and
-# the next vendor will spell it differently again — hence the second,
-# name-independent pattern below.
-_DRAFTER_ARCHS = ("draftmodel", "dsparkmodel", "dflash", "eagle", "mtpmodel")
+# There is no pattern here for the resolved ARCHITECTURE name, and that is
+# the point. One used to match "Resolved architecture: *DraftModel",
+# "*MTPModel", "*Eagle*" and friends — and a model with BUILT-IN
+# multi-token prediction resolves exactly such an architecture as part of a
+# perfectly healthy launch. GLM 5.3 Flash logs
+#
+#   INFO [model.py:686] Resolved architecture: Glm5NextMTPModel
+#
+# while doing what its recipe asks, and the hint hijacked an unrelated failure
+# to tell the operator to go and load a different model.
+#
+# The failure that really does mean "a drafter was served alone" is below, and
+# it is a symptom rather than a name: vLLM reaches for a speculative_config
+# that is None. The other guard is better still and does not involve the log
+# at all — models.api_routes.drafter_base_model refuses such a load up front,
+# from the catalog, before anything starts.
 
 # vLLM exits 2 from argparse on an unknown flag, and prints the offending one.
 # Worth naming because the usual cause is a recipe written for a different
@@ -171,11 +182,10 @@ _ILLEGAL_INSTRUCTION_HINT = (
 )
 
 _FATAL_PATTERNS = [
-    ("resolved architecture:", arch, _DRAFTER_HINT) for arch in _DRAFTER_ARCHS
-] + [
-    # The net for a drafter nobody has enumerated: whatever its architecture is
-    # called, it dies reaching through a speculative_config that is None —
+    # Whatever a drafter's architecture is called, serving one alone dies
+    # reaching through a speculative_config that is None —
     #   AttributeError: 'NoneType' object has no attribute 'draft_model_config'
+    # A symptom, and unlike a name it does not also occur in healthy launches.
     ("draft_model_config", "nonetype", _DRAFTER_HINT),
     ("cudaerrorillegalinstruction", "cudaerrorillegalinstruction", _ILLEGAL_INSTRUCTION_HINT),
     ("illegal instruction", "illegalinstruction", _ILLEGAL_INSTRUCTION_HINT),
