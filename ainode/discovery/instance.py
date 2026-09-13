@@ -32,6 +32,14 @@ class InstanceRecord:
     pipeline_parallel_size: int = 1
     data_parallel_size: int = 1
     status: str = "serving"  # starting | distributing | serving | failed
+    # Why THIS instance failed, and how far it got. Carried on the record
+    # because the dashboard used to read both from the node's status — one
+    # value per node — and painted it on every card. Two models failing on two
+    # different machines showed the same message, down to the process id and
+    # the second, which makes a failure impossible to diagnose from the UI.
+    load_error: str = ""
+    load_phase: str = ""
+    load_detail: str = ""
 
     @property
     def world_size(self) -> int:
