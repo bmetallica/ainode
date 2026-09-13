@@ -7,6 +7,8 @@ nodes produced a command with none of them. The distributed launch, the one
 that most needs the proven configuration, was the one that ran without it.
 """
 
+import pytest
+
 from ainode.engine.parallelism import Strategy, plan_for_model
 from ainode.models.api_routes import (
     apply_catalog_recipe,
@@ -208,3 +210,49 @@ class TestThePlanNoteReachesTheOperator:
 
         _, note = plan_for_model(Strategy.TENSOR, 2, proven_tp=2)
         assert note == ""
+
+
+class TestGemma4IsMultimodal:
+    """Gemma 4 processes images, video and audio. That changes the KV dtype.
+
+    fp8 KV corrupts vision-model generation on GB10 — proven on this fleet
+    2026-07-06 with Qwen2.5-VL, garbage on fp8 and clean output on auto. The
+    Qwen3.8 entry carries that finding already. Both Gemma entries were
+    written as if the models were text-only: one inherited fp8 from upstream's
+    recipe, the other relied on an automatic downgrade that reads config.json
+    from local disk and therefore does nothing on a first launch from the Hub.
+    """
+
+    @pytest.mark.parametrize("repo", [
+        "nvidia/Gemma-4-26B-A4B-NVFP4",
+        "nvidia/Gemma-4-31B-IT-NVFP4",
+    ])
+    def test_the_kv_dtype_is_explicitly_auto(self, repo):
+        args = catalog_recipe(repo)["extra_vllm_args"]
+        assert args[args.index("--kv-cache-dtype") + 1] == "auto"
+
+    @pytest.mark.parametrize("key", [
+        "gemma4-26b-a4b-nvfp4",
+        "gemma4-31b-it-nvfp4",
+    ])
+    def test_the_catalog_says_it_sees_and_hears(self, key):
+        from ainode.models.registry import CURATED_CLUSTER_MODELS
+
+        capabilities = CURATED_CLUSTER_MODELS[key].capabilities
+        assert "vision" in capabilities
+        assert "audio" in capabilities
+
+    def test_the_deviation_from_upstream_is_recorded(self):
+        # Upstream's recipe uses fp8. Departing from a cited source without
+        # saying why is how a future reader "fixes" it back.
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parent.parent / "ainode" / "models" /
+               "registry.py").read_text()
+        assert "2026-07-06" in src
+        assert "deviate" in src
+
+    def test_qwen38_still_agrees(self):
+        # The entry this reasoning came from.
+        args = catalog_recipe("unsloth/Qwen3.8-27B-NVFP4")["extra_vllm_args"]
+        assert args[args.index("--kv-cache-dtype") + 1] == "auto"
