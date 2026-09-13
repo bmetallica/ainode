@@ -477,6 +477,24 @@ async def _engine_serving(backend, loop) -> bool:
         return False
 
 
+def _stamp_load_state(inst) -> None:
+    """Copy the backend's load state onto the record that gets advertised.
+
+    The record is what crosses the wire to the head; the backend does not.
+    Without this the dashboard had one error and one phase per NODE and drew
+    them on every card it had.
+    """
+    backend = getattr(inst, "backend", None)
+    record = getattr(inst, "record", None)
+    if backend is None or record is None:
+        return
+    for field in ("load_error", "load_phase", "load_detail"):
+        try:
+            setattr(record, field, str(getattr(backend, field, "") or ""))
+        except Exception:
+            logger.debug("could not stamp %s", field, exc_info=True)
+
+
 def _instance_is_starting(inst) -> bool:
     """True while an instance's engine process is alive but not yet answering.
 
@@ -513,6 +531,7 @@ async def _live_instance_records(manager, loop) -> list:
     """
     live = []
     for inst in manager.instances():
+        _stamp_load_state(inst)
         if await _engine_serving(inst.backend, loop):
             if inst.record.status != "serving":
                 inst.record.status = "serving"

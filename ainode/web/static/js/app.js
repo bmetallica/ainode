@@ -1000,6 +1000,10 @@ const AINode = {
             nodes: [host],
             status: n.engine_ready ? 'READY' : 'STARTING',
             badge: 'SINGLE',
+            phase: n.node_id === (self.state.status && self.state.status.node_id)
+              ? phase : '',
+            error: n.node_id === (self.state.status && self.state.status.node_id)
+              ? loadError : '',
           });
         }
       }
@@ -1025,6 +1029,13 @@ const AINode = {
           // only advertises live instances, flipped to `serving`).
           status: inst.status === 'serving' ? 'READY' : 'STARTING',
           badge: 'STACKED' + (inst.api_port ? ' · :' + inst.api_port : ''),
+          // Per-instance, from the record that crossed the wire. The node's
+          // load_error is ONE value per node and used to be painted on every
+          // card: two models failing on two different machines showed the same
+          // message, down to the process id and the second.
+          phase: inst.status === 'failed' ? 'failed' : (inst.load_phase || ''),
+          error: inst.load_error || '',
+          detail: inst.load_detail || '',
         });
       });
     });
@@ -1075,8 +1086,14 @@ const AINode = {
       // A degraded instance is still running on the head but has lost the ranks
       // Ray placed on the node that went away — it cannot serve. Say which node
       // is gone and offer the one action that helps.
-      var failNote = (phase === 'failed' && loadError)
-        ? '<div class="instance-failed-note">' + self.esc(loadError) + '</div>'
+      // This card's own phase and error. The node-level values are the
+      // fallback for cards that carry none — the head's own primary — and no
+      // longer the source for all of them.
+      var instPhase = inst.phase || ((inst.error === undefined) ? phase : '');
+      var instError = inst.error !== undefined ? inst.error : loadError;
+      var instDetail = inst.detail || '';
+      var failNote = (instPhase === 'failed' && instError)
+        ? '<div class="instance-failed-note">' + self.esc(instError) + '</div>'
         : '';
       var degradedNote = inst.degraded
         ? '<div class="instance-degraded">Lost ' +
@@ -1097,11 +1114,11 @@ const AINode = {
           : (function () {
               // A launch that died is terminal — show it as such instead of a
               // bar that will never move again.
-              if (phase === 'failed') {
+              if (instPhase === 'failed') {
                 return '<span class="instance-status failed">FAILED</span>';
               }
-              var pi = PHASE_INFO[phase] || ['starting', 10];
-              var label = loadDetail || pi[0];
+              var pi = PHASE_INFO[instPhase] || PHASE_INFO[phase] || ['starting', 10];
+              var label = instDetail || loadDetail || pi[0];
               return '<span class="instance-status starting" title="' + self.esc(loadDetail || '') + '">' + self.esc(label.toUpperCase()) + ' · ' + pi[1] + '%</span>' +
                 '<span style="display:inline-block;width:90px;height:5px;background:#1f2a1f;border-radius:3px;margin:0 8px;vertical-align:middle;overflow:hidden">' +
                 '<span style="display:block;height:100%;width:' + pi[1] + '%;background:#76c043;transition:width .4s"></span></span>';
