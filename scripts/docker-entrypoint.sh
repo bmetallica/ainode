@@ -36,12 +36,22 @@ try:
 except Exception:
     cfg = {}
 ssh_user = cfg.get("ssh_user") or ""
-peers = cfg.get("peer_ips") or []
-if ssh_user and peers:
+if ssh_user:
+    # Host * rather than the peer list. The peer list is empty in config.json
+    # until a distributed launch has already SUCCEEDED, so keying on it made
+    # the mapping appear only after it was no longer needed — and the first
+    # distributed launch on a fresh install failed with eugr's
+    # "Passwordless SSH to <peer> failed", because the launcher runs plain
+    # `ssh <ip>` and this container is root while the keys belong to the
+    # install user.
+    #
+    # The wildcard is safe here: nothing else ssh's out of this container, and
+    # an explicit user in a command line (distribute.py sends user@host) wins
+    # over this anyway.
     ssh_config = pathlib.Path("/root/.ssh/config")
     existing = ssh_config.read_text() if ssh_config.exists() else ""
     block = "\n# Injected by AINode entrypoint for container→peer ssh\n"
-    block += f"Host {' '.join(peers)}\n"
+    block += "Host *\n"
     block += f"    User {ssh_user}\n"
     block += "    StrictHostKeyChecking no\n"
     block += "    UserKnownHostsFile /root/.ssh/known_hosts\n"
