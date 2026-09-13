@@ -237,6 +237,10 @@
               <span style="color:var(--text-muted);font-weight:400">(shell style)</span></label>
             <input id="launch-extra-args" class="form-input" type="text"
                    placeholder="--max-num-batched-tokens 8192">
+            <div class="config-field-hint" style="margin-top:-6px">Quotes work:
+              <code>--compilation-config '{"mode":0}'</code>. A flag you set
+              replaces the model recipe's; <code>drop:--speculative-config</code>
+              removes one the recipe supplies.</div>
 
             <label class="launch-check">
               <input type="checkbox" id="launch-trust-remote-code">
