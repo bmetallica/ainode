@@ -165,3 +165,34 @@ class TestGemma31B:
         dense = CURATED_CLUSTER_MODELS["gemma4-31b-it-nvfp4"]
         assert dense.proven_tp == 1
         assert dense.min_memory_gb < 122
+
+
+class TestThePlanNoteReachesTheOperator:
+    """A split that is not the one asked for has to be visible.
+
+    Selecting three nodes for a model proven at two silently becomes a
+    pipeline split. That is the right call and the wrong thing to keep in a
+    log file: the operator is watching the dashboard, deciding whether the
+    launch they just started is the one they meant.
+    """
+
+    def test_the_launch_response_carries_it(self):
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parent.parent / "ainode" / "engine" /
+               "sharding_routes.py").read_text()
+        assert '"note": plan_note,' in src
+
+    def test_the_ui_shows_it(self):
+        from pathlib import Path
+
+        app_js = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
+                  "static" / "js" / "app.js").read_text()
+        assert "if (data.note) this.toast(data.note" in app_js
+
+    def test_a_normal_launch_has_no_note(self):
+        # Only a downgrade is worth interrupting for.
+        from ainode.engine.parallelism import Strategy, plan_for_model
+
+        _, note = plan_for_model(Strategy.TENSOR, 2, proven_tp=2)
+        assert note == ""

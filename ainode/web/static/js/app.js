@@ -1668,6 +1668,10 @@ const AINode = {
       if (data.error) {
         this.toast(data.error, 'error');
       } else {
+        // A planning note means the split is not the one that was asked for.
+        // It is the single most useful thing to know about the launch that is
+        // now starting, so it goes in front of the operator, not in a log.
+        if (data.note) this.toast(data.note, 'info');
         this.toast('Launched: ' + model, 'success');
         // Launch submitted — the hand-picked-nodes intent is consumed, so the next
         // model pick auto-recommends again.

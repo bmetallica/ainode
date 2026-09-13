@@ -389,6 +389,11 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         # comes back as "pipeline".
         "strategy": plan.strategy.value,
         "parallel_plan": plan.to_dict(),
+        # When the split is not the one that was asked for, say so where the
+        # operator is looking. A log line explaining that a model proven at
+        # TP=2 is being pipelined across three nodes helps nobody who is
+        # watching the dashboard.
+        "note": plan_note,
     })
 
 
