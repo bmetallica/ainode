@@ -39,6 +39,20 @@ def node_identity(config) -> Dict[str, Any]:
     }
 
 
+def _as_float(value, default: float = 0.0) -> float:
+    """A number from whatever a peer sent, or the default.
+
+    Values here arrive from other nodes' announcements, which are written by
+    whatever build that node runs. One unparseable field used to take the
+    whole cluster payload with it — the topic simply stopped being published,
+    which is the least debuggable way for telemetry to fail.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _instances(app) -> List[Dict[str, Any]]:
     manager = app.get("instances")
     if manager is None:
@@ -102,19 +116,43 @@ def _cluster(app) -> Optional[Dict[str, Any]]:
 
     for node in members:
         status = node.status.value if hasattr(node.status, "value") else str(node.status)
-        vram = float(getattr(node, "gpu_memory_gb", 0) or 0)
+        vram = _as_float(getattr(node, "gpu_memory_gb", 0))
         total_vram += vram
         if status in ("online", "serving", "member-ready"):
             online += 1
-        nodes.append({
+        # The node object carries megabytes; the percentage is computed for
+        # the HTTP response and does not exist here. Reading a field that is
+        # not there returned 0.0 for every node, on a cluster with two models
+        # loaded — a metric that is always zero is worse than no metric, since
+        # a dashboard built on it looks healthy while the node is full.
+        used_mb = _as_float(getattr(node, "gpu_memory_used_mb", 0))
+        total_mb = _as_float(getattr(node, "gpu_memory_total_mb", 0))
+        entry = {
             "node_id": node.node_id,
             "node_name": getattr(node, "node_name", ""),
             "status": status,
             "model": getattr(node, "model", "") or "",
             "gpu_memory_gb": round(vram, 1),
-            "gpu_memory_used_percent": round(
-                float(getattr(node, "gpu_memory_used_pct", 0) or 0), 1),
-        })
+        }
+        if total_mb:
+            entry["gpu_memory_used_mb"] = round(used_mb)
+            entry["gpu_memory_total_mb"] = round(total_mb)
+            entry["gpu_memory_used_percent"] = round(used_mb / total_mb * 100, 1)
+        utilization = getattr(node, "gpu_utilization", None)
+        if isinstance(utilization, (int, float)):
+            entry["gpu_utilization_percent"] = round(float(utilization), 1)
+        # A node on another build can send anything here; iterating a value
+        # that is not a list would drop the whole cluster payload.
+        raw_instances = getattr(node, "instances", None)
+        instances = [
+            {"model": i.get("model"), "api_port": i.get("api_port"),
+             "status": i.get("status")}
+            for i in (raw_instances if isinstance(raw_instances, list) else [])
+            if isinstance(i, dict) and i.get("model")
+        ]
+        if instances:
+            entry["instances"] = instances
+        nodes.append(entry)
 
     return {
         "nodes_total": len(nodes),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from aiohttp import ClientTimeout as _ClientTimeout
 from aiohttp import web
 
 from ainode.api.params import as_object, int_field, str_field
@@ -21,6 +22,7 @@ def register_telemetry_routes(app: web.Application) -> None:
     app.router.add_post("/api/telemetry/mqtt/test", handle_test)
     app.router.add_post("/api/telemetry/mqtt/publish", handle_publish_now)
     app.router.add_get("/api/telemetry/preview", handle_preview)
+    app.router.add_post("/api/telemetry/mqtt/apply-to-cluster", handle_apply_to_cluster)
 
 
 def _settings(config) -> dict:
@@ -175,6 +177,60 @@ async def handle_publish_now(request: web.Request) -> web.Response:
             {"error": f"{type(exc).__name__}: {exc}"}, status=502)
     return web.json_response({"ok": True, "published": sent,
                               "topics": _topic_examples(config)})
+
+
+async def handle_apply_to_cluster(request: web.Request) -> web.Response:
+    """Copy this node's MQTT settings to every other node.
+
+    Each node publishes its OWN system metrics — CPU, memory, disk, the load
+    on its own interfaces — because no other node can see them: the discovery
+    announcement carries GPU and status, not a machine's vital signs. So
+    configuring the broker on the head produced telemetry for exactly one of
+    three machines, which is the shape the operator actually noticed.
+
+    The password goes with the settings, over the coordination network, in
+    the clear. That network is the one the cluster already trusts for model
+    loads and SSH, and a broker password that only works on one node is not a
+    security measure. It is worth knowing, so it is said here and in the UI.
+    """
+    config = request.app["config"]
+    cluster = request.app.get("cluster_state")
+    session = request.app.get("client_session")
+    if cluster is None or session is None:
+        return web.json_response(
+            {"error": "The cluster is not available on this node."}, status=503)
+
+    payload = dict(_settings(config))
+    password = _password(request)
+    if password:
+        payload["mqtt_password"] = password
+
+    results = []
+    for node in cluster.members():
+        if node.node_id == config.node_id:
+            continue
+        host = (getattr(node, "fabric_ip", "") or "").strip()
+        label = getattr(node, "node_name", "") or node.node_id
+        if not host:
+            results.append({"node": label, "ok": False,
+                            "error": "no fabric address"})
+            continue
+        url = f"http://{host}:{node.web_port}/api/telemetry/mqtt"
+        try:
+            async with session.put(url, json=payload,
+                                   timeout=_ClientTimeout(total=20)) as resp:
+                body = await resp.json()
+                results.append({"node": label, "ok": resp.status == 200,
+                                "error": body.get("error", "")})
+        except Exception as exc:
+            results.append({"node": label, "ok": False,
+                            "error": f"{type(exc).__name__}: {exc}"})
+
+    applied = sum(1 for r in results if r["ok"])
+    return web.json_response(
+        {"ok": all(r["ok"] for r in results), "applied": applied,
+         "results": results},
+        status=200 if all(r["ok"] for r in results) else 207)
 
 
 async def handle_preview(request: web.Request) -> web.Response:
