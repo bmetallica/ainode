@@ -61,10 +61,14 @@ class InstanceRecord:
 
     @classmethod
     def from_dict(cls, d: dict) -> "InstanceRecord":
-        """Parse a wire dict, ignoring unknown keys (forward-compatible)."""
-        fields = (
-            "instance_id", "model", "head_node_id", "member_node_ids",
-            "peer_ips", "api_port", "tensor_parallel_size",
-            "pipeline_parallel_size", "data_parallel_size", "status",
-        )
-        return cls(**{k: d[k] for k in fields if k in d})
+        """Parse a wire dict, ignoring unknown keys (forward-compatible).
+
+        The accepted names come from the dataclass, not from a list repeated
+        here. The list drifted: load_error, load_phase and load_detail were
+        added to the record and serialised by to_dict, and then dropped on
+        arrival — so a failure on one node reached the head as a blank, and the
+        dashboard filled the blank with whatever the head's own engine was
+        doing. Two models on two machines showed the same message.
+        """
+        known = set(cls.__dataclass_fields__)
+        return cls(**{k: v for k, v in d.items() if k in known})
