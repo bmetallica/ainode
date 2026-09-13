@@ -218,3 +218,54 @@ class TestThePhaseFollowsThisVllm:
         t = self._phase_after("INFO Loading model from scratch...",
                               "INFO:     Application startup complete.")
         assert t.current() == "ready"
+
+
+class TestAnExceptionThatContinues:
+    """Some exceptions say nothing on their own line.
+
+    From the cluster: "ValidationError: 1 validation error for ModelConfig" —
+    the same sentence whichever argument was wrong. The field name and the
+    rejected value, the only parts anyone can act on, are on the lines after
+    it, and the failure message stopped at the first.
+    """
+
+    def _failed(self, *lines):
+        tracker = LoadPhaseTracker()
+        tracker.reset()
+        for line in lines:
+            tracker.observe(line)
+        tracker.fail("the launcher exited (code 1)")
+        return tracker.failure_reason()
+
+    def test_the_rejected_value_survives(self):
+        reason = self._failed(
+            "pydantic_core._pydantic_core.ValidationError: 1 validation error for ModelConfig",
+            "quantization",
+            "  Input should be 'awq', 'gptq' or 'modelopt' [input_value='modelopt_mixed']",
+        )
+        assert "quantization" in reason
+        assert "modelopt_mixed" in reason
+
+    def test_teardown_noise_is_not_appended(self):
+        reason = self._failed(
+            "ValidationError: 1 validation error for ModelConfig",
+            "Stopping cluster...",
+            "Cluster stopped.",
+        )
+        assert "Stopping cluster" not in reason
+
+    def test_an_ordinary_exception_is_not_extended(self):
+        # Only exceptions known to continue: appending the next lines to a
+        # RuntimeError would re-quote the teardown banner this already avoids.
+        reason = self._failed(
+            "RuntimeError: CUDA driver error: an illegal instruction was encountered",
+            "terminate called after throwing an instance of 'c10::AcceleratorError'",
+        )
+        assert "terminate called" not in reason
+
+    def test_the_message_stays_bounded(self):
+        reason = self._failed(
+            "ValidationError: 1 validation error for ModelConfig",
+            *["x" * 300 for _ in range(10)],
+        )
+        assert len(reason) < 1200
