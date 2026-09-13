@@ -193,6 +193,18 @@ class TestTheContextLengthMatchesTheCheckpoint:
     def test_the_catalog_advertises_the_same(self):
         assert CURATED_CLUSTER_MODELS["glm-5.3-flash-nvfp4-spark"].context_length == 262144
 
+    def test_the_reason_is_the_measured_one(self):
+        # The 262144 limit originally came from the MTP module's config, and
+        # dropping the speculative config removed that constraint — the main
+        # architecture accepts 1M. What remains is that 1M does not fit: a
+        # three-node launch with it was killed for memory during startup.
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parent.parent / "ainode" / "models" /
+               "registry.py").read_text()
+        assert "exit 137" in src
+        assert "no longer a hard limit" in src
+
     def test_the_override_is_not_used(self):
         from pathlib import Path
 
@@ -205,7 +217,7 @@ class TestTheContextLengthMatchesTheCheckpoint:
 
         src = (Path(__file__).resolve().parent.parent / "ainode" / "models" /
                "registry.py").read_text()
-        assert "max_position_embeddings=262144" in src
+        assert "derived max_model_len (262144)" in src
 
 
 def _env_values(src: str) -> str:
@@ -293,7 +305,7 @@ class TestWhatTheHardwareContradicted:
 
         src = (Path(__file__).resolve().parent.parent / "ainode" / "models" /
                "registry.py").read_text()
-        for evidence in ("max_position_embeddings=262144",
+        for evidence in ("derived max_model_len (262144)",
                          "GPU host page",
                          "HFValidationError"):
             assert evidence in src, evidence
