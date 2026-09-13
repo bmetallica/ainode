@@ -98,7 +98,7 @@ class TestItReachesTheEngine:
         plan, note = plan_for_model(Strategy.AUTO, 2, catalog_proven_tp(MODEL))
         assert plan.tensor_parallel_size == 2 and note == ""
 
-    def test_the_speculative_json_survives_the_shell(self):
+    def test_the_b12x_values_survive_the_shell(self):
         backend = self._backend()
         script = Path(backend._write_launch_script(ParallelPlan(tensor_parallel_size=2)))
         bindir = Path(tempfile.mkdtemp())
@@ -111,9 +111,11 @@ class TestItReachesTheEngine:
                        env=dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}"),
                        capture_output=True, timeout=60)
         argv = json.loads(out.read_text())
-        spec = argv[argv.index("--speculative-config") + 1]
-        assert json.loads(spec)["attention_backend"] == "B12X"
+        # The speculative config is gone from this recipe (see
+        # TestWhatTheHardwareContradicted); the attention backend is the
+        # remaining B12X argument whose value must survive the shell.
         assert argv[argv.index("--attention-backend") + 1] == "B12X"
+        assert argv[argv.index("--kv-cache-memory-bytes") + 1] == "8G"
 
     def test_the_recipe_dtype_is_not_duplicated(self):
         # The writer adds --dtype bfloat16 on unified memory; the recipe sets
@@ -256,3 +258,48 @@ class TestTheB12xLoaderFailureIsNamed:
         # on a failure that has nothing to do with the loader.
         reason = self._failure("INFO [core.py:372] init engine took 150 s")
         assert "--load-format auto" not in reason
+
+
+class TestWhatTheHardwareContradicted:
+    """Three flags from the upstream recipe do not work on this setup.
+
+    Each was measured on the cluster, not reasoned about:
+
+      --max-model-len 1048576   the checkpoint says max_position_embeddings
+                                262144, and vLLM refuses the mismatch
+      --load-format b12x        RuntimeError: the initial b12x loader requires
+                                GPU host page tables
+      --speculative-config …    HFValidationError on the local model path;
+                                without it the same launch reached warmup
+    """
+
+    def test_the_loader_is_the_ordinary_one(self):
+        args = catalog_recipe(MODEL)["extra_vllm_args"]
+        assert args[args.index("--load-format") + 1] == "auto"
+
+    def test_no_speculative_config(self):
+        args = catalog_recipe(MODEL)["extra_vllm_args"]
+        assert not any("speculative" in a for a in args)
+
+    def test_the_b12x_backends_are_still_there(self):
+        # Only the loader was dropped; the stack the model needs remains.
+        args = catalog_recipe(MODEL)["extra_vllm_args"]
+        assert args[args.index("--moe-backend") + 1] == "b12x"
+        assert args[args.index("--linear-backend") + 1] == "b12x"
+        assert args[args.index("--attention-backend") + 1] == "B12X"
+
+    def test_each_deviation_is_recorded_with_its_evidence(self):
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parent.parent / "ainode" / "models" /
+               "registry.py").read_text()
+        for evidence in ("max_position_embeddings=262144",
+                         "GPU host page",
+                         "HFValidationError"):
+            assert evidence in src, evidence
+
+    def test_the_description_says_two_nodes_is_tight(self):
+        # Measured: a two-node launch reached warmup and was killed for
+        # memory. The catalog should not imply it is the comfortable setup.
+        info = CURATED_CLUSTER_MODELS["glm-5.3-flash-nvfp4-spark"]
+        assert "killed for memory" in info.description
