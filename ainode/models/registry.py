@@ -529,17 +529,21 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # and the rest of the B12X stack — attention, MoE, linear — does
             # not depend on it. auto loads the same weights the ordinary way.
             "--load-format", "auto",
-            # The recipe asks for 1048576. The checkpoint's own config.json
-            # says max_position_embeddings=262144, and vLLM refuses the
-            # mismatch outright:
+            # The recipe asks for 1048576. Two separate reasons not to.
             #
-            #   ValidationError: User-specified max_model_len (1048576) is
-            #   greater than the derived max_model_len (262144)
+            # First, while the speculative config was still in play vLLM
+            # refused it outright — "User-specified max_model_len (1048576) is
+            # greater than the derived max_model_len (262144)". That 262144
+            # came from the MTP module's own config, and with the speculative
+            # config dropped the main architecture resolves instead and
+            # accepts 1M. So this is no longer a hard limit.
             #
-            # There is an escape hatch, VLLM_ALLOW_LONG_MAX_MODEL_LEN=1, and
-            # it is the wrong answer: vLLM's own warning is that positions
-            # beyond the derived maximum produce NaN under RoPE. The model
-            # wins over the recipe.
+            # Second, and now the real one: it does not fit. With 1M accepted,
+            # a three-node pipeline launch was killed for memory during
+            # startup (exit 137) — the context length sizes per-sequence
+            # bookkeeping whether or not anyone sends a million tokens.
+            # 262144 is a length this cluster can actually hold; raise it in
+            # the launch panel and watch the memory if you want more.
             "--max-model-len", "262144",
             "--max-num-seqs", "4",
             "--max-num-batched-tokens", "4096",
