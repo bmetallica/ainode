@@ -57,6 +57,21 @@ scripts/update-cluster.sh --head 192.168.1.2 --nodes Spark2,Spark3 --registry
 Das Engine-Image wird dabei **nicht** neu gebaut. Wenn doch nötig: `--base`
 (dann 15–25 Minuten länger).
 
+**Wie lange der Orchestrator-Build dauert:** Eine reine Code-Änderung ist eine
+Sache von Sekunden — die Abhängigkeiten liegen in einer eigenen Schicht, die
+nur neu gebaut wird, wenn sich die `pyproject.toml` ändert. Passiert das,
+werden mit `[embeddings]` rund 1,1 GB geladen (Torch 454 MB, cuDNN 651 MB); ein
+pip-Cache sorgt dafür, dass das beim übernächsten Mal wieder entfällt.
+
+Wer die Embedding-Modelle nicht braucht, baut deutlich schlanker und schneller:
+
+```bash
+docker build -f scripts/Dockerfile.ainode --build-arg AINODE_EXTRAS="" -t ainode:dev .
+```
+
+Dann fehlt Torch im Orchestrator — die Embeddings-Karte im UI zeigt beim Laden
+einen Hinweis statt eines Modells. Alles andere bleibt gleich.
+
 Der Rest dieser Seite beschreibt dieselben Schritte von Hand — nützlich, wenn
 etwas schiefgeht oder du wissen willst, was der Updater tut.
 
