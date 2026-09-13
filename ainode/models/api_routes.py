@@ -1175,28 +1175,34 @@ async def handle_delete_repo(request: web.Request) -> web.Response:
         return web.json_response({"error": "hf_repo required"}, status=400)
 
     manager: ModelManager = request.app["model_manager"]
-    slug = hf_repo.replace("/", "--")
-    target = Path(manager.models_dir) / slug
+    # Every layout, not just models_dir/<org>--<name>: an aborted download or
+    # an out-of-band pull lands in huggingface_hub's cache instead, which
+    # list_downloaded() reports and this handler used to declare absent.
+    targets = manager.model_dirs_for_repo(hf_repo)
 
-    if not target.exists() or not target.is_dir():
+    if not targets:
         return web.json_response({"error": f"Model not downloaded: {hf_repo}"}, status=404)
 
     # Safety: ensure we're deleting inside models_dir
     try:
-        target_resolved = target.resolve()
         models_resolved = Path(manager.models_dir).resolve()
-        if not str(target_resolved).startswith(str(models_resolved)):
-            return web.json_response({"error": "refusing to delete outside models_dir"}, status=400)
+        for target in targets:
+            if not str(target.resolve()).startswith(str(models_resolved)):
+                return web.json_response(
+                    {"error": "refusing to delete outside models_dir"}, status=400)
     except Exception:
         return web.json_response({"error": "path resolution failed"}, status=500)
 
     try:
-        size_gb = manager._dir_size_gb(target)
-        shutil.rmtree(target)
+        size_gb = 0.0
+        for target in targets:
+            size_gb += manager._dir_size_gb(target)
+            shutil.rmtree(target)
         return web.json_response({
             "status": "deleted",
             "hf_repo": hf_repo,
             "freed_gb": round(size_gb, 2),
+            "removed": [str(t) for t in targets],
         })
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
