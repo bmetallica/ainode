@@ -236,7 +236,8 @@ def validate_plan(plan: ParallelPlan, node_count: int) -> None:
         )
 
 
-def plan_for_model(strategy, node_count: int, proven_tp: int = 0):
+def plan_for_model(strategy, node_count: int, proven_tp: int = 0,
+                   supports_pipeline: bool = True):
     """Plan a split, respecting what the catalog says the model was proven at.
 
     Returns ``(plan, note)``; ``note`` is "" or one plain sentence for the
@@ -257,6 +258,27 @@ def plan_for_model(strategy, node_count: int, proven_tp: int = 0):
     """
     resolved = Strategy.parse(strategy)
     limit = max(0, int(proven_tp or 0))
+
+    if not supports_pipeline:
+        # Refusing here costs a click. The alternative is a launch that loads
+        # for minutes across every node and then raises NotImplementedError,
+        # which is what happened before this check existed.
+        would_pipeline = resolved is Strategy.PIPELINE or (
+            resolved in (Strategy.AUTO, Strategy.TENSOR)
+            and node_count not in TENSOR_PARALLEL_SIZES
+        ) or (resolved is Strategy.AUTO and limit >= 1 and node_count > limit)
+        if would_pipeline:
+            usable = [n for n in TENSOR_PARALLEL_SIZES if n <= node_count]
+            if limit >= 1:
+                usable = [n for n in usable if n <= limit]
+            best = max(usable) if usable else 1
+            raise ParallelPlanError(
+                f"This model cannot be split along the pipeline axis — vLLM "
+                f"implements that per architecture and this one does not. "
+                f"Tensor-parallel is the only axis, and it needs a "
+                f"power-of-two rank count, so {node_count} nodes have no valid "
+                f"split. Select exactly {best} node(s)."
+            )
 
     if limit >= 1 and node_count > limit:
         wants_tensor = resolved is Strategy.TENSOR or (

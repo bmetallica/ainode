@@ -259,11 +259,12 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     # Resolve the split now that the node set is final. This is where a 3-node
     # tensor-parallel request is refused — with the alternatives named, before
     # anything is launched — instead of failing inside vLLM's engine startup.
-    from ainode.models.api_routes import catalog_proven_tp
+    from ainode.models.api_routes import catalog_proven_tp, catalog_supports_pipeline
 
     try:
         plan, plan_note = plan_for_model(
-            strategy, 1 + len(chosen_peers), catalog_proven_tp(model)
+            strategy, 1 + len(chosen_peers), catalog_proven_tp(model),
+            supports_pipeline=catalog_supports_pipeline(model),
         )
     except ParallelPlanError as exc:
         return web.json_response({
@@ -513,9 +514,14 @@ async def handle_sharding_relaunch(request: web.Request) -> web.Response:
     # instance down to 3 nodes has no valid tensor split).
     strategy = body.get("strategy")   # see the note in handle_sharding_launch
     try:
-        from ainode.models.api_routes import catalog_proven_tp
+        from ainode.models.api_routes import (
+            catalog_proven_tp,
+            catalog_supports_pipeline,
+        )
 
-        plan, _ = plan_for_model(strategy, node_count, catalog_proven_tp(model))
+        plan, _ = plan_for_model(
+            strategy, node_count, catalog_proven_tp(model),
+            supports_pipeline=catalog_supports_pipeline(model))
     except ParallelPlanError as exc:
         return web.json_response({
             "error": str(exc), "model": model,

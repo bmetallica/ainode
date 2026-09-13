@@ -341,6 +341,22 @@ def catalog_proven_tp(model: str) -> int:
     return 0
 
 
+def catalog_supports_pipeline(model: str) -> bool:
+    """False for a curated model vLLM cannot pipeline. True for anything else.
+
+    Unknown models are assumed to support it: refusing a launch on a guess
+    would be worse than the failure this prevents, which is at least explicit.
+    """
+    from ainode.models.registry import CURATED_CLUSTER_MODELS
+    m = (model or "").strip()
+    if not m:
+        return True
+    for info in CURATED_CLUSTER_MODELS.values():
+        if m in (info.id, info.hf_repo):
+            return bool(getattr(info, "supports_pipeline", True))
+    return True
+
+
 def catalog_recipe(model: str) -> dict:
     """Proven launch recipe for a curated model, matched on catalog id OR hf_repo.
 
