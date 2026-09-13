@@ -976,10 +976,32 @@ class EugrBackend(EngineBackend):
         if not model:
             return
         models_dir = self.config.models_dir or "/root/.ainode/models"
-        # HF_HOME is set to models_dir (see _build_env), so the cache lands in
-        # models_dir/hub/models--org--name — the layout registry.py scans.
-        hub = str(Path(models_dir) / "hub")
-        dir_name = hf_cache_dir_name(model)
+
+        # Distribute the directory the launch will actually SERVE FROM.
+        #
+        # These two used to disagree. The launch serves the flat org--name
+        # directory our downloader writes; the distribution copied the
+        # Hugging Face cache layout, models_dir/hub/models--org--name. On a
+        # cluster where the operator downloaded through the UI, the source of
+        # that copy did not exist, so nothing was distributed — silently,
+        # because a missing source is the normal "the peer already has it"
+        # case — and the peer then had no such path. transformers falls back
+        # to the Hub for a path it cannot find, and the launch died on the
+        # worker with
+        #
+        #   HFValidationError: Repo id must be in the form 'repo_name' or
+        #   'namespace/repo_name': '/models/local-inference-lab--GLM-5.3-…'
+        #
+        # while the head, which had the weights, showed nothing wrong.
+        local = local_model_dir(model, models_dir)
+        if local:
+            source_parent = models_dir
+            dir_name = Path(local).name
+        else:
+            # Serving by repo id: vLLM resolves through the HF cache, so that
+            # is the layout the peers need.
+            source_parent = str(Path(models_dir) / "hub")
+            dir_name = hf_cache_dir_name(model)
 
         for peer_ip in self.config.peer_ips:
             transfer_ip = self._transfer_ip(peer_ip)
@@ -987,9 +1009,9 @@ class EugrBackend(EngineBackend):
                 placed = ensure_peer_has_dir(
                     ssh_user=self.config.ssh_user,
                     transfer_ip=transfer_ip,
-                    source_parent=hub,
+                    source_parent=source_parent,
                     dir_name=dir_name,
-                    target_parent=hub,
+                    target_parent=source_parent,
                     label="direct RoCE link" if transfer_ip != peer_ip else "",
                     on_start=lambda ip=transfer_ip: self._progress(
                         "distributing",
@@ -1006,10 +1028,19 @@ class EugrBackend(EngineBackend):
                 )
                 continue
             if not placed:
-                logger.info(
-                    "%s is not in %s on this node; leaving each rank to fetch it",
-                    dir_name, hub,
+                # The head does not have it either, so there is nothing to
+                # send. Said at warning level: every rank will now fetch the
+                # weights itself, which is slow, and on a model served by path
+                # it does not work at all.
+                logger.warning(
+                    "%s is not in %s on this node; every rank will have to "
+                    "fetch the model itself", dir_name, source_parent,
                 )
+                self._progress(
+                    "distributing",
+                    f"{model} is not on this node's disk — each rank will "
+                    f"fetch it, which is slow and fails for a model served "
+                    f"from a path", self._distributed_log)
                 return
 
     def _parallel_plan(self) -> ParallelPlan:
