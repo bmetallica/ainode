@@ -991,6 +991,22 @@ async def handle_cluster_unload(request: web.Request) -> web.Response:
     return await _cluster_dispatch(request, "/api/models/unload")
 
 
+def _instance_can_answer(inst: dict) -> bool:
+    """True for an instance a request can actually be sent to.
+
+    The dashboard wants every instance with its true state, including the ones
+    still loading — that is what makes a twenty-minute launch visible. A client
+    reading /v1/models wants the opposite: a model listed there is one it may
+    call, and listing a loading model put it in OpenWebUI's dropdown minutes
+    before it could answer. Same data, two audiences.
+
+    A record from an older build carries no status; treating that as serving
+    keeps those nodes routable, which is how they behaved before.
+    """
+    status = str(inst.get("status") or "serving")
+    return status in ("serving", "member-ready")
+
+
 def _routing_candidates(cluster, model: str, local_node_id: str, local_port: int) -> list:
     """All (host, port) currently serving `model` (routing-truth).
 
@@ -1019,7 +1035,7 @@ def _routing_candidates(cluster, model: str, local_node_id: str, local_port: int
         # Each stacked instance is served on its OWN port — a co-resident 2nd
         # model on this node lives at :8001, not the node's main :8000.
         for inst in (getattr(n, "instances", []) or []):
-            if inst.get("model") != model:
+            if inst.get("model") != model or not _instance_can_answer(inst):
                 continue
             iport = inst.get("api_port") or node_port
             if iport not in seen:
@@ -1049,7 +1065,7 @@ def _routing_table(cluster, local_node_id: str, local_port: int) -> dict:
             table.setdefault(n.model, (host, port))
         for inst in (getattr(n, "instances", []) or []):
             m = inst.get("model")
-            if m:
+            if m and _instance_can_answer(inst):
                 table.setdefault(m, (host, inst.get("api_port") or port))
     return table
 
