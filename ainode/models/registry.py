@@ -431,15 +431,20 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         id="gemma4-31b-it-nvfp4",
         name="Gemma 4 31B Instruct (NVFP4)",
         hf_repo="nvidia/Gemma-4-31B-IT-NVFP4",
-        # Dense 31B at 4 bits/param is ~15.5 GB of weights; the rest is
-        # arithmetic, not a measurement, so min_memory_gb leaves room for a
-        # working KV cache rather than pretending to know the exact footprint.
-        size_gb=15.5, min_memory_gb=24,
+        # MEASURED, 31 GB on disk — not the 15.5 GB that four bits a parameter
+        # would suggest. The checkpoint is not uniformly 4-bit; embeddings and
+        # the head carry more. The guess mattered: on bandwidth-bound hardware
+        # the weight size IS the decode speed, and half the size predicts twice
+        # the tokens per second.
+        size_gb=31.0, min_memory_gb=40,
         description=(
-            "Dense 31B instruct model in NVFP4 — the larger, non-MoE sibling of "
-            "Gemma 4 26B-A4B. Dense means bandwidth-bound decode on GB10: fewer "
-            "tokens per second than the MoE at the same size, better at holding "
-            "a long instruction. Fits one node."
+            "Dense 31B instruct model in NVFP4. Dense means bandwidth-bound "
+            "decode on GB10: ~8 tok/s single-stream, which is the 273 GB/s "
+            "memory bus divided by 31 GB of weights, not a misconfiguration. "
+            "For an everyday chat model serving several people at once, the "
+            "MoE sibling (Gemma 4 26B-A4B) reads a fraction of its weights per "
+            "token and is several times faster here. This one is the better "
+            "instruction-follower. Fits one node."
         ),
         quantization="NVFP4", family="gemma", params_b=31.0,
         proven_tp=1, verified=False, curated=True,
