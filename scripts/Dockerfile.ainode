@@ -100,18 +100,38 @@ RUN pip install --no-cache-dir \
       hf_transfer \
       paramiko
 
-# Copy only the minimal set needed for `pip install .` so code edits
-# invalidate the smallest layer possible.
-COPY pyproject.toml README.md /src/
-COPY ainode /src/ainode
+# Dependencies first, from pyproject ALONE. This layer is the expensive one —
+# with [embeddings] it pulls torch (454 MB) and cuDNN (651 MB) — and it must
+# not depend on our source code. It used to: the package directory was copied
+# in before the install, so every edit to a Python file re-downloaded a
+# gigabyte of wheels. An hour per build on a domestic line, for a one-line
+# change.
+#
+# The stub package exists so pip can build a wheel from pyproject and resolve
+# its dependencies without the real source. It is replaced immediately below.
+#
 # [embeddings] pulls sentence-transformers (and torch). Without it the
 # Embeddings tab renders a Load button that can only fail: the manager raises
 # an install hint at first use. Torch adds roughly 2 GB to a nominally slim
 # image — the alternative is a visible feature that does not work, which is
-# worse. Build with --build-arg AINODE_EXTRAS="" for the lean orchestrator.
+# worse. Build with --build-arg AINODE_EXTRAS="" for the lean orchestrator:
+# smaller image, much faster build, no embedding models.
+COPY pyproject.toml README.md /src/
 ARG AINODE_EXTRAS="[embeddings]"
-RUN pip install --no-cache-dir "/src${AINODE_EXTRAS}" \
-    && rm -rf /src /root/.cache/pip
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    set -eux; \
+    mkdir -p /src/ainode; \
+    printf '' > /src/ainode/__init__.py; \
+    pip install "/src${AINODE_EXTRAS}"; \
+    rm -rf /src/ainode
+
+# Then the code. --no-deps because the line above already resolved everything,
+# so this layer is a few hundred kilobytes of Python and takes a second — which
+# is what a code change should cost.
+COPY ainode /src/ainode
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    pip install --no-deps /src \
+    && rm -rf /src
 
 # -- Bundled scripts -------------------------------------------------------
 # run_cluster.sh is NVIDIA/vLLM upstream's canonical Ray-in-Docker launcher.
