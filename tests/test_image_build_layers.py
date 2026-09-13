@@ -36,24 +36,42 @@ class TestLayerOrder:
 
     def test_the_source_install_resolves_nothing(self):
         # --no-deps, or the expensive layer happens twice.
-        assert "pip install --no-deps /src" in DOCKERFILE
+        assert "pip install --no-deps" in DOCKERFILE
+
+    def test_the_source_install_cannot_reuse_the_stub_wheel(self):
+        # pip's wheel cache keys a locally built wheel on the source path and
+        # version — both identical between the stub and the real package. It
+        # reused the stub, and the image shipped an empty ainode package:
+        # "ImportError: cannot import name '__version__' from 'ainode'",
+        # crash-looping the service on every node.
+        assert "--force-reinstall" in DOCKERFILE
+        source_install = re.search(r"RUN pip install --no-deps[^\n]*", DOCKERFILE)
+        assert source_install and "--no-cache-dir" in source_install.group(0)
+
+    def test_the_build_proves_the_real_package_landed(self):
+        # An empty package passes every test that runs against the repository
+        # and fails only on the node.
+        assert "ainode.cli.main" in DOCKERFILE
+        assert "web assets missing" in DOCKERFILE
 
     def test_only_pyproject_is_copied_for_the_dependency_layer(self):
         before = DOCKERFILE[:_index('pip install "/src${AINODE_EXTRAS}"')]
         assert "COPY pyproject.toml README.md /src/" in before
         assert "COPY ainode /src/ainode" not in before
 
-    def test_the_pip_cache_is_mounted(self):
+    def test_the_pip_cache_is_mounted_for_the_expensive_layer(self):
         # So a dependency change reuses what is already downloaded instead of
-        # fetching 1.1 GB again.
-        assert DOCKERFILE.count("--mount=type=cache,target=/root/.cache/pip") >= 2
+        # fetching 1.1 GB again. Only there: the source install must not see
+        # the cache at all, or it finds the stub wheel.
+        assert DOCKERFILE.count("--mount=type=cache,target=/root/.cache/pip") == 1
 
-    def test_no_no_cache_dir_where_the_cache_is_mounted(self):
+    def test_the_cached_layer_does_not_also_say_no_cache_dir(self):
         # The two contradict each other: --no-cache-dir tells pip not to use
         # the very directory the mount provides.
-        for block in re.findall(r"RUN --mount=type=cache,target=/root/\.cache/pip.*?(?=\nRUN |\nCOPY |\nARG |\Z)",
-                                DOCKERFILE, re.S):
-            assert "--no-cache-dir" not in block, block[:200]
+        block = re.search(
+            r"RUN --mount=type=cache,target=/root/\.cache/pip.*?(?=\n(?:RUN|COPY|ARG|#|\Z))",
+            DOCKERFILE, re.S)
+        assert block and "--no-cache-dir" not in block.group(0), block
 
 
 class TestTheStubIsEnough:
