@@ -203,6 +203,26 @@ hat (`instances.json`).
 
 ---
 
+## Wenn etwas nicht läuft
+
+```bash
+cd /opt/ainode
+scripts/diagnose.sh --nodes Spark2,Spark3 > report.txt
+```
+
+Sammelt in einem Durchlauf: Versionen, Cluster- und Instanzzustand samt
+Ladephase und Fehlermeldung **pro Instanz**, das tatsächlich erzeugte
+Startskript, Mounts und Environment des Engine-Containers, Image-IDs auf allen
+Knoten, was an Modellen auf der Platte liegt, die Konfiguration, und aus den
+Logs die Zeilen, die etwas bedeuten (Ladezeiten, Phasen, Fehler) statt der
+600 KB Durchsatzzähler.
+
+Das Skript ist **nur lesend** — es stoppt, entfernt und startet nichts. Tokens,
+Passwörter und das Cluster-Secret werden ersetzt, bevor etwas ausgegeben wird.
+Trotzdem: einmal überfliegen, bevor du es verschickst.
+
+---
+
 ## Bekannte Stolpersteine
 
 | Symptom | Ursache | Behebung |
