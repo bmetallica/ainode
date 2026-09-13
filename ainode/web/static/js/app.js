@@ -1012,15 +1012,23 @@ const AINode = {
       (n.instances || []).forEach(function (inst) {
         var im = inst.model;
         if (!im || (distModel && im === distModel)) return;
-        // Skip the primary (already shown above): same model on the node's main port.
-        if (im === n.model && (inst.api_port == null || inst.api_port === n.api_port)) return;
+        // The node's own main port is the primary, whatever n.model says. A
+        // node blanks n.model until its engine answers (api/server.py, so a
+        // dead engine never advertises a phantom model), so during a load the
+        // "same model on the main port" test could not match and the primary
+        // was drawn as a stacked card: "STACKED · :8000" on a node running
+        // exactly one model. The port is the thing that actually decides it.
+        var isPrimary = inst.api_port == null || inst.api_port === n.api_port;
+        // Skip the primary only when the SINGLE card above already drew it.
+        if (isPrimary && im === n.model) return;
         var skey = im + '@' + (n.node_id || n.hostname) + ':' + (inst.api_port || '');
         if (seen[skey]) return;
         seen[skey] = true;
         instances.push({
           model: im,
-          strategy: 'stacked',
-          nodes: [host + (inst.api_port ? ':' + inst.api_port : '')],
+          strategy: isPrimary ? 'single' : 'stacked',
+          nodes: [isPrimary ? host
+            : host + (inst.api_port ? ':' + inst.api_port : '')],
           // Use the stacked instance's OWN status, not the node's primary
           // readiness. n.engine_ready reflects the PRIMARY engine (and for the
           // local node is hardcoded online → always true), so OR-ing it in made
@@ -1028,7 +1036,8 @@ const AINode = {
           // primary was up. inst.status is the per-instance truth (the head
           // only advertises live instances, flipped to `serving`).
           status: inst.status === 'serving' ? 'READY' : 'STARTING',
-          badge: 'STACKED' + (inst.api_port ? ' · :' + inst.api_port : ''),
+          badge: isPrimary ? 'SINGLE'
+            : 'STACKED' + (inst.api_port ? ' · :' + inst.api_port : ''),
           // Per-instance, from the record that crossed the wire. The node's
           // load_error is ONE value per node and used to be painted on every
           // card: two models failing on two different machines showed the same
