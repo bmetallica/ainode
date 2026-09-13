@@ -492,15 +492,16 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         # calculator would then present as fact.
         size_gb=0.0, min_memory_gb=130,
         description=(
-            "1M context on an EXPERIMENTAL B12X serving stack. Needs its own "
+            "256K context on an EXPERIMENTAL B12X serving stack. Needs its own "
             "engine image (vllm-node-b12x) and exactly two nodes — it does not "
             "run on one. Build the image first: see docs/mesh/B12X-IMAGE.md. "
             "Untested by us; the flags and environment come from the upstream "
-            "recipe verbatim."
+            "recipe verbatim, apart from the context length, which the "
+            "checkpoint itself contradicts."
         ),
         quantization="NVFP4", family="glm", params_b=0.0,
         proven_tp=2, verified=False, curated=True,
-        context_length=1048576, license="MIT", recommended=False,
+        context_length=262144, license="MIT", recommended=False,
         format="nvfp4", capabilities=["tool_use", "reasoning", "code"],
         # Everything below is eugr/spark-vllm-docker's recipes/glm-5.3-flash.yaml
         # (MIT), carried over verbatim apart from the parallelism flags, which
@@ -521,7 +522,18 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "--linear-backend", "b12x",
             "--no-enable-flashinfer-autotune",
             "--load-format", "b12x",
-            "--max-model-len", "1048576",
+            # The recipe asks for 1048576. The checkpoint's own config.json
+            # says max_position_embeddings=262144, and vLLM refuses the
+            # mismatch outright:
+            #
+            #   ValidationError: User-specified max_model_len (1048576) is
+            #   greater than the derived max_model_len (262144)
+            #
+            # There is an escape hatch, VLLM_ALLOW_LONG_MAX_MODEL_LEN=1, and
+            # it is the wrong answer: vLLM's own warning is that positions
+            # beyond the derived maximum produce NaN under RoPE. The model
+            # wins over the recipe.
+            "--max-model-len", "262144",
             "--max-num-seqs", "4",
             "--max-num-batched-tokens", "4096",
             "--speculative-config",

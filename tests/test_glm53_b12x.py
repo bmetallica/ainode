@@ -169,3 +169,47 @@ class TestTheImageScript:
         text = self.SCRIPT.read_text()
         assert "_eugr-b12x" in text
         assert 'WORKTREE="$SCRIPT_DIR/_eugr"' not in text
+
+
+class TestTheContextLengthMatchesTheCheckpoint:
+    """The recipe asks for 1M; the checkpoint says 256K, and vLLM refuses.
+
+    From the cluster:
+
+        ValidationError: User-specified max_model_len (1048576) is greater
+        than the derived max_model_len (max_position_embeddings=262144.0 in
+        model's config.json)
+
+    VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 would silence it, and vLLM's own warning
+    says why not: positions beyond the derived maximum produce NaN under RoPE.
+    """
+
+    def test_the_launch_asks_for_what_the_model_has(self):
+        args = catalog_recipe(MODEL)["extra_vllm_args"]
+        assert args[args.index("--max-model-len") + 1] == "262144"
+
+    def test_the_catalog_advertises_the_same(self):
+        assert CURATED_CLUSTER_MODELS["glm-5.3-flash-nvfp4-spark"].context_length == 262144
+
+    def test_the_override_is_not_used(self):
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parent.parent / "ainode" / "models" /
+               "registry.py").read_text()
+        assert "VLLM_ALLOW_LONG_MAX_MODEL_LEN" not in _env_values(src)
+
+    def test_the_deviation_is_recorded(self):
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parent.parent / "ainode" / "models" /
+               "registry.py").read_text()
+        assert "max_position_embeddings=262144" in src
+
+
+def _env_values(src: str) -> str:
+    """The extra_env blocks only — the comment may name the variable."""
+    out = []
+    for start in range(len(src)):
+        if src.startswith("extra_env={", start):
+            out.append(src[start:src.index("}", start)])
+    return "\n".join(out)
