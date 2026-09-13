@@ -1011,7 +1011,15 @@ class EugrBackend(EngineBackend):
                     transfer_ip=transfer_ip,
                     source_parent=source_parent,
                     dir_name=dir_name,
-                    target_parent=source_parent,
+                    # The DESTINATION is a path on the peer's HOST, reached
+                    # over ssh — not a path inside this container. Passing our
+                    # own view sent the weights to /root/.ainode/models there:
+                    # root's home, which nothing mounts, while the peer's
+                    # engine container mounts the install user's directory. The
+                    # copy "succeeded" and the model was still missing, and the
+                    # existence probe checked the same wrong path, so a second
+                    # attempt reported it as already present.
+                    target_parent=host_path(source_parent),
                     label="direct RoCE link" if transfer_ip != peer_ip else "",
                     on_start=lambda ip=transfer_ip: self._progress(
                         "distributing",
@@ -1036,6 +1044,8 @@ class EugrBackend(EngineBackend):
                     "%s is not in %s on this node; every rank will have to "
                     "fetch the model itself", dir_name, source_parent,
                 )
+                logger.info("peer destination would have been %s",
+                            host_path(source_parent))
                 self._progress(
                     "distributing",
                     f"{model} is not on this node's disk — each rank will "
