@@ -109,3 +109,53 @@ class TestWhenThereIsNothingToSend:
                                side_effect=E.DistributionError("disk full")):
             with pytest.raises(E.DistributionError):
                 backend._distribute_model_to_peers()
+
+
+class TestThePeerDestinationIsAHostPath:
+    """The copy goes over ssh, so the destination is a path on the peer's HOST.
+
+    It was our own container view: /root/.ainode/models. On the peer that is
+    root's home, which nothing mounts, while the engine container there mounts
+    the install user's directory. So the transfer succeeded and the weights
+    were still missing — and the existence probe, checking the same wrong
+    path, reported them present on the next attempt.
+
+    The same class of mistake as HF_HOME, in the same file, found because the
+    model kept not being where it had just been sent.
+    """
+
+    def test_the_destination_is_translated(self, tmp_path, monkeypatch):
+        # host_path is patched rather than the environment reloaded: reloading
+        # the module rebinds its classes for every other test in the session.
+        monkeypatch.setattr(
+            E, "host_path",
+            lambda p: p.replace("/root/.ainode", "/home/admin/.ainode"))
+        models_dir = "/root/.ainode/models"
+        backend = E.EugrBackend.__new__(E.EugrBackend)
+        backend.config = NodeConfig(model=MODEL, models_dir=models_dir,
+                                    distributed_mode="head",
+                                    peer_ips=["10.0.0.2"], ssh_user="admin")
+        backend._distributed_log = tmp_path / "d.log"
+        backend._phase = E.LoadPhaseTracker()
+        backend._phase.reset()
+        with mock.patch.object(E, "local_model_dir",
+                               return_value=f"{models_dir}/{SLUG}"), \
+             mock.patch.object(E, "ensure_peer_has_dir",
+                               return_value=True) as copy:
+            backend._distribute_model_to_peers()
+        kwargs = copy.call_args.kwargs
+        # Read here, written there.
+        assert kwargs["source_parent"] == models_dir
+        assert kwargs["target_parent"] == "/home/admin/.ainode/models"
+
+    def test_without_a_host_home_both_sides_agree(self, tmp_path, monkeypatch):
+        # AINode running directly on the host: the two views coincide, and
+        # translating must not invent a difference.
+        monkeypatch.setattr(E, "host_path", lambda p: p)
+        _downloaded_flat(tmp_path)
+        backend = _backend(tmp_path)
+        with mock.patch.object(E, "ensure_peer_has_dir",
+                               return_value=True) as copy:
+            backend._distribute_model_to_peers()
+        kwargs = copy.call_args.kwargs
+        assert kwargs["target_parent"] == kwargs["source_parent"]
