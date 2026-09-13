@@ -107,8 +107,12 @@ RUN pip install --no-cache-dir \
 # gigabyte of wheels. An hour per build on a domestic line, for a one-line
 # change.
 #
-# The stub package exists so pip can build a wheel from pyproject and resolve
-# its dependencies without the real source. It is replaced immediately below.
+# The requirements are read out of pyproject rather than installed by building
+# the project. Building it needs the source, and a STUB package standing in for
+# the source was the previous attempt: same name, same version, different
+# contents. Both pip's wheel cache and Docker's layer cache key on name and
+# version, so either could hand the stub back instead of the real package —
+# and one did, shipping an image whose ainode module was an empty file.
 #
 # [embeddings] pulls sentence-transformers (and torch). Without it the
 # Embeddings tab renders a Load button that can only fail: the manager raises
@@ -116,39 +120,28 @@ RUN pip install --no-cache-dir \
 # image — the alternative is a visible feature that does not work, which is
 # worse. Build with --build-arg AINODE_EXTRAS="" for the lean orchestrator:
 # smaller image, much faster build, no embedding models.
-COPY pyproject.toml README.md /src/
+COPY pyproject.toml scripts/_deps_from_pyproject.py /src/
 ARG AINODE_EXTRAS="[embeddings]"
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     set -eux; \
-    mkdir -p /src/ainode; \
-    printf '' > /src/ainode/__init__.py; \
-    pip install "/src${AINODE_EXTRAS}"; \
-    rm -rf /src/ainode
+    python /src/_deps_from_pyproject.py /src/pyproject.toml "${AINODE_EXTRAS}" \
+        > /src/requirements.txt; \
+    cat /src/requirements.txt; \
+    pip install -r /src/requirements.txt
 
-# Then the code. --no-deps because the line above already resolved everything,
-# so this layer is a few hundred kilobytes of Python and takes a second — which
-# is what a code change should cost.
-#
-# --force-reinstall --no-cache-dir is not belt and braces, it is the fix for a
-# shipped bug: pip's wheel cache keys a locally built wheel on the source PATH
-# and version, and the stub above is built from the same /src at the same
-# version. Without these, pip reused the cached STUB wheel here and the image
-# shipped an empty ainode package — the service then crash-looped with
-# "ImportError: cannot import name '__version__' from 'ainode'".
+# Then the project itself. --no-deps because the line above resolved
+# everything, so this layer is a few hundred kilobytes of Python and takes a
+# second — which is what a code change should cost.
+COPY pyproject.toml README.md /src/
 COPY ainode /src/ainode
-RUN pip install --no-deps --no-cache-dir --force-reinstall /src \
+RUN pip install --no-deps --no-cache-dir /src \
     && rm -rf /src
 
-# Prove the real package is the one installed. This costs a second and makes
-# the failure above impossible to ship again: an empty package passes every
-# test that runs against the repository and fails only on the node.
-RUN python -c "import pathlib, ainode, ainode.cli.main, ainode.api.server, ainode.models.registry as reg; \
-assert ainode.__version__ and ainode.__version__ != '0.0.0+unknown', ainode.__version__; \
-assert reg.CURATED_CLUSTER_MODELS, 'catalog is empty'; \
-web = pathlib.Path(ainode.__file__).parent / 'web'; \
-assert (web / 'templates' / 'index.html').exists(), 'web assets missing'; \
-assert (web / 'static' / 'js' / 'app.js').exists(), 'web assets missing'; \
-print('ainode', ainode.__version__, 'installed with', len(reg.CURATED_CLUSTER_MODELS), 'curated models')"
+# Prove what was shipped. This costs a second and makes the failure above
+# impossible to ship again: an empty or stale package passes every test that
+# runs against the repository and fails only on the node.
+COPY scripts/_verify_image.py /tmp/_verify_image.py
+RUN python /tmp/_verify_image.py && rm -f /tmp/_verify_image.py
 
 # -- Bundled scripts -------------------------------------------------------
 # run_cluster.sh is NVIDIA/vLLM upstream's canonical Ray-in-Docker launcher.

@@ -13,10 +13,10 @@ again — an hour on a domestic line, for a one-line change. Observed:
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+import pytest
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -31,71 +31,87 @@ def _index(needle: str) -> int:
 
 class TestLayerOrder:
     def test_dependencies_are_installed_before_the_source_is_copied(self):
-        assert _index('pip install "/src${AINODE_EXTRAS}"') < _index(
+        assert _index("pip install -r /src/requirements.txt") < _index(
             "COPY ainode /src/ainode")
 
     def test_the_source_install_resolves_nothing(self):
         # --no-deps, or the expensive layer happens twice.
-        assert "pip install --no-deps" in DOCKERFILE
+        assert "pip install --no-deps --no-cache-dir /src" in DOCKERFILE
 
-    def test_the_source_install_cannot_reuse_the_stub_wheel(self):
-        # pip's wheel cache keys a locally built wheel on the source path and
-        # version — both identical between the stub and the real package. It
-        # reused the stub, and the image shipped an empty ainode package:
-        # "ImportError: cannot import name '__version__' from 'ainode'",
-        # crash-looping the service on every node.
-        assert "--force-reinstall" in DOCKERFILE
-        source_install = re.search(r"RUN pip install --no-deps[^\n]*", DOCKERFILE)
-        assert source_install and "--no-cache-dir" in source_install.group(0)
-
-    def test_the_build_proves_the_real_package_landed(self):
-        # An empty package passes every test that runs against the repository
-        # and fails only on the node.
-        assert "ainode.cli.main" in DOCKERFILE
-        assert "web assets missing" in DOCKERFILE
-
-    def test_only_pyproject_is_copied_for_the_dependency_layer(self):
-        before = DOCKERFILE[:_index('pip install "/src${AINODE_EXTRAS}"')]
-        assert "COPY pyproject.toml README.md /src/" in before
+    def test_the_dependency_layer_never_sees_our_source(self):
+        before = DOCKERFILE[:_index("pip install -r /src/requirements.txt")]
         assert "COPY ainode /src/ainode" not in before
+        assert "COPY pyproject.toml scripts/_deps_from_pyproject.py /src/" in before
+
+    def test_no_stub_package_is_built(self):
+        # A package with our name and version but different contents can be
+        # handed back by pip's wheel cache OR Docker's layer cache. One was,
+        # and the image shipped an empty ainode module.
+        assert "printf '' > /src/ainode/__init__.py" not in DOCKERFILE
+        assert "mkdir -p /src/ainode" not in DOCKERFILE
 
     def test_the_pip_cache_is_mounted_for_the_expensive_layer(self):
         # So a dependency change reuses what is already downloaded instead of
         # fetching 1.1 GB again. Only there: the source install must not see
-        # the cache at all, or it finds the stub wheel.
+        # the cache.
         assert DOCKERFILE.count("--mount=type=cache,target=/root/.cache/pip") == 1
+        source_install = re.search(r"RUN pip install --no-deps[^\n]*", DOCKERFILE)
+        assert source_install and "--no-cache-dir" in source_install.group(0)
 
-    def test_the_cached_layer_does_not_also_say_no_cache_dir(self):
-        # The two contradict each other: --no-cache-dir tells pip not to use
-        # the very directory the mount provides.
-        block = re.search(
-            r"RUN --mount=type=cache,target=/root/\.cache/pip.*?(?=\n(?:RUN|COPY|ARG|#|\Z))",
-            DOCKERFILE, re.S)
-        assert block and "--no-cache-dir" not in block.group(0), block
+    def test_the_build_verifies_what_it_shipped(self):
+        assert "_verify_image.py" in DOCKERFILE
+        assert _index("COPY ainode /src/ainode") < _index("_verify_image.py")
 
 
-class TestTheStubIsEnough:
-    """pip must be able to resolve dependencies from pyproject alone."""
+class TestTheRequirementsExtractor:
+    """It replaces building a stub package, so it has to be exactly right."""
 
-    def test_a_wheel_builds_from_pyproject_and_an_empty_package(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            src = Path(tmp) / "src"
-            (src / "ainode").mkdir(parents=True)
-            (src / "ainode" / "__init__.py").write_text("")
-            for name in ("pyproject.toml", "README.md"):
-                (src / name).write_text((REPO / name).read_text())
-            result = subprocess.run(
-                [sys.executable, "-m", "pip", "wheel", "--no-deps",
-                 "-w", str(Path(tmp) / "out"), str(src)],
-                capture_output=True, text=True, timeout=600)
-        assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
+    def _deps(self, extras=""):
+        sys.path.insert(0, str(REPO / "scripts"))
+        try:
+            from _deps_from_pyproject import dependencies
+            return dependencies(REPO / "pyproject.toml", extras)
+        finally:
+            sys.path.pop(0)
 
-    def test_the_version_is_not_read_from_the_package(self):
-        # A dynamic version read from ainode/__init__.py would make the stub
-        # build a wheel with the wrong version, or fail.
-        pyproject = (REPO / "pyproject.toml").read_text()
-        assert re.search(r'^version = "\d', pyproject, re.M)
-        assert "dynamic" not in pyproject.split("[tool.")[0]
+    def test_it_lists_the_runtime_dependencies(self):
+        deps = self._deps()
+        assert any(d.startswith("aiohttp") for d in deps)
+        assert any(d.startswith("paho-mqtt") for d in deps)
+
+    def test_an_extra_adds_its_group(self):
+        assert any(d.startswith("sentence-transformers")
+                   for d in self._deps("[embeddings]"))
+
+    def test_no_extra_leaves_torch_out(self):
+        # The lean build's entire point.
+        assert not any("sentence-transformers" in d for d in self._deps(""))
+
+    @pytest.mark.parametrize("spelling", ["[embeddings]", "embeddings", " embeddings "])
+    def test_the_extras_argument_is_forgiving(self, spelling):
+        assert any("sentence-transformers" in d for d in self._deps(spelling))
+
+    def test_several_extras(self):
+        deps = self._deps("[embeddings,training]")
+        assert any("sentence-transformers" in d for d in deps)
+        assert any(d.startswith("torch") for d in deps)
+
+    def test_an_unknown_extra_fails_the_build(self):
+        # Silently installing nothing would surface as a missing import at
+        # runtime, on the node.
+        with pytest.raises(SystemExit) as excinfo:
+            self._deps("[embeddingz]")
+        assert "embeddingz" in str(excinfo.value)
+
+    def test_it_matches_what_pip_would_resolve(self):
+        # The list is the contract with pyproject; drift means the image
+        # installs something the package does not declare.
+        import tomllib
+
+        project = tomllib.loads((REPO / "pyproject.toml").read_text())["project"]
+        expected = list(project["dependencies"]) + list(
+            project["optional-dependencies"]["embeddings"])
+        assert self._deps("[embeddings]") == expected
 
 
 class TestTheLeanBuildIsStillOffered:
