@@ -181,12 +181,29 @@ _ILLEGAL_INSTRUCTION_HINT = (
     "Inductor generating kernels at all."
 )
 
+# The B12X fast loader asks the platform for a capability it does not always
+# have. Seen on a three-node GB10 cluster:
+#
+#   RuntimeError: the initial b12x loader requires GPU host page tables
+#
+# Everything after it in that log was fallout — Ray workers dying, actor
+# handles from a dead session — so naming this line is the difference between
+# one sentence and two hundred.
+_B12X_LOADER_HINT = (
+    "the B12X fast loader needs a platform capability this engine container "
+    "does not have. The rest of the B12X stack does not depend on it: try "
+    "--load-format auto in the model's extra vLLM args, which keeps the b12x "
+    "attention, MoE and linear backends and loads the weights the ordinary "
+    "way."
+)
+
 _FATAL_PATTERNS = [
     # Whatever a drafter's architecture is called, serving one alone dies
     # reaching through a speculative_config that is None —
     #   AttributeError: 'NoneType' object has no attribute 'draft_model_config'
     # A symptom, and unlike a name it does not also occur in healthy launches.
     ("draft_model_config", "nonetype", _DRAFTER_HINT),
+    ("b12x loader requires", "b12xloaderrequires", _B12X_LOADER_HINT),
     ("cudaerrorillegalinstruction", "cudaerrorillegalinstruction", _ILLEGAL_INSTRUCTION_HINT),
     ("illegal instruction", "illegalinstruction", _ILLEGAL_INSTRUCTION_HINT),
     ("unrecognized arguments", "unrecognizedarguments", _ARGPARSE_HINT),
