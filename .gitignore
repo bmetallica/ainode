@@ -61,3 +61,7 @@ node_modules/
 .claude/
 .cursor/
 .omx/
+
+# eugr checkouts made by the image builds (one per pinned commit)
+scripts/_eugr/
+scripts/_eugr-b12x/

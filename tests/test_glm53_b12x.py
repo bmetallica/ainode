@@ -146,9 +146,26 @@ class TestTheImageScript:
     def test_shell_syntax(self):
         assert subprocess.run(["bash", "-n", str(self.SCRIPT)]).returncode == 0
 
-    def test_it_uses_the_same_eugr_commit_as_the_base_image(self):
-        # Two engine images from different launcher generations would disagree
-        # about the .env contract they are handed.
+    def test_it_pins_the_image_commit_separately(self):
+        # --exp-b12x does not exist at the commit the base image is pinned to;
+        # it arrived upstream later. Reusing that pin produced upstream's usage
+        # text and nothing else. The launcher (from our own image) and the
+        # engine image only have to agree about the .env contract, not about
+        # which kernels were compiled in.
         text = self.SCRIPT.read_text()
-        assert "build-base-image.sh" in text
+        assert "EUGR_B12X_COMMIT" in text
         assert "--exp-b12x" in text
+
+    def test_it_checks_the_flag_exists_before_using_it(self):
+        # Otherwise the failure is upstream's usage text, which says nothing
+        # about pins.
+        text = self.SCRIPT.read_text()
+        assert 'grep -q -- "--exp-b12x"' in text
+        assert "has no --exp-b12x" in text
+
+    def test_it_does_not_share_the_base_image_checkout(self):
+        # build-base-image.sh patches its tree; a checkout of another commit
+        # there fails, or succeeds and leaves that build on the wrong source.
+        text = self.SCRIPT.read_text()
+        assert "_eugr-b12x" in text
+        assert 'WORKTREE="$SCRIPT_DIR/_eugr"' not in text
