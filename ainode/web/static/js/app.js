@@ -1086,12 +1086,18 @@ const AINode = {
       // A degraded instance is still running on the head but has lost the ranks
       // Ray placed on the node that went away — it cannot serve. Say which node
       // is gone and offer the one action that helps.
-      // This card's own phase and error. The node-level values are the
-      // fallback for cards that carry none — the head's own primary — and no
-      // longer the source for all of them.
-      var instPhase = inst.phase || ((inst.error === undefined) ? phase : '');
-      var instError = inst.error !== undefined ? inst.error : loadError;
-      var instDetail = inst.detail || '';
+      // This card's own phase and error. A card that carries the fields at
+      // all — every remote and stacked one — uses ONLY its own, even when they
+      // are empty: falling back to the node's painted a model that was still
+      // loading on another machine as "READY · 100%", because the head's own
+      // engine happened to be ready. The node-level values are for the head's
+      // own primary card, which carries none.
+      var hasOwnState = inst.phase !== undefined;
+      var instPhase = hasOwnState
+        ? (inst.phase || (inst.status === 'READY' ? 'ready' : 'starting'))
+        : phase;
+      var instError = hasOwnState ? (inst.error || '') : loadError;
+      var instDetail = hasOwnState ? (inst.detail || '') : loadDetail;
       var failNote = (instPhase === 'failed' && instError)
         ? '<div class="instance-failed-note">' + self.esc(instError) +
           // The one repair the message asks for, as a button. Telling someone
@@ -1125,8 +1131,8 @@ const AINode = {
               if (instPhase === 'failed') {
                 return '<span class="instance-status failed">FAILED</span>';
               }
-              var pi = PHASE_INFO[instPhase] || PHASE_INFO[phase] || ['starting', 10];
-              var label = instDetail || loadDetail || pi[0];
+              var pi = PHASE_INFO[instPhase] || ['starting', 10];
+              var label = instDetail || pi[0];
               return '<span class="instance-status starting" title="' + self.esc(loadDetail || '') + '">' + self.esc(label.toUpperCase()) + ' · ' + pi[1] + '%</span>' +
                 '<span style="display:inline-block;width:90px;height:5px;background:#1f2a1f;border-radius:3px;margin:0 8px;vertical-align:middle;overflow:hidden">' +
                 '<span style="display:block;height:100%;width:' + pi[1] + '%;background:#76c043;transition:width .4s"></span></span>';
