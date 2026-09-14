@@ -6557,11 +6557,32 @@ const AINode = {
     try {
       var edata = await this.fetchJSON('/api/embeddings/models');
       var emodels = (edata && edata.models) || [];
-      if (!emodels.length) {
-        body.innerHTML = '<div class="server-empty">No embedding models in the catalog.</div>';
-        return;
-      }
-      var ehtml = '<div class="server-loaded-list">';
+      // No early return on an empty catalog: the free-text field below is the
+      // way to load anything at all, and hiding it behind a non-empty list
+      // would leave an operator with an empty tab and no next step.
+      // Any sentence-transformers repo, not only the four in the catalog.
+      // The load endpoint has always accepted an arbitrary repo id — it hands
+      // the string straight to SentenceTransformer — but the only way to
+      // reach that was curl, because this tab renders a fixed list. Someone
+      // looking for nomic-embed-text-v1 found nothing and reasonably
+      // concluded AINode could not serve it. The model search next door is no
+      // help either: it filters on pipeline_tag=text-generation, so an
+      // embedding model cannot appear there by construction.
+      var ehtml =
+        '<div class="server-loaded-card" style="margin-bottom:12px">' +
+        '  <div class="server-loaded-left" style="flex-direction:column;align-items:flex-start;gap:6px;flex:1">' +
+        '    <div style="font-size:12px;color:var(--text-muted)">' +
+        '      Any Hugging Face embedding model (sentence-transformers)' +
+        '    </div>' +
+        '    <input id="embed-any-repo" class="mono" placeholder="nomic-ai/nomic-embed-text-v1.5" ' +
+        '           style="width:100%;max-width:420px;padding:6px 8px;background:var(--bg-input,#111);' +
+        '                  color:inherit;border:1px solid var(--border,#333);border-radius:4px">' +
+        '  </div>' +
+        '  <div class="server-loaded-right">' +
+        '    <button class="btn-nvidia server-btn-sm" id="embed-any-load">Load</button>' +
+        '  </div>' +
+        '</div>' +
+        '<div class="server-loaded-list">';
       emodels.forEach(function (m) {
         var loaded = !!m.loaded;
         ehtml += '<div class="server-loaded-card">' +
@@ -6583,30 +6604,55 @@ const AINode = {
           '</div>' +
           '</div>';
       });
+      if (!emodels.length) {
+        ehtml += '<div class="server-empty">No curated embedding models — ' +
+                 'name any repo above.</div>';
+      }
       ehtml += '</div>';
       body.innerHTML = ehtml;
-      body.querySelectorAll('[data-action="embed-load"]').forEach(function (btn) {
-        btn.addEventListener('click', async function () {
-          var id = btn.dataset.model;
-          btn.disabled = true;
-          btn.textContent = 'Loading…';
-          try {
-            var resp = await fetch('/api/embeddings/models/' + encodeURIComponent(id) + '/load', { method: 'POST' });
-            var payload = await resp.json().catch(function () { return {}; });
-            if (resp.ok) {
-              self.toast('Loaded ' + id, 'success');
-              self._renderLoadModelTab(modal, 'embeddings');
-              self.renderServer();
-            } else {
-              self.toast((payload.error && payload.error.message) || 'Load failed', 'error');
-              btn.disabled = false;
-              btn.textContent = 'Load';
-            }
-          } catch (err) {
-            self.toast('Load failed: ' + err.message, 'error');
-            btn.disabled = false;
-            btn.textContent = 'Load';
+
+      var anyInput = body.querySelector('#embed-any-repo');
+      var anyButton = body.querySelector('#embed-any-load');
+      var loadEmbedding = async function (id, btn, restoreLabel) {
+        btn.disabled = true;
+        btn.textContent = 'Loading…';
+        try {
+          var resp = await fetch('/api/embeddings/models/' + encodeURIComponent(id) + '/load',
+                                 { method: 'POST' });
+          var payload = await resp.json().catch(function () { return {}; });
+          if (resp.ok) {
+            self.toast('Loaded ' + id, 'success');
+            self._renderLoadModelTab(modal, 'embeddings');
+            self.renderServer();
+            return;
           }
+          self.toast((payload.error && payload.error.message) || 'Load failed', 'error');
+        } catch (err) {
+          self.toast('Load failed: ' + err.message, 'error');
+        }
+        btn.disabled = false;
+        btn.textContent = restoreLabel;
+      };
+      if (anyButton && anyInput) {
+        var loadTyped = function () {
+          var id = (anyInput.value || '').trim();
+          if (!id) return;
+          if (id.indexOf('/') === -1) {
+            // A bare name reaches the Hub as a repo id and 404s minutes later.
+            self.toast('Use the full repo id, owner/name', 'error');
+            return;
+          }
+          loadEmbedding(id, anyButton, 'Load');
+        };
+        anyButton.addEventListener('click', loadTyped);
+        anyInput.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') loadTyped();
+        });
+      }
+
+      body.querySelectorAll('[data-action="embed-load"]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          loadEmbedding(btn.dataset.model, btn, 'Load');
         });
       });
     } catch (err) {
