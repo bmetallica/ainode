@@ -895,8 +895,12 @@ async def handle_model_load(request: web.Request) -> web.Response:
             except Exception:
                 pass
         try:
-            if engine.is_running():
-                engine.stop()
+            # Unconditionally, for the same reason as the unload path:
+            # is_running() reports on the launcher process, and the engine
+            # containers outlive it. Skipping the stop here left the previous
+            # model's containers up, so the new launch met a container that
+            # already had the name it wanted.
+            engine.stop()
         except Exception:
             pass
         try:
@@ -1002,8 +1006,12 @@ async def handle_model_unload(request: web.Request) -> web.Response:
     served_here = engine is not None and (not model or getattr(config, "model", None) == model)
     if served_here:
         try:
-            if engine.is_running():
-                engine.stop()
+            # Unconditionally. is_running() asks whether the LAUNCHER process
+            # is alive, and the engine containers outlive it: a launcher that
+            # had already exited made this skip the teardown entirely and left
+            # the containers — and their memory — behind on every node. stop()
+            # is idempotent and does the container work itself.
+            engine.stop()
         except Exception as exc:
             errors.append(f"engine.stop(): {exc}")
         try:

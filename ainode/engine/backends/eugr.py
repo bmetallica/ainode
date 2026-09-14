@@ -51,6 +51,7 @@ from ainode.core.gpu import detect_gpu
 from ainode.engine.backends.base import EngineBackend
 from ainode.engine.load_phase import LoadPhaseTracker
 from ainode.engine.distribute import (
+    SSH_OPTS,
     DistributionError,
     ensure_peer_has_dir,
     ensure_local_image,
@@ -367,10 +368,14 @@ class EugrBackend(EngineBackend):
             except Exception:  # pragma: no cover - best-effort teardown
                 logger.exception("eugr launch-cluster.sh stop failed")
 
-        # And locally, whatever the mode: the launcher's stop is best effort
-        # and a solo launch never went through it at all.
+        # And directly, whatever the mode: the launcher's stop is best effort
+        # and a solo launch never went through it at all. Peers first — a peer
+        # still holding 100 GB of weights is the expensive half of a teardown
+        # that only half happened.
+        self._stop_peer_containers()
         self._stop_container()
         self._ready = False
+        self._phase.reset()
 
     def _stop_container(self) -> None:
         """Stop and remove this instance's engine container.
@@ -379,23 +384,56 @@ class EugrBackend(EngineBackend):
         name, so a stopped one left behind is the next launch silently
         inheriting an old container's mounts and environment.
         """
+        self._docker_teardown(None)
+
+    def _stop_peer_containers(self) -> None:
+        """Stop and remove this instance's engine container on every peer.
+
+        Unloading a two-node model left both engine containers running and
+        their memory held, and the operator had to ssh to each machine and
+        run ``docker stop vllm_node`` by hand.
+
+        The teardown did ask eugr's launcher to stop the cluster, and that is
+        not enough on three counts: its cleanup re-runs node autodetection and
+        gives up entirely if it fails, it only ``docker stop``s a peer where
+        the head also gets a ``docker rm`` (so the next launch inherits a
+        stale container), and it skips cleanup altogether when the cluster was
+        already running at launch time. None of those are the launcher's bug —
+        it was written for an operator at a shell, who sees the message. We
+        know the peers and the container name, so say it directly.
+        """
+        peers = list(getattr(self.config, "peer_ips", []) or [])
+        if not peers:
+            return
+        user = (getattr(self.config, "ssh_user", "") or "").strip()
+        if not user:
+            logger.warning("no ssh_user configured: cannot stop %s on %s",
+                           self.container_name, ", ".join(peers))
+            return
+        for peer_ip in peers:
+            self._docker_teardown(f"{user}@{self._transfer_ip(peer_ip)}")
+
+    def _docker_teardown(self, ssh_target: Optional[str]) -> None:
+        """``docker stop`` then ``docker rm -f``, here or on ``ssh_target``."""
         name = self.container_name
-        for cmd, timeout in (
-            (["docker", "stop", "-t", "30", name], 60),
-            (["docker", "rm", "-f", name], 30),
-        ):
+        where = ssh_target or "this node"
+        for args, timeout in ((["docker", "stop", "-t", "30", name], 60),
+                              (["docker", "rm", "-f", name], 30)):
+            cmd = (["ssh", *SSH_OPTS, ssh_target, " ".join(args)]
+                   if ssh_target else args)
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True,
                                         timeout=timeout)
             except Exception:
-                logger.exception("%s failed", " ".join(cmd))
+                logger.exception("%s on %s failed", " ".join(args), where)
                 continue
             if result.returncode != 0:
                 stderr = (result.stderr or "").strip()
                 # "No such container" is the normal case when a launch failed
                 # before the container existed, or a previous stop won.
                 if "No such container" not in stderr:
-                    logger.warning("%s: %s", " ".join(cmd), stderr[:200])
+                    logger.warning("%s on %s: %s", " ".join(args), where,
+                                   stderr[:200])
 
     def wait_ready(self, timeout: float = 300.0) -> bool:
         """Poll ``/v1/models`` on the API port until 2xx or timeout."""
