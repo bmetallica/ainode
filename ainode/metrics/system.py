@@ -38,6 +38,65 @@ def interface_is_interesting(name: str) -> bool:
     return not any(name == p or name.startswith(p) for p in _SKIP_PREFIXES)
 
 
+#: Where the kernel exposes RDMA port counters.
+RDMA_ROOT = Path("/sys/class/infiniband")
+
+#: port_xmit_data and port_rcv_data count 32-bit words, not bytes — an IB
+#: convention that survives into RoCE. Reporting the raw value would understate
+#: every link by exactly four.
+RDMA_WORD_BYTES = 4
+
+
+def rdma_ports() -> Dict[str, Path]:
+    """``{netdev name or device name: counters directory}`` for every RoCE port.
+
+    RDMA bypasses the kernel network stack — that is the point of it — so an
+    all-reduce over RoCE moves nothing that /proc/net/dev can see. On this
+    cluster that made the ring interfaces read 0 bytes per second while they
+    were carrying every byte of a two-node tensor-parallel launch: the
+    telemetry was at its least informative exactly when the fabric was
+    busiest.
+
+    Keyed by the netdev name where the mapping exists, so the RDMA figures
+    land on the same interface entry as the kernel's — an operator comparing
+    them should not have to know that rocep1s0f0 and enp1s0f0np0 are the same
+    cable.
+    """
+    found: Dict[str, Path] = {}
+    try:
+        devices = sorted(RDMA_ROOT.iterdir())
+    except OSError:
+        return found
+    for device in devices:
+        try:
+            ports = sorted((device / "ports").iterdir())
+        except OSError:
+            continue
+        # The netdev this HCA port belongs to, when the kernel says so.
+        name = device.name
+        try:
+            nets = sorted((device / "device" / "net").iterdir())
+            if nets:
+                name = nets[0].name
+        except OSError:
+            pass
+        for port in ports:
+            counters = port / "counters"
+            if counters.is_dir():
+                # One port per device is the shape on this hardware; a second
+                # would overwrite, which is better than inventing a key that
+                # matches no interface anywhere else in the payload.
+                found.setdefault(name, counters)
+    return found
+
+
+def _read_counter(path: Path) -> Optional[int]:
+    try:
+        return int(path.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
 def _mb(value: float) -> float:
     return round(value / (1024 * 1024), 1)
 
@@ -56,6 +115,7 @@ class SystemSampler:
         self._disk_paths = disk_paths or []
         self._last_net: Dict[str, Any] = {}
         self._last_net_at: float = 0.0
+        self._last_rdma: Dict[str, Any] = {}
         self._primed = False
 
     # -- public ---------------------------------------------------------
@@ -191,8 +251,47 @@ class SystemSampler:
         self._last_net = {
             name: (c.bytes_sent, c.bytes_recv) for name, c in counters.items()
         }
+        self._merge_rdma(out, elapsed, speeds=stats)
         self._last_net_at = now
         return out
+
+    def _merge_rdma(self, out: Dict[str, Any], elapsed: float, speeds) -> None:
+        """Add RDMA byte counters and rates to the interfaces that have them.
+
+        Alongside the kernel's, not instead of them. Both numbers are true and
+        they measure different things: an RDMA transfer moves nothing through
+        /proc/net/dev, and a TCP transfer moves nothing through the HCA port
+        counters. Showing only one made a busy 200 Gbit fabric read as idle.
+        """
+        readings: Dict[str, tuple] = {}
+        for name, counters in rdma_ports().items():
+            sent = _read_counter(counters / "port_xmit_data")
+            recv = _read_counter(counters / "port_rcv_data")
+            if sent is None or recv is None:
+                continue
+            sent *= RDMA_WORD_BYTES
+            recv *= RDMA_WORD_BYTES
+            readings[name] = (sent, recv)
+
+            entry = out.setdefault(name, {})
+            entry["rdma_bytes_sent"] = sent
+            entry["rdma_bytes_recv"] = recv
+            previous = self._last_rdma.get(name)
+            if previous is None or elapsed <= 0:
+                continue
+            # Port counters are 64-bit here but can be reset by the driver;
+            # max(0, ...) turns a wrap or reset into one missed sample rather
+            # than into a negative rate or an implausible spike.
+            tx = round(max(0, sent - previous[0]) / elapsed * 8 / 1e6, 2)
+            rx = round(max(0, recv - previous[1]) / elapsed * 8 / 1e6, 2)
+            entry["rdma_tx_mbit_s"] = tx
+            entry["rdma_rx_mbit_s"] = rx
+            speed = getattr(speeds.get(name), "speed", 0) or 0
+            if speed:
+                entry.setdefault("link_mbit", speed)
+                entry["rdma_tx_percent"] = round(min(100.0, tx / speed * 100), 1)
+                entry["rdma_rx_percent"] = round(min(100.0, rx / speed * 100), 1)
+        self._last_rdma = readings
 
     def _temperatures(self) -> Dict[str, Any]:
         import psutil
