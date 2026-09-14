@@ -57,7 +57,7 @@ class TestCatalogEntry:
     def test_the_b12x_flags_are_all_there(self):
         args = catalog_recipe(MODEL)["extra_vllm_args"]
         for flag in ("--attention-backend", "--moe-backend", "--linear-backend",
-                     "--load-format", "--quantization"):
+                     "--load-format", "--quantization", "--kv-cache-memory-bytes"):
             assert flag in args, flag
         assert "b12x" in args and "B12X" in args
 
@@ -117,7 +117,7 @@ class TestItReachesTheEngine:
         # TestWhatTheHardwareContradicted); the attention backend is the
         # remaining B12X argument whose value must survive the shell.
         assert argv[argv.index("--attention-backend") + 1] == "B12X"
-        assert argv[argv.index("--quantization") + 1] == "modelopt_mixed"
+        assert argv[argv.index("--kv-cache-memory-bytes") + 1] == "8G"
 
     def test_the_recipe_dtype_is_not_duplicated(self):
         # The writer adds --dtype bfloat16 on unified memory; the recipe sets
@@ -320,14 +320,21 @@ class TestWhatTheHardwareContradicted:
         assert "exactly two nodes" in info.description
         assert "SupportsPP" in info.description
 
-    def test_the_kv_cap_is_gone_and_the_reason_is_recorded(self):
-        """The upstream recipe caps the KV cache at 8G. Measured uncapped at
-        gpu_memory_utilization 0.87: 1,072,101 tokens, about 9.9 GB — so the
-        cap cost roughly a fifth of the cache. A deviation from the MIT recipe
-        has to carry its evidence like the other three."""
+    def test_the_kv_cap_is_kept_and_both_measurements_are_recorded(self):
+        """The 8G cap was briefly dropped on an argument that did not hold.
+
+        1,072,101 tokens was read as "about 9.9 GB, so the cap cannot have
+        been in force" — which assumes a constant bytes-per-token. This is a
+        hybrid Mamba model launched with --mamba-cache-mode align, where the
+        state cache is sized by max_num_seqs; that and max_model_len both
+        differed between the two logged launches. The cap was active in the
+        good one, so what removing it does is still unmeasured.
+        """
         from pathlib import Path
 
-        assert "--kv-cache-memory-bytes" not in catalog_recipe(MODEL)["extra_vllm_args"]
+        args = catalog_recipe(MODEL)["extra_vllm_args"]
+        assert args[args.index("--kv-cache-memory-bytes") + 1] == "8G"
         src = (Path(__file__).resolve().parent.parent / "ainode" / "models" /
                "registry.py").read_text()
-        assert "1,072,101 tokens" in src
+        # Both launches, so the next reader can check the arithmetic.
+        assert "434,176 tokens" in src and "1,072,101 tokens" in src
