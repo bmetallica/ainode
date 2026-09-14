@@ -49,13 +49,15 @@ class TestCatalogEntry:
         # cluster_only in the upstream recipe: it does not run on one.
         assert catalog_proven_tp(MODEL) == 2
 
-    def test_it_is_not_marked_verified(self):
-        assert CURATED_CLUSTER_MODELS["glm-5.3-flash-nvfp4-spark"].verified is False
+    def test_it_is_marked_verified(self):
+        # Served on the cluster on 2026-09-14 at TP=2, 1,072,101 tokens of KV
+        # cache. It was unverified for as long as that was untrue.
+        assert CURATED_CLUSTER_MODELS["glm-5.3-flash-nvfp4-spark"].verified is True
 
     def test_the_b12x_flags_are_all_there(self):
         args = catalog_recipe(MODEL)["extra_vllm_args"]
         for flag in ("--attention-backend", "--moe-backend", "--linear-backend",
-                     "--load-format", "--quantization", "--kv-cache-memory-bytes"):
+                     "--load-format", "--quantization"):
             assert flag in args, flag
         assert "b12x" in args and "B12X" in args
 
@@ -115,7 +117,7 @@ class TestItReachesTheEngine:
         # TestWhatTheHardwareContradicted); the attention backend is the
         # remaining B12X argument whose value must survive the shell.
         assert argv[argv.index("--attention-backend") + 1] == "B12X"
-        assert argv[argv.index("--kv-cache-memory-bytes") + 1] == "8G"
+        assert argv[argv.index("--quantization") + 1] == "modelopt_mixed"
 
     def test_the_recipe_dtype_is_not_duplicated(self):
         # The writer adds --dtype bfloat16 on unified memory; the recipe sets
@@ -310,8 +312,22 @@ class TestWhatTheHardwareContradicted:
                          "HFValidationError"):
             assert evidence in src, evidence
 
-    def test_the_description_says_two_nodes_is_tight(self):
-        # Measured: a two-node launch reached warmup and was killed for
-        # memory. The catalog should not imply it is the comfortable setup.
+    def test_the_description_says_two_nodes_and_why(self):
+        # Two is not a preference, it is the only shape: no SupportsPP, and
+        # tensor needs a power-of-two rank count. An operator with three
+        # machines will otherwise keep trying to use all three.
         info = CURATED_CLUSTER_MODELS["glm-5.3-flash-nvfp4-spark"]
-        assert "killed for memory" in info.description
+        assert "exactly two nodes" in info.description
+        assert "SupportsPP" in info.description
+
+    def test_the_kv_cap_is_gone_and_the_reason_is_recorded(self):
+        """The upstream recipe caps the KV cache at 8G. Measured uncapped at
+        gpu_memory_utilization 0.87: 1,072,101 tokens, about 9.9 GB — so the
+        cap cost roughly a fifth of the cache. A deviation from the MIT recipe
+        has to carry its evidence like the other three."""
+        from pathlib import Path
+
+        assert "--kv-cache-memory-bytes" not in catalog_recipe(MODEL)["extra_vllm_args"]
+        src = (Path(__file__).resolve().parent.parent / "ainode" / "models" /
+               "registry.py").read_text()
+        assert "1,072,101 tokens" in src
