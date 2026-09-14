@@ -159,3 +159,71 @@ class TestCatalogDelete:
     def test_it_still_reports_false_when_there_is_nothing(self, manager):
         model_id = next(iter(manager.get_catalog_map()))
         assert manager.delete_model(model_id) is False
+
+
+class TestARenamedRepo:
+    """The weights are there, under a name the UI never shows.
+
+    demon-zombie/MiniMax-M2.7-AWQ-4bit now 307-redirects to
+    et0dev/MiniMax-M2.7-AWQ-4bit. huggingface_hub follows the redirect, so an
+    aborted download lands in models--et0dev--... while the catalog entry (and
+    the delete dialog the operator is looking at) still says demon-zombie.
+    The reply was
+
+        Delete failed: Model not downloaded: demon-zombie/MiniMax-M2.7-AWQ-4bit
+
+    about ~50 GB of partial download sitting on the disk.
+    """
+
+    OLD = "demon-zombie/MiniMax-M2.7-AWQ-4bit"
+    NEW = "et0dev/MiniMax-M2.7-AWQ-4bit"
+
+    def _place_new(self, manager):
+        target = manager.models_dir / "hub" / "models--et0dev--MiniMax-M2.7-AWQ-4bit"
+        target.mkdir(parents=True)
+        (target / "model.safetensors").write_bytes(b"\x00" * 4096)
+        return target
+
+    def test_the_other_owner_is_found(self, manager):
+        self._place_new(manager)
+        assert manager.other_owners_on_disk(self.OLD) == [self.NEW]
+
+    def test_the_repo_itself_is_not_reported_as_an_alias(self, manager):
+        self._place_new(manager)
+        assert manager.other_owners_on_disk(self.NEW) == []
+
+    def test_an_unrelated_model_is_not_dragged_in(self, manager):
+        self._place_new(manager)
+        assert manager.other_owners_on_disk("someone/Qwen3.8-27B-NVFP4") == []
+
+    def test_nothing_on_disk_finds_nothing(self, manager):
+        assert manager.other_owners_on_disk(self.OLD) == []
+
+    @pytest.mark.asyncio
+    async def test_the_404_names_it(self, manager):
+        self._place_new(manager)
+        app = web.Application()
+        app["model_manager"] = manager
+        app.router.add_post("/api/models/delete-repo", handle_delete_repo)
+        from aiohttp.test_utils import TestClient, TestServer
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post("/api/models/delete-repo",
+                                         json={"hf_repo": self.OLD})
+            assert response.status == 404
+            payload = await response.json()
+        assert self.NEW in payload["error"]
+        assert "renamed upstream" in payload["error"]
+        assert payload["also_on_disk"] == [self.NEW]
+
+    @pytest.mark.asyncio
+    async def test_deleting_the_new_name_works(self, manager):
+        placed = self._place_new(manager)
+        app = web.Application()
+        app["model_manager"] = manager
+        app.router.add_post("/api/models/delete-repo", handle_delete_repo)
+        from aiohttp.test_utils import TestClient, TestServer
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post("/api/models/delete-repo",
+                                         json={"hf_repo": self.NEW})
+            assert response.status == 200, await response.json()
+        assert not placed.exists()
