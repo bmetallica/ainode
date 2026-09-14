@@ -1189,7 +1189,17 @@ async def handle_delete_repo(request: web.Request) -> web.Response:
     targets = manager.model_dirs_for_repo(hf_repo)
 
     if not targets:
-        return web.json_response({"error": f"Model not downloaded: {hf_repo}"}, status=404)
+        # An upstream rename puts the weights on disk under a name nothing in
+        # the UI shows. Say which, rather than insisting nothing is there.
+        renamed = manager.other_owners_on_disk(hf_repo)
+        detail = ""
+        if renamed:
+            detail = (f" — but {', '.join(renamed)} is on disk. That repo was "
+                      f"renamed upstream, and the download followed the "
+                      f"redirect. Delete that one instead.")
+        return web.json_response(
+            {"error": f"Model not downloaded: {hf_repo}{detail}",
+             "also_on_disk": renamed}, status=404)
 
     # Safety: ensure we're deleting inside models_dir
     try:

@@ -1416,6 +1416,34 @@ class ModelManager:
         """Convert 'org/model-name' to 'org--model-name' for filesystem safety."""
         return hf_repo.replace("/", "--")
 
+    def other_owners_on_disk(self, hf_repo: str) -> list[str]:
+        """Repos on disk with this repo's name but a different owner.
+
+        Upstream renames move a model between accounts —
+        demon-zombie/MiniMax-M2.7-AWQ-4bit now 307-redirects to
+        et0dev/MiniMax-M2.7-AWQ-4bit. huggingface_hub follows the redirect, so
+        the cache directory carries the NEW owner while a catalog entry (or a
+        page the operator still has open) names the old one. Deleting then
+        reports
+
+            Model not downloaded: demon-zombie/MiniMax-M2.7-AWQ-4bit
+
+        about an aborted download that is plainly on the disk, under a name
+        nothing in the UI shows. Naming it is the whole fix: the operator can
+        then delete the thing that actually exists.
+        """
+        name = hf_repo.split("/")[-1].strip().lower()
+        if not name:
+            return []
+        found = set()
+        for entry in self.list_downloaded():
+            repo = str(entry.get("hf_repo") or "")
+            if not repo or repo.lower() == hf_repo.lower():
+                continue
+            if repo.split("/")[-1].lower() == name:
+                found.add(repo)
+        return sorted(found)
+
     def model_dirs_for_repo(self, hf_repo: str) -> list[Path]:
         """Every directory a copy of ``hf_repo`` can occupy, that exists.
 
