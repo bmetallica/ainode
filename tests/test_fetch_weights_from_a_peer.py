@@ -208,3 +208,58 @@ class TestTheLaunchPathUsesIt:
         # place.
         source = Path("ainode/models/api_routes.py").read_text()
         assert 'f"copying the weights from {node_id}"' in source
+
+
+class TestTheCardIsToldWhatIsHappening:
+    """The callback existed and was never passed.
+
+    _fetch_weights_from_a_peer defined an `announce` that would have advanced
+    the phase, and then called fetch_model_from_peer without it. Nothing else
+    writes a line during this step — the launcher has not started, so the
+    phase tracker has nothing to read — and the card sat at the "idle" 8%
+    through a sync that can take minutes. It was reported as a hang, twice.
+
+    Python does not warn about an unused local function and neither does ruff,
+    so the only thing that catches this is a test that follows the wire.
+    """
+
+    def _progress_calls(self, outcome: str) -> list:
+        from unittest import mock
+
+        from ainode.core.config import NodeConfig
+        from ainode.models.api_routes import _fetch_weights_from_a_peer
+
+        seen = []
+
+        class _Backend:
+            _log_file = None
+
+            def _progress(self, phase, detail, log_file):
+                seen.append((phase, detail))
+
+        def fake(**kwargs):
+            starter = kwargs.get("on_start")
+            assert starter is not None, "on_start was not passed"
+            starter("spark-13e1")
+            return outcome
+
+        config = NodeConfig(node_id="n3", ssh_user="admin", models_dir="/models")
+        with mock.patch("ainode.engine.acquire.fetch_model_from_peer", side_effect=fake):
+            _fetch_weights_from_a_peer({"cluster_state": None}, _Backend(),
+                                       "org/model", config)
+        return seen
+
+    def test_the_search_itself_is_announced(self):
+        # An HTTP round trip per peer, five seconds each on a node that is
+        # down, with nothing on screen.
+        details = [detail for _, detail in self._progress_calls("fetched")]
+        assert details[0] == "looking for the weights on the other nodes"
+
+    def test_the_copy_names_the_node_it_comes_from(self):
+        details = [detail for _, detail in self._progress_calls("fetched")]
+        assert "copying the weights from spark-13e1" in details
+
+    def test_the_phase_moves_off_idle(self):
+        # 8% is PHASE_INFO's "idle" — the fallback that reads as a hang.
+        phases = {phase for phase, _ in self._progress_calls("fetched")}
+        assert phases == {"distributing"}
