@@ -207,7 +207,7 @@ class TestTheLaunchPathUsesIt:
         # ten-minute pause at "starting" is how this was reported in the first
         # place.
         source = Path("ainode/models/api_routes.py").read_text()
-        assert 'f"copying the weights from {node_id}"' in source
+        assert 'f"copying {r} from {node_id}"' in source
 
 
 class TestTheCardIsToldWhatIsHappening:
@@ -255,11 +255,81 @@ class TestTheCardIsToldWhatIsHappening:
         details = [detail for _, detail in self._progress_calls("fetched")]
         assert details[0] == "looking for the weights on the other nodes"
 
-    def test_the_copy_names_the_node_it_comes_from(self):
+    def test_the_copy_names_the_repo_and_the_node(self):
+        # The repo, because a launch can pull more than one — a speculative
+        # drafter is a second download, and "copying the weights" would not
+        # say which.
         details = [detail for _, detail in self._progress_calls("fetched")]
-        assert "copying the weights from spark-13e1" in details
+        assert "copying org/model from spark-13e1" in details
 
     def test_the_phase_moves_off_idle(self):
         # 8% is PHASE_INFO's "idle" — the fallback that reads as a hang.
         phases = {phase for phase, _ in self._progress_calls("fetched")}
         assert phases == {"distributing"}
+
+
+class TestARecipesOwnDownloads:
+    """A checkpoint is not always the whole of what an engine fetches.
+
+    Gemma 4 26B's recipe carries
+
+        --speculative-config {"method":"mtp",
+                              "model":"google/gemma-4-26B-A4B-it-assistant", ...}
+
+    and vLLM downloads that drafter separately. Measured on Spark3 with the
+    main weights already local:
+
+        Time spent downloading weights for
+        google/gemma-4-26B-A4B-it-assistant: 113.066344 seconds
+
+    Mirroring only the model leaves a sub-node that cannot launch it, and the
+    error names a repo the operator never chose.
+    """
+
+    SPEC = ('{"method":"mtp","model":"google/gemma-4-26B-A4B-it-assistant",'
+            '"num_speculative_tokens":4,"moe_backend":"triton"}')
+
+    def test_the_drafter_is_required_too(self):
+        from ainode.engine.acquire import required_repos
+
+        assert required_repos("nvidia/Gemma-4-26B-A4B-NVFP4",
+                              ["--speculative-config", self.SPEC]) == [
+            "nvidia/Gemma-4-26B-A4B-NVFP4",
+            "google/gemma-4-26B-A4B-it-assistant"]
+
+    def test_the_equals_form_is_read_too(self):
+        from ainode.engine.acquire import required_repos
+
+        assert required_repos("a/b", [f"--speculative-config={self.SPEC}"]) == [
+            "a/b", "google/gemma-4-26B-A4B-it-assistant"]
+
+    def test_a_local_path_is_not_a_repo_to_fetch(self):
+        """AINode serves a downloaded model by path; that names a directory,
+        not something to pull."""
+        from ainode.engine.acquire import required_repos
+
+        assert required_repos("/models/nvidia--Gemma-4-26B-A4B-NVFP4",
+                              ["--speculative-config", self.SPEC]) == [
+            "google/gemma-4-26B-A4B-it-assistant"]
+
+    def test_malformed_json_does_not_break_a_launch(self):
+        from ainode.engine.acquire import required_repos
+
+        assert required_repos("a/b", ["--speculative-config", "{not json"]) == ["a/b"]
+
+    def test_a_trailing_flag_with_no_value_is_survivable(self):
+        from ainode.engine.acquire import required_repos
+
+        assert required_repos("a/b", ["--speculative-config"]) == ["a/b"]
+
+    def test_no_speculative_config_is_just_the_model(self):
+        from ainode.engine.acquire import required_repos
+
+        assert required_repos("a/b", ["--enforce-eager"]) == ["a/b"]
+
+    def test_the_launch_path_acquires_all_of_them(self):
+        source = Path("ainode/models/api_routes.py").read_text()
+        helper = source[source.index("def _fetch_weights_from_a_peer"):]
+        helper = helper[:helper.index("\ndef ", 1)]
+        assert "required_repos(" in helper
+        assert "for repo in repos:" in helper

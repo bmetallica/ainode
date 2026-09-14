@@ -28,11 +28,51 @@ from ainode.engine.serve_args import local_model_dir
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["model_is_local", "peers_with_model", "fetch_model_from_peer"]
+__all__ = ["model_is_local", "peers_with_model", "fetch_model_from_peer",
+           "required_repos"]
 
 #: Long enough for a busy node to answer, short enough that three unreachable
 #: peers do not add a minute to every launch.
 PEER_QUERY_TIMEOUT = 5
+
+
+def required_repos(model: str, extra_vllm_args: Optional[List[str]] = None) -> List[str]:
+    """Every Hub repo a launch of ``model`` needs, the model itself first.
+
+    A checkpoint is not always the whole of what an engine fetches. Gemma 4
+    26B's recipe carries
+
+        --speculative-config {"method":"mtp",
+                              "model":"google/gemma-4-26B-A4B-it-assistant",...}
+
+    and vLLM downloads that drafter separately — 801 MB, measured at 113
+    seconds from Hugging Face on a node where the main weights were already
+    local. Mirroring only the model leaves a sub-node that cannot launch it,
+    and the error names the drafter rather than anything the operator chose.
+
+    Anything that is not a repo id — a local path, which is how AINode serves
+    a downloaded model — is skipped: it names a directory, not something to
+    fetch.
+    """
+    repos: List[str] = []
+    if model and "/" in model and not model.startswith("/"):
+        repos.append(model)
+    for index, argument in enumerate(list(extra_vllm_args or [])):
+        text = str(argument)
+        if text.startswith("--speculative-config"):
+            payload = (text.split("=", 1)[1] if "=" in text
+                       else (extra_vllm_args[index + 1]
+                             if index + 1 < len(extra_vllm_args) else ""))
+            try:
+                spec = json.loads(str(payload))
+            except Exception:
+                logger.debug("could not read --speculative-config", exc_info=True)
+                continue
+            draft = str((spec or {}).get("model") or "")
+            if draft and "/" in draft and not draft.startswith("/"):
+                if draft not in repos:
+                    repos.append(draft)
+    return repos
 
 
 def model_is_local(model: str, models_dir: str) -> bool:

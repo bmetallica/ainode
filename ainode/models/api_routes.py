@@ -461,7 +461,7 @@ def _fetch_weights_from_a_peer(app, backend, model: str, config) -> Optional[str
 
     try:
         from ainode.core.config import host_path
-        from ainode.engine.acquire import fetch_model_from_peer
+        from ainode.engine.acquire import fetch_model_from_peer, required_repos
 
         models_dir = getattr(config, "models_dir", "") or ""
         if not models_dir:
@@ -482,31 +482,45 @@ def _fetch_weights_from_a_peer(app, backend, model: str, config) -> Optional[str
         # a five-second wait with nothing on screen.
         note("looking for the weights on the other nodes")
 
-        outcome = fetch_model_from_peer(
-            on_start=lambda node_id: note(f"copying the weights from {node_id}"),
-            cluster=app.get("cluster_state"),
-            own_node_id=str(getattr(config, "node_id", "") or ""),
-            ssh_user=str(getattr(config, "ssh_user", "") or ""),
-            model=model,
-            models_dir=models_dir,
-            # The peer's path as the HOST sees it: this process runs in a
-            # container whose view of AINODE_HOME differs, and the ssh lands on
-            # the peer's host, not in its container.
-            host_models_dir=host_path(models_dir),
-            # Even when the weights are already here. The head is the source
-            # of truth and a sub-node's copy is a mirror of it; rsync sends
-            # only what differs, so an unchanged checkpoint costs a listing.
-            sync=True,
-        )
-        if outcome in ("fetched", "synced"):
-            logger.info("%s %s from a peer instead of downloading it",
-                        "Fetched" if outcome == "fetched" else "Synced", model)
-            return None
-        if outcome == "present":
-            # Already here. A sync that found no peer to compare against is
-            # not a reason to refuse a model this node can already serve.
-            return None
-        return refuse(f"no node in the cluster has {model}")
+        # The model AND anything its recipe pulls in of its own accord — a
+        # speculative drafter is a second repo, and vLLM fetches it separately.
+        repos = required_repos(
+            model, list(getattr(getattr(backend, "config", None),
+                                "extra_vllm_args", []) or []))
+        if not repos:
+            repos = [model]
+
+        for repo in repos:
+            outcome = fetch_model_from_peer(
+                on_start=lambda node_id, r=repo: note(
+                    f"copying {r} from {node_id}"),
+                cluster=app.get("cluster_state"),
+                own_node_id=str(getattr(config, "node_id", "") or ""),
+                ssh_user=str(getattr(config, "ssh_user", "") or ""),
+                model=repo,
+                models_dir=models_dir,
+                # The peer's path as the HOST sees it: this process runs in a
+                # container whose view of AINODE_HOME differs, and the ssh
+                # lands on the peer's host, not in its container.
+                host_models_dir=host_path(models_dir),
+                # Even when the weights are already here. The head is the
+                # source of truth and a sub-node's copy is a mirror of it;
+                # rsync sends only what differs, so an unchanged checkpoint
+                # costs a listing.
+                sync=True,
+            )
+            if outcome in ("fetched", "synced"):
+                logger.info("%s %s from a peer instead of downloading it",
+                            "Fetched" if outcome == "fetched" else "Synced", repo)
+                continue
+            if outcome == "present":
+                # Already here. A sync that found no peer to compare against
+                # is not a reason to refuse something this node can serve.
+                continue
+            blocked = refuse(f"no node in the cluster has {repo}")
+            if blocked:
+                return blocked
+        return None
     except Exception as exc:
         logger.exception("peer weight fetch failed for %s", model)
         return refuse(f"could not get {model} from the head ({exc})")
