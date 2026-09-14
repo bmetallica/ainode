@@ -1082,6 +1082,27 @@ def _routing_table(cluster, local_node_id: str, local_port: int) -> dict:
     return table
 
 
+def _local_embedding_models(app) -> list[str]:
+    """Embedding models loaded on THIS node.
+
+    Only this node's. They are advertised nowhere in discovery and
+    /v1/embeddings is served locally, with no proxy to a peer — so listing a
+    peer's would promise an endpoint that then answers "not loaded". When
+    embeddings gain routing, this is where the fleet's join in.
+    """
+    manager = app.get("embedding_manager")
+    if manager is None:
+        return []
+    try:
+        return sorted(
+            str(entry.get("id")) for entry in manager.list_loaded()
+            if entry.get("id")
+        )
+    except Exception:
+        logger.debug("could not list loaded embedding models", exc_info=True)
+        return []
+
+
 async def handle_v1_models(request: web.Request) -> web.Response:
     """Federated /v1/models — the UNION of models served across the fleet (F1)."""
     config: NodeConfig = request.app["config"]
@@ -1090,6 +1111,13 @@ async def handle_v1_models(request: web.Request) -> web.Response:
     if not table and config.model:
         table = {config.model: ("localhost", config.api_port)}
     data = [{"id": m, "object": "model", "owned_by": "ainode"} for m in sorted(table)]
+    # Embedding models too. They are not vLLM instances, so they never entered
+    # the routing table, and a RAG client that asks /v1/models before calling
+    # /v1/embeddings concluded the model it had just loaded was unavailable.
+    # OpenAI lists its embedding models here; so do we.
+    for model_id in _local_embedding_models(request.app):
+        if model_id not in table:
+            data.append({"id": model_id, "object": "model", "owned_by": "ainode"})
     return web.json_response({"object": "list", "data": data})
 
 

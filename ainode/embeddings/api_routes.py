@@ -130,11 +130,24 @@ async def handle_v1_embeddings(request: web.Request) -> web.Response:
 
 async def handle_list_embedding_models(request: web.Request) -> web.Response:
     manager: EmbeddingManager = request.app["embedding_manager"]
-    loaded_ids = {m["id"] for m in manager.list_loaded()}
+    loaded = {m["id"]: m for m in manager.list_loaded()}
     models = []
     for entry in manager.list_known():
         info = dict(entry)
-        info["loaded"] = info["id"] in loaded_ids
+        info["loaded"] = info["id"] in loaded
+        models.append(info)
+    # A model loaded from outside the curated list — which the UI can now ask
+    # for by repo id — appeared nowhere: this listing walked the catalog and
+    # marked it, so anything not in the catalog was invisible however loaded
+    # it was, including in the tab that had just loaded it.
+    known_ids = {entry["id"] for entry in models}
+    for model_id, meta in sorted(loaded.items()):
+        if model_id in known_ids:
+            continue
+        info = dict(meta)
+        info["loaded"] = True
+        info.setdefault("hf_repo", model_id)
+        info.setdefault("description", "Loaded from Hugging Face")
         models.append(info)
     return web.json_response({"models": models, "count": len(models)})
 
