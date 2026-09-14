@@ -1140,6 +1140,14 @@ const AINode = {
               if (instPhase === 'failed') {
                 return '<span class="instance-status failed">FAILED</span>';
               }
+              // Reached ready, but the engine is not answering any more: it
+              // stopped after it had served. Drawing the phase here painted a
+              // full green bar labelled with whatever the load was last doing
+              // — "SIZING THE KV CACHE · 100%" on a model that had died — which
+              // reads as progress instead of as loss.
+              if (instPhase === 'ready') {
+                return '<span class="instance-status failed">STOPPED ANSWERING</span>';
+              }
               var pi = PHASE_INFO[instPhase] || ['starting', 10];
               var label = instDetail || pi[0];
               return '<span class="instance-status starting" title="' + self.esc(loadDetail || '') + '">' + self.esc(label.toUpperCase()) + ' · ' + pi[1] + '%</span>' +

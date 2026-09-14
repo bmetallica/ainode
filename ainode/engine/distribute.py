@@ -26,8 +26,9 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["DistributionError", "ensure_peer_has_dir", "ensure_peer_has_image",
-           "ensure_local_image", "hf_cache_dir_name", "local_image_id"]
+__all__ = ["SSH_OPTS", "DistributionError", "ensure_peer_has_dir",
+           "ensure_peer_has_image", "ensure_local_image", "hf_cache_dir_name",
+           "local_image_id"]
 
 # Long enough for a frontier MoE over a slow link; short enough that a hung
 # transfer does not wedge a launch forever.
