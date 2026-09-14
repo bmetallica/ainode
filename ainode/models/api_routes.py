@@ -432,6 +432,42 @@ def _persist_primary_overrides(config, gmu, overrides) -> None:
         setattr(config, k, v)
 
 
+def _fetch_weights_from_a_peer(app, backend, model: str, config) -> None:
+    """Copy `model` here from a peer that has it, if any. Never raises."""
+    try:
+        from ainode.core.config import host_path
+        from ainode.engine.acquire import fetch_model_from_peer
+
+        models_dir = getattr(config, "models_dir", "") or ""
+        if not models_dir:
+            return
+
+        def announce(node_id: str) -> None:
+            # The launcher writes nothing during a multi-gigabyte copy, and an
+            # unexplained ten-minute pause at "starting" is indistinguishable
+            # from a hang — that is exactly how this was reported.
+            note = getattr(backend, "_progress", None)
+            if callable(note):
+                note("distributing", f"copying the weights from {node_id}",
+                     getattr(backend, "_log_file", None))
+
+        outcome = fetch_model_from_peer(
+            cluster=app.get("cluster_state"),
+            own_node_id=str(getattr(config, "node_id", "") or ""),
+            ssh_user=str(getattr(config, "ssh_user", "") or ""),
+            model=model,
+            models_dir=models_dir,
+            # The peer's path as the HOST sees it: this process runs in a
+            # container whose view of AINODE_HOME differs, and the ssh lands on
+            # the peer's host, not in its container.
+            host_models_dir=host_path(models_dir),
+        )
+        if outcome == "fetched":
+            logger.info("Fetched %s from a peer instead of downloading it", model)
+    except Exception:
+        logger.exception("peer weight fetch failed for %s; downloading instead", model)
+
+
 def append_solo_instance(app, model: str, gmu=None, *, overrides=None, persist: bool = True) -> dict:
     """APPEND a solo instance through the InstanceManager — the shared core of the
     /api/models/load solo path AND the startup replay. Returns a plain dict (no
@@ -529,6 +565,13 @@ def append_solo_instance(app, model: str, gmu=None, *, overrides=None, persist: 
                 pass
 
     backend = get_backend(inst_config, instance_id=name_token)
+    # Weights from a neighbour before the engine reaches for the internet. A
+    # distributed launch already pushes them head→peer; a solo launch on a node
+    # that does not have them had no equivalent, so it downloaded — measured
+    # here at 1.1 MB/s unauthenticated, about five hours for a 19 GB checkpoint
+    # that was already on the machine next door. Best effort throughout: any
+    # failure falls through to the download, which is what happened before.
+    _fetch_weights_from_a_peer(app, backend, model, config)
     try:
         ok = backend.start()
     except Exception as exc:

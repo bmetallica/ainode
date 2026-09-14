@@ -27,6 +27,7 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 __all__ = ["SSH_OPTS", "DistributionError", "ensure_peer_has_dir",
+           "fetch_dir_from_peer",
            "ensure_peer_has_image", "ensure_local_image", "hf_cache_dir_name",
            "local_image_id"]
 
@@ -151,6 +152,76 @@ def ensure_peer_has_dir(
 
 IMAGE_PULL_TIMEOUT = 3600
 IMAGE_COPY_TIMEOUT = 7200
+
+
+def fetch_dir_from_peer(
+    *,
+    ssh_user: str,
+    transfer_ip: str,
+    remote_parent: str,
+    dir_name: str,
+    target_parent: str,
+    label: str = "",
+    on_start: Optional[Callable[[], None]] = None,
+) -> bool:
+    """Copy ``remote_parent/dir_name`` FROM a peer into ``target_parent``.
+
+    The mirror image of :func:`ensure_peer_has_dir`, and the direction that
+    was missing. A distributed launch pushes weights from the head to its
+    peers; a solo launch on another node had no equivalent, so the engine
+    fetched from Hugging Face instead — measured on this cluster at 1.1 MB/s
+    unauthenticated, five hours for a 19 GB checkpoint that was already
+    sitting on the machine next door.
+
+    Returns True when the weights are here afterwards, False when the peer
+    does not have them. Raises :class:`DistributionError` when a transfer was
+    attempted and failed, so the caller can fall back to downloading rather
+    than fail the launch.
+    """
+    ssh_target = f"{ssh_user}@{transfer_ip}"
+    remote_dir = remote_parent.rstrip("/") + "/" + dir_name
+
+    probe = subprocess.run(
+        ["ssh", *SSH_OPTS, ssh_target,
+         f"test -d {shlex.quote(remote_dir)} && echo present || echo missing"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if "present" not in (probe.stdout or ""):
+        return False
+
+    if on_start is not None:
+        try:
+            on_start()
+        except Exception:  # pragma: no cover — a status callback must not abort a copy
+            logger.exception("on_start callback failed")
+
+    logger.info("Fetching %s from %s%s", dir_name, transfer_ip,
+                f" ({label})" if label else "")
+
+    Path(target_parent).mkdir(parents=True, exist_ok=True)
+    local_dir = Path(target_parent) / dir_name
+    ssh_e = "ssh " + " ".join(SSH_OPTS)
+    if shutil.which("rsync"):
+        result = subprocess.run(
+            ["rsync", "-a", "--partial", "-e", ssh_e,
+             f"{ssh_target}:{remote_dir}/", f"{local_dir}/"],
+            capture_output=True, text=True, timeout=TRANSFER_TIMEOUT,
+        )
+    else:
+        tar = (
+            f"{ssh_e} {shlex.quote(ssh_target)} "
+            f"'tar -C {shlex.quote(remote_parent)} -cf - {shlex.quote(dir_name)}' | "
+            f"tar -C {shlex.quote(target_parent)} -xf -"
+        )
+        result = subprocess.run(["bash", "-lc", tar], capture_output=True,
+                                text=True, timeout=TRANSFER_TIMEOUT)
+
+    if result.returncode != 0:
+        raise DistributionError(
+            f"Failed to fetch {dir_name} from {transfer_ip} "
+            f"(rc={result.returncode}): {result.stderr.strip()[:300]}"
+        )
+    return local_dir.is_dir()
 
 
 def local_image_id(image: str) -> str:
