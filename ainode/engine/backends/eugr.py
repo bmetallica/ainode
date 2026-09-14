@@ -574,6 +574,17 @@ class EugrBackend(EngineBackend):
             env["HUGGING_FACE_HUB_TOKEN"] = self.config.hf_token
             env["HF_TOKEN"] = self.config.hf_token
 
+        # A sub-node in a head-only deployment must not reach Hugging Face.
+        # The launch path already refuses when the weights could not come from
+        # the head, but the engine resolves tokenizers and configs on its own
+        # and would otherwise go out over the network for those — slowly, and
+        # invisibly. Offline mode makes any such attempt fail in a second with
+        # a message naming the file, instead of crawling at 1.1 MB/s behind a
+        # card that reads "starting".
+        if not getattr(self.config, "download_from_hub", True):
+            env["HF_HUB_OFFLINE"] = "1"
+            env["TRANSFORMERS_OFFLINE"] = "1"
+
         # Socket interface = the COORDINATION path. On a mesh that is the
         # shared Ethernet, because this node's cluster_interface address
         # reaches only one of its two neighbours. Off the mesh the topology
