@@ -505,8 +505,13 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "needs a power-of-two rank count. Served here on two Sparks at "
             "TP=2: 1,072,101 tokens of KV cache at 131,072 per request "
             "(8.18x concurrency), gpu_memory_utilization 0.87, "
-            "--max-num-seqs 8. The flags are the upstream recipe's apart from "
-            "three the hardware or the checkpoint contradicted."
+            "--max-num-seqs 8. It reasons before every reply and the thinking "
+            "is the bulk of the output: 979 reasoning tokens measured for "
+            "\"count from 1 to 30\", so a client that caps max_tokens low "
+            "gets an empty answer and finish_reason=length. Budget tens of "
+            "thousands of output tokens, not hundreds. The flags are the "
+            "upstream recipe's apart from three the hardware or the "
+            "checkpoint contradicted."
         ),
         quantization="NVFP4", family="glm", params_b=0.0,
         # Served on this cluster on 2026-09-14 at TP=2 — the picker can

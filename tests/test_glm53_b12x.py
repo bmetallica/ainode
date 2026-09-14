@@ -338,3 +338,23 @@ class TestWhatTheHardwareContradicted:
                "registry.py").read_text()
         # Both launches, so the next reader can check the arithmetic.
         assert "434,176 tokens" in src and "1,072,101 tokens" in src
+
+
+class TestTheReasoningBudgetIsStated:
+    """An empty answer with finish_reason=length is not a server fault.
+
+    Measured on the cluster: 979 reasoning tokens for "Zähle von 1 bis 30",
+    with zero content tokens when max_tokens was 512 — the whole budget went
+    into thinking and the reply never started. A client configured with a
+    normal-looking output limit therefore sees the model "stop" mid-session,
+    which is exactly how it was reported.
+
+    Note what does NOT fix it: chat_template_kwargs {"enable_thinking": false}
+    returns reasoning_tokens=0 but moves the same thinking into `content`.
+    It suppresses the separation, not the reasoning.
+    """
+
+    def test_the_catalog_warns_about_it(self):
+        info = CURATED_CLUSTER_MODELS["glm-5.3-flash-nvfp4-spark"]
+        assert "979 reasoning tokens" in info.description
+        assert "finish_reason=length" in info.description
