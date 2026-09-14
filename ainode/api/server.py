@@ -1130,15 +1130,25 @@ async def handle_cluster_mirror_models(request: web.Request) -> web.Response:
                  "total": len(models), "done": 0})
 
     async def _run() -> None:
-        from ainode.engine.mirror import mirror_model_to_peers
+        from ainode.engine.mirror import ensure_dependencies, mirror_model_to_peers
 
         loop = asyncio.get_event_loop()
         for model in models:
             jobs["models"][model] = {"state": "copying"}
             try:
-                results = await loop.run_in_executor(
-                    None, lambda m=model: mirror_model_to_peers(request.app, m))
-                jobs["models"][model] = {"state": "done", "nodes": results}
+                # What the recipe pulls in counts as part of the model. Fetch
+                # it here first if it is missing, so the sweep leaves every
+                # node able to launch rather than merely holding a checkpoint.
+                extras = await loop.run_in_executor(
+                    None, lambda m=model: ensure_dependencies(request.app, m))
+                nodes: dict = {}
+                for repo in [model, *extras]:
+                    nodes.update(await loop.run_in_executor(
+                        None, lambda r=repo: mirror_model_to_peers(request.app, r)))
+                entry = {"state": "done", "nodes": nodes}
+                if extras:
+                    entry["requires"] = extras
+                jobs["models"][model] = entry
             except Exception as exc:  # pragma: no cover - mirror never raises
                 jobs["models"][model] = {"state": "failed", "error": str(exc)}
             jobs["done"] += 1

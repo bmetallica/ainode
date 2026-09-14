@@ -1679,15 +1679,23 @@ async def _mirror_after_download(app, model: str, job: dict) -> None:
         return
     job.setdefault("mirror", {})
     try:
-        from ainode.engine.mirror import mirror_model_to_peers
+        from ainode.engine.mirror import ensure_dependencies, mirror_model_to_peers
 
         def progress(node_id: str, state: str) -> None:
             job["mirror"][node_id] = state
 
         loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(
-            None, lambda: mirror_model_to_peers(app, model, progress))
-        job["mirror"].update(results)
+        # A drafter named by the recipe is part of the model, and vLLM would
+        # otherwise fetch it at launch — on whichever node launches, which is
+        # how one ended up on a sub-node and not on the head at all.
+        extras = await loop.run_in_executor(
+            None, lambda: ensure_dependencies(app, model))
+        if extras:
+            job["requires"] = extras
+        for repo in [model, *extras]:
+            results = await loop.run_in_executor(
+                None, lambda r=repo: mirror_model_to_peers(app, r, progress))
+            job["mirror"].update(results)
     except Exception as exc:
         logger.exception("mirroring %s to peers failed", model)
         job["mirror"]["error"] = str(exc)
