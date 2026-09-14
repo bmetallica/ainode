@@ -539,6 +539,14 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "--kv-cache-dtype", "fp8",
             "--quantization", "modelopt_mixed",
             "--attention-backend", "B12X",
+            # Required by the model, not a tuning choice. Lowering it to 16 to
+            # get off the experimental attention path was refused outright:
+            #
+            #   ValueError: GLM C4 indexing requires a model block size
+            #   divisible by 256
+            #
+            # So the block size and the attention backend cannot be varied
+            # independently while diagnosing this model.
             "--block-size", "256",
             "--moe-backend", "b12x",
             "--linear-backend", "b12x",

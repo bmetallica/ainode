@@ -358,3 +358,28 @@ class TestTheReasoningBudgetIsStated:
         info = CURATED_CLUSTER_MODELS["glm-5.3-flash-nvfp4-spark"]
         assert "979 reasoning tokens" in info.description
         assert "finish_reason=length" in info.description
+
+
+class TestTheBlockSizeIsNotOptional:
+    """256 is the model's requirement, not a tuning knob.
+
+    Dropping to --block-size 16, to move off the experimental B12X attention
+    path while diagnosing a cudaErrorIllegalAddress, failed at startup:
+
+        ValueError: GLM C4 indexing requires a model block size divisible
+        by 256
+
+    Recorded so the suggestion is not made again — including by whoever is
+    reading the recipe and sees an unusually large block size.
+    """
+
+    def test_the_requirement_is_recorded_next_to_the_flag(self):
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parent.parent / "ainode" / "models" /
+               "registry.py").read_text()
+        assert "GLM C4 indexing requires a model block size" in src
+
+    def test_the_recipe_still_asks_for_256(self):
+        args = catalog_recipe(MODEL)["extra_vllm_args"]
+        assert args[args.index("--block-size") + 1] == "256"
