@@ -127,3 +127,20 @@ class TestTheEngineIsOfflineToo:
              mock.patch.object(EugrBackend, "_nccl_ib_hca", lambda s: None):
             env = backend._build_env()
         assert "HF_HUB_OFFLINE" not in env
+
+
+class TestItCanBeSetWithoutEditingFilesByHand:
+    """Switching a sub-node over should not mean ssh-ing to it and editing
+    JSON — a head-only deployment that needs a shell on each node to be
+    configured is only half a head-only deployment."""
+
+    def test_both_policy_fields_are_patchable(self):
+        from ainode.api.server import PATCHABLE_CONFIG_FIELDS
+
+        assert "download_from_hub" in PATCHABLE_CONFIG_FIELDS
+        assert "web_ui_enabled" in PATCHABLE_CONFIG_FIELDS
+
+    def test_they_exist_on_the_config(self):
+        config = NodeConfig(node_id="n3")
+        assert hasattr(config, "download_from_hub")
+        assert hasattr(config, "web_ui_enabled")
