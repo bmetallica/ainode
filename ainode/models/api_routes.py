@@ -432,15 +432,40 @@ def _persist_primary_overrides(config, gmu, overrides) -> None:
         setattr(config, k, v)
 
 
-def _fetch_weights_from_a_peer(app, backend, model: str, config) -> None:
-    """Copy `model` here from a peer that has it, if any. Never raises."""
+def _fetch_weights_from_a_peer(app, backend, model: str, config) -> Optional[str]:
+    """Copy `model` here from a peer that has it.
+
+    Returns None when the launch may go ahead, or a message when it must not.
+
+    That second case exists only where ``download_from_hub`` is False — a
+    sub-node in a head-only deployment. There, failing to get the weights from
+    the head is a REAL failure and has to be said. The alternative is what
+    this cluster actually did: five hours at 1.1 MB/s from Hugging Face with
+    the card reading "starting", which looks exactly like a hang and produces
+    a support question rather than an answer.
+
+    Where the node is allowed to download, every failure here stays
+    best-effort: a peer that is down or an ssh key that is not set up must not
+    turn a working, if slower, launch into a failed one.
+    """
+    may_download = bool(getattr(config, "download_from_hub", True))
+
+    def refuse(reason: str) -> Optional[str]:
+        if may_download:
+            logger.warning("%s; downloading instead", reason)
+            return None
+        return (f"{reason}. This node does not download from Hugging Face "
+                f"(download_from_hub is off), so the weights have to come "
+                f"from the head: download {model} there, or run "
+                f"POST /api/cluster/mirror-models on it.")
+
     try:
         from ainode.core.config import host_path
         from ainode.engine.acquire import fetch_model_from_peer
 
         models_dir = getattr(config, "models_dir", "") or ""
         if not models_dir:
-            return
+            return refuse("no models directory is configured")
 
         def announce(node_id: str) -> None:
             # The launcher writes nothing during a multi-gigabyte copy, and an
@@ -469,8 +494,15 @@ def _fetch_weights_from_a_peer(app, backend, model: str, config) -> None:
         if outcome in ("fetched", "synced"):
             logger.info("%s %s from a peer instead of downloading it",
                         "Fetched" if outcome == "fetched" else "Synced", model)
-    except Exception:
-        logger.exception("peer weight fetch failed for %s; downloading instead", model)
+            return None
+        if outcome == "present":
+            # Already here. A sync that found no peer to compare against is
+            # not a reason to refuse a model this node can already serve.
+            return None
+        return refuse(f"no node in the cluster has {model}")
+    except Exception as exc:
+        logger.exception("peer weight fetch failed for %s", model)
+        return refuse(f"could not get {model} from the head ({exc})")
 
 
 def append_solo_instance(app, model: str, gmu=None, *, overrides=None, persist: bool = True) -> dict:
@@ -576,7 +608,10 @@ def append_solo_instance(app, model: str, gmu=None, *, overrides=None, persist: 
     # here at 1.1 MB/s unauthenticated, about five hours for a 19 GB checkpoint
     # that was already on the machine next door. Best effort throughout: any
     # failure falls through to the download, which is what happened before.
-    _fetch_weights_from_a_peer(app, backend, model, config)
+    blocked = _fetch_weights_from_a_peer(app, backend, model, config)
+    if blocked:
+        _clear()
+        return {"ok": False, "error": blocked, "status": 502}
     try:
         ok = backend.start()
     except Exception as exc:

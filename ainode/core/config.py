@@ -225,6 +225,17 @@ class NodeConfig:
     #: dispatch that places models here, the federated proxy and /v1/* all
     #: run over it, so this is not a way to close the node off.
     web_ui_enabled: bool = True
+    #: May this node fetch weights from Hugging Face?
+    #:
+    #: False on a sub-node in a head-only deployment. Models arrive on the
+    #: head and are mirrored outward; a sub-node that cannot get a checkpoint
+    #: from the head must SAY SO, not quietly download it. Measured here at
+    #: 1.1 MB/s unauthenticated — five hours for a 19 GB checkpoint, during
+    #: which the card reads "starting" and the operator has no idea why.
+    #:
+    #: A failure that is visible in one second beats a success that is
+    #: indistinguishable from a hang for five hours.
+    download_from_hub: bool = True
     # Interface NCCL/Ray/Gloo bind to (e.g. "enp1s0f0np0" for DGX Spark direct
     # connect, or the dedicated cluster-switch NIC).
     #

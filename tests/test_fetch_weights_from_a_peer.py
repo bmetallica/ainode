@@ -186,13 +186,21 @@ class TestTheLaunchPathUsesIt:
         assert body.index("_fetch_weights_from_a_peer(app, backend, model, config)") \
             < body.index("ok = backend.start()")
 
-    def test_it_cannot_fail_a_launch(self):
-        """Every path here is an optimisation over downloading."""
+    def test_it_cannot_fail_a_launch_on_a_node_that_may_download(self):
+        """Where downloading is allowed, every path here is an optimisation
+        over it: a peer that is down must not turn a working, if slower,
+        launch into a failed one.
+
+        Where it is NOT allowed — a sub-node in a head-only deployment — the
+        opposite holds and the launch must stop. See
+        tests/test_sub_nodes_never_reach_the_hub.py.
+        """
         source = Path("ainode/models/api_routes.py").read_text()
         helper = source[source.index("def _fetch_weights_from_a_peer"):]
         helper = helper[:helper.index("\ndef ", 1)]
-        assert "except Exception:" in helper
-        assert "downloading instead" in helper
+        assert "except Exception as exc:" in helper
+        assert "if may_download:" in helper
+        assert "return None" in helper
 
     def test_it_tells_the_card_what_it_is_doing(self):
         # A multi-gigabyte copy writes no launcher output, and an unexplained
