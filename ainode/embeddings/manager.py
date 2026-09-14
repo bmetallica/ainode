@@ -85,10 +85,32 @@ _INSTALL_HINT = (
 class EmbeddingManager:
     """Tracks loaded embedding models and serves embedding requests."""
 
-    def __init__(self) -> None:
+    def __init__(self, models_dir: Optional[str] = None) -> None:
         self._models: Dict[str, Any] = {}
         self._metadata: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.RLock()
+        self._models_dir = str(models_dir or "")
+
+    @property
+    def models_dir(self) -> str:
+        """Where weights go — the same directory LLMs use.
+
+        SentenceTransformer's default is huggingface_hub's cache, which inside
+        this container is /root/.cache/huggingface: not mounted, so the model
+        was re-downloaded after every restart; not under models_dir, so
+        list_downloaded() never saw it and the mirror never carried it to the
+        other nodes. A sub-node then had to fetch it from Hugging Face itself
+        — the one thing a head-only deployment forbids.
+
+        Falling back to AINODE_HOME/models rather than to the HF default, so
+        a manager built without a config still writes somewhere that is
+        mounted, backed up and mirrored.
+        """
+        if self._models_dir:
+            return self._models_dir
+        from ainode.core.config import AINODE_HOME
+
+        return str(AINODE_HOME / "models")
 
     # -- persistence ----------------------------------------------------------
     #
@@ -185,7 +207,7 @@ class EmbeddingManager:
         SentenceTransformer = self._resolve_SentenceTransformer()
 
         logger.info("Loading embedding model %s", model_id)
-        model = SentenceTransformer(model_id)
+        model = SentenceTransformer(model_id, cache_folder=self.models_dir)
 
         catalog = KNOWN_EMBEDDING_MODELS.get(model_id, {})
         dims: Optional[int] = None
