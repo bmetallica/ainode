@@ -467,16 +467,23 @@ def _fetch_weights_from_a_peer(app, backend, model: str, config) -> Optional[str
         if not models_dir:
             return refuse("no models directory is configured")
 
-        def announce(node_id: str) -> None:
-            # The launcher writes nothing during a multi-gigabyte copy, and an
-            # unexplained ten-minute pause at "starting" is indistinguishable
-            # from a hang — that is exactly how this was reported.
-            note = getattr(backend, "_progress", None)
-            if callable(note):
-                note("distributing", f"copying the weights from {node_id}",
-                     getattr(backend, "_log_file", None))
+        def note(detail: str) -> None:
+            # Nothing else writes a line during this. The launcher has not
+            # started, so the phase tracker has nothing to read, and the card
+            # sits at the "idle" 8% through a step that can take minutes —
+            # which is indistinguishable from a hang, and was reported as one.
+            progress = getattr(backend, "_progress", None)
+            if callable(progress):
+                progress("distributing", detail,
+                         getattr(backend, "_log_file", None))
+
+        # Before the search, not only before a copy: asking each peer what it
+        # has is an HTTP round trip per node, and on a node that is down it is
+        # a five-second wait with nothing on screen.
+        note("looking for the weights on the other nodes")
 
         outcome = fetch_model_from_peer(
+            on_start=lambda node_id: note(f"copying the weights from {node_id}"),
             cluster=app.get("cluster_state"),
             own_node_id=str(getattr(config, "node_id", "") or ""),
             ssh_user=str(getattr(config, "ssh_user", "") or ""),
