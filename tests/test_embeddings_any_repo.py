@@ -31,8 +31,11 @@ class TestTheFieldExists:
         assert 'id="embed-any-repo"' in APP_JS
         assert 'id="embed-any-load"' in APP_JS
 
-    def test_it_posts_to_the_load_route(self):
-        assert "'/api/embeddings/models/' + encodeURIComponent(id) + '/load'" in APP_JS
+    def test_it_posts_to_the_cluster_load_route(self):
+        # Through the cluster route even for this node — an empty node_id
+        # means "here". Two paths is how the placement got lost before.
+        assert "'/api/cluster/embeddings/load'" in APP_JS
+        assert "JSON.stringify({ model: id, node_id: nodeId })" in APP_JS
 
     def test_enter_submits(self):
         assert "if (e.key === 'Enter') loadTyped();" in APP_JS

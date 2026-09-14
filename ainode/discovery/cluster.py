@@ -41,6 +41,7 @@ class ClusterNode:
     fabric_ip: str = ""  # coordination address: SSH / Ray / rendezvous (BUG D: not mgmt)
     ib_ips: list = field(default_factory=list)  # RoCE link addresses, bulk transfer only
     instances: list = field(default_factory=list)  # Phase 2: distributed instances this node heads
+    embedding_models: list = field(default_factory=list)  # in-process, not vLLM instances
 
     @classmethod
     def from_discovered(cls, discovered: DiscoveredNode) -> "ClusterNode":
@@ -70,6 +71,7 @@ class ClusterNode:
             fabric_ip=getattr(a, "fabric_ip", "") or "",
             ib_ips=list(getattr(a, "ib_ips", []) or []),
             instances=list(getattr(a, "instances", []) or []),
+            embedding_models=list(getattr(a, "embedding_models", []) or []),
         )
 
     @classmethod
@@ -98,6 +100,7 @@ class ClusterNode:
             fabric_ip=getattr(announcement, "fabric_ip", "") or "",
             ib_ips=list(getattr(announcement, "ib_ips", []) or []),
             instances=list(getattr(announcement, "instances", []) or []),
+            embedding_models=list(getattr(announcement, "embedding_models", []) or []),
         )
 
 

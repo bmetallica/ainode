@@ -175,7 +175,30 @@ def _response_error(response) -> str:
         return f"HTTP {getattr(response, 'status', '?')}"
 
 
+def _entry_target_node(app, entry: ProfileEntry) -> str:
+    """The node id an entry names, or "" for this one."""
+    wanted = [n for n in (entry.node_ids or []) if n]
+    if not wanted:
+        return ""
+    own = str(getattr(app.get("config"), "node_id", "") or "")
+    return "" if wanted[0] == own else wanted[0]
+
+
 async def _start_embedding_entry(app, entry: ProfileEntry) -> ApplyResult:
+    # Placement first: an embedding entry captured on the head can name
+    # another node, and loading it here instead would put the RAG model on
+    # the wrong machine — silently, since both nodes answer.
+    target = _entry_target_node(app, entry)
+    if target:
+        from ainode.api.server import handle_cluster_embedding_load
+
+        response = await handle_cluster_embedding_load(
+            _AppRequest(app, {"node_id": target, "model": entry.model}))
+        if response.status == 200:
+            return ApplyResult(entry.model, "launched", True, node_id=target)
+        return ApplyResult(entry.model, "launch_failed", False,
+                           _response_error(response), node_id=target)
+
     manager = app.get("embedding_manager")
     if manager is None:
         return ApplyResult(entry.model, "unavailable", False,
@@ -326,11 +349,36 @@ def capture_profile(app, name: str, description: str = "") -> Profile:
             engine_image=str(getattr(inst_config, "engine_image", "") or ""),
         ))
 
+    # Embeddings, with the node each one is on. Recorded even for this node:
+    # a profile is applied on whichever node has it, and an entry with no
+    # placement lands wherever it is applied — which is how a RAG model
+    # captured from node 3 would come back on the head.
+    seen_embeddings = set()
     if embeddings is not None:
         for meta in embeddings.list_loaded():
             model_id = meta.get("id") or ""
-            if model_id:
-                entries.append(ProfileEntry(model=model_id, kind=KIND_EMBEDDING))
+            if model_id and model_id not in seen_embeddings:
+                seen_embeddings.add(model_id)
+                entries.append(ProfileEntry(model=model_id, kind=KIND_EMBEDDING,
+                                            node_ids=[own_id]))
+
+    # And the peers'. They advertise what they have loaded, so a profile saved
+    # on the head describes the whole cluster rather than one machine of it.
+    cluster = app.get("cluster_state")
+    if cluster is not None:
+        try:
+            nodes = cluster.get_nodes()
+        except Exception:
+            nodes = []
+        for node in nodes:
+            if node.node_id == own_id:
+                continue
+            for model_id in (getattr(node, "embedding_models", []) or []):
+                if model_id and model_id not in seen_embeddings:
+                    seen_embeddings.add(model_id)
+                    entries.append(ProfileEntry(model=model_id,
+                                                kind=KIND_EMBEDDING,
+                                                node_ids=[node.node_id]))
 
     return Profile(name=name, description=description, entries=entries)
 

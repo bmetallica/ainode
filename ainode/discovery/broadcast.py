@@ -81,6 +81,13 @@ class NodeAnnouncement:
     # legacy distributed_instance_id/distributed_peers, but a list so a head can
     # run more than one. from_json drops unknown keys → older peers stay OK.
     instances: List[dict] = field(default_factory=list)
+    # Embedding models loaded on this node, by repo id. They are not vLLM
+    # instances — in-process sentence-transformers, no container — so they
+    # appear nowhere above, and a head had no way to know that the RAG model
+    # was running on node 3. Needed to list them, to place them, and for a
+    # profile captured on the head to record where each one belongs. Empty on
+    # older peers; from_json drops unknown keys, so the wire stays compatible.
+    embedding_models: List[str] = field(default_factory=list)
 
     def to_json(self) -> str:
         """Serialize to JSON string."""
