@@ -1111,7 +1111,12 @@ const AINode = {
         ? '<div class="instance-failed-note">' + self.esc(instError) +
           // The one repair the message asks for, as a button. Telling someone
           // to run a docker command is the opposite of what this panel is for.
-          (/compile cache|illegal instruction|compiled kernel/i.test(instError)
+          // "illegal memory access" was missing, and that is the one this
+          // cluster actually produced: a cudaErrorIllegalAddress inside a
+          // worker, after which the CUDA context is poisoned and the model
+          // emits "!!!!!" forever. The operator went looking for a button
+          // that the regex had decided not to draw.
+          (/compile cache|illegal (instruction|memory access|address)|compiled kernel|cudaError/i.test(instError)
             ? '<div style="margin-top:8px"><button class="btn-ghost server-btn-sm" ' +
               'data-clear-cache="' + self.esc((inst.nodes && inst.nodes[0]) || '') +
               '">Clear compile cache</button></div>'
@@ -1157,6 +1162,13 @@ const AINode = {
         (inst.degraded
           ? '<button class="instance-relaunch" data-model="' + self.esc(inst.model) + '">RELAUNCH</button>'
           : '') +
+        // Not only in a failure note. Clearing the compiled-kernel cache is
+        // ordinary maintenance — it is the first thing to try after any
+        // wrong-output or CUDA-fault report — and it was reachable only from
+        // an error message whose wording had to match a regex. Every node the
+        // instance runs on, because the kernels are compiled per node.
+        '<button class="instance-cache-clear btn-ghost server-btn-sm" data-nodes="' +
+          self.esc((inst.nodes || []).join(',')) + '">CLEAR KERNEL CACHE</button>' +
         '<button class="instance-delete" data-model="' + self.esc(inst.model) + '">UNLOAD</button>' +
         '</div>' +
         '</div>';
@@ -1185,6 +1197,42 @@ const AINode = {
         }
         self.toast('Cleared ' + (data.freed_mb || 0) + ' MB — relaunch the model',
                    'success');
+      });
+    });
+
+    container.querySelectorAll('.instance-cache-clear').forEach(function (btn) {
+      btn.addEventListener('click', async function (e) {
+        e.stopPropagation();
+        var labels = (btn.getAttribute('data-nodes') || '').split(',')
+          .map(function (l) { return l.split(':')[0].trim(); })
+          .filter(Boolean);
+        if (!confirm('Clear the compiled-kernel cache on ' +
+                     (labels.join(', ') || 'this node') + '?\n\n' +
+                     'Unload the model first — the cache is read at launch. ' +
+                     'The next launch recompiles, which takes a few minutes once.')) return;
+        var label = btn.textContent;
+        btn.textContent = 'Clearing…';
+        btn.disabled = true;
+        var freed = 0;
+        var failed = [];
+        for (var i = 0; i < (labels.length || 1); i++) {
+          var nodeId = self._nodeIdForLabel(labels[i]);
+          var resp = await fetch('/api/cluster/compile-cache', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(nodeId ? { node_id: nodeId } : {}),
+          });
+          var data = await resp.json().catch(function () { return {}; });
+          if (!resp.ok || data.error) failed.push(labels[i] || 'this node');
+          else freed += data.freed_mb || 0;
+        }
+        btn.textContent = label;
+        btn.disabled = false;
+        if (failed.length) {
+          self.toast('Could not clear the cache on ' + failed.join(', '), 'error');
+          return;
+        }
+        self.toast('Cleared ' + freed + ' MB on ' + (labels.length || 1) +
+                   ' node(s) — relaunch the model', 'success');
       });
     });
 

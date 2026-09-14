@@ -181,6 +181,30 @@ _ILLEGAL_INSTRUCTION_HINT = (
     "Inductor generating kernels at all."
 )
 
+# An out-of-bounds access inside a worker kernel. Seen on this cluster mid
+# session, on GLM 5.3 Flash served by the experimental B12X stack:
+#
+#   RuntimeError: Worker failed with error 'CUDA error: an illegal memory
+#   access was encountered'
+#   (Worker_TP0) torch.AcceleratorError: cudaErrorIllegalAddress
+#
+# Distinct from cudaErrorIllegalInstruction, and worse in one specific way:
+# the model does not necessarily stop. The CUDA context is poisoned, so
+# subsequent kernels return whatever is in memory, and the reported symptom
+# was an endless run of "!" — token id 0, which is what argmax returns over
+# NaN logits. An operator watching output rather than logs sees a model that
+# has gone mad, not a crash.
+_ILLEGAL_ADDRESS_HINT = (
+    "a kernel read or wrote outside its memory. The engine's CUDA context is "
+    "unusable afterwards, so anything it produced since — including output "
+    "that looked fine — cannot be trusted; a run of \"!!!!\" is the usual "
+    "tell. Remove the engine container on EVERY node before relaunching "
+    "(docker rm -f), because a stopped one is reused by name. Then clear the "
+    "compile cache. If it returns, the attention backend is the next suspect: "
+    "try --attention-backend FLASHINFER --block-size 16 to swap the "
+    "experimental kernels for vLLM's standard ones."
+)
+
 # The B12X fast loader asks the platform for a capability it does not always
 # have. Seen on a three-node GB10 cluster:
 #
@@ -218,6 +242,8 @@ _FATAL_PATTERNS = [
     ("b12x loader requires", "b12xloaderrequires", _B12X_LOADER_HINT),
     ("cudaerrorillegalinstruction", "cudaerrorillegalinstruction", _ILLEGAL_INSTRUCTION_HINT),
     ("illegal instruction", "illegalinstruction", _ILLEGAL_INSTRUCTION_HINT),
+    ("cudaerrorillegaladdress", "cudaerrorillegaladdress", _ILLEGAL_ADDRESS_HINT),
+    ("illegal memory access", "illegalmemoryaccess", _ILLEGAL_ADDRESS_HINT),
     ("unrecognized arguments", "unrecognizedarguments", _ARGPARSE_HINT),
     ("error: argument", "error:argument", _ARGPARSE_HINT),
 ]

@@ -115,9 +115,13 @@ class TestTheButton:
         assert "data-clear-cache" in APP_JS
         assert "/api/cluster/compile-cache" in APP_JS
 
-    def test_only_when_the_error_is_about_kernels(self):
-        # A model that died on a bad flag does not need its cache cleared.
-        assert "illegal instruction|compiled kernel" in APP_JS
+    def test_the_note_still_singles_out_kernel_faults(self):
+        # A model that died on a bad flag does not need its cache cleared, so
+        # the failure note keeps its trigger. The wording widened: see
+        # tests/test_compile_cache_without_a_crash.py — "illegal memory
+        # access" is a different CUDA error from "illegal instruction" and was
+        # not matched, on the one fault this cluster actually produced.
+        assert "illegal (instruction|memory access|address)|compiled kernel" in APP_JS
 
     def test_it_says_what_it_costs(self):
         assert "recompiles" in APP_JS
