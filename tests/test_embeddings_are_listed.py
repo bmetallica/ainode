@@ -95,15 +95,23 @@ class TestV1Models:
         assert response.status == 200
         assert "org/chat-model" in [m["id"] for m in (await response.json())["data"]]
 
-    def test_only_this_nodes_models_are_listed(self):
-        """Embeddings are not advertised in discovery and /v1/embeddings has
-        no proxy to a peer, so listing a peer's would promise an endpoint that
-        answers "not loaded"."""
-        import inspect
+    @pytest.mark.asyncio
+    async def test_a_peers_model_is_listed_too(self, client, app):
+        """Once /v1/embeddings forwards, a peer's model is one this address
+        can answer for — and that is the only promise the list makes."""
+        from ainode.discovery.broadcast import NodeStatus
+        from ainode.discovery.cluster import ClusterNode
 
-        from ainode.api import server
-
-        assert "Only this node's" in inspect.getsource(server._local_embedding_models)
+        app["embedding_manager"] = _Manager([])
+        app["cluster_state"].add_node(ClusterNode(
+            node_id="n3", node_name="spark-3", gpu_name="GB10",
+            gpu_memory_gb=128.0, unified_memory=True, model="",
+            status=NodeStatus.ONLINE, api_port=8000, web_port=3000,
+            last_seen=0.0, fabric_ip="10.0.0.3",
+            embedding_models=[CURATED],
+        ))
+        data = await (await client.get("/v1/models")).json()
+        assert CURATED in [m["id"] for m in data["data"]]
 
 
 class TestTheEmbeddingsListing:
@@ -128,3 +136,81 @@ class TestTheEmbeddingsListing:
         data = await (await client.get("/api/embeddings/models")).json()
         assert [m["id"] for m in data["models"]].count(CURATED) == 1
         assert data["count"] == len(data["models"])
+
+
+class TestPlacement:
+    """Where an embedding model runs is a deployment decision, so it belongs
+    in the dialog and in the profile — not in "whichever node's UI is open".
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_empty_node_id_loads_here(self, client, app):
+        calls = []
+
+        class _M(_Manager):
+            def is_loaded(self, model_id):
+                return False
+
+            async def aload(self, model_id):
+                calls.append(model_id)
+                return {"id": model_id}
+
+            def save_manifest(self):
+                pass
+
+        app["embedding_manager"] = _M([])
+        response = await client.post("/api/cluster/embeddings/load",
+                                     json={"model": CURATED})
+        assert response.status == 200, await response.text()
+        assert calls == [CURATED]
+
+    @pytest.mark.asyncio
+    async def test_a_missing_model_is_a_400(self, client, app):
+        app["embedding_manager"] = _Manager([])
+        response = await client.post("/api/cluster/embeddings/load",
+                                     json={"node_id": "n3"})
+        assert response.status == 400
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_node_is_a_404(self, client, app):
+        app["embedding_manager"] = _Manager([])
+        response = await client.post("/api/cluster/embeddings/load",
+                                     json={"model": CURATED, "node_id": "nope"})
+        assert response.status == 404
+        assert "not found" in (await response.json())["error"]
+
+    def test_the_routes_exist(self, app):
+        paths = {getattr(r.resource, "canonical", "") for r in app.router.routes()}
+        assert "/api/cluster/embeddings/load" in paths
+        assert "/api/cluster/embeddings/unload" in paths
+
+
+class TestTheProfileRemembersTheNode:
+    def test_capture_records_this_nodes_placement(self):
+        """An entry with no placement lands wherever the profile is applied —
+        which is how a RAG model captured from node 3 came back on the head."""
+        import inspect
+
+        from ainode.profiles import apply
+
+        source = inspect.getsource(apply.capture_profile)
+        assert "node_ids=[own_id]" in source
+
+    def test_capture_records_peers_too(self):
+        import inspect
+
+        from ainode.profiles import apply
+
+        source = inspect.getsource(apply.capture_profile)
+        assert "embedding_models" in source
+        assert "node_ids=[node.node_id]" in source
+
+    def test_apply_sends_an_entry_to_the_node_it_names(self):
+        import inspect
+
+        from ainode.profiles import apply
+
+        source = inspect.getsource(apply._start_embedding_entry)
+        assert "handle_cluster_embedding_load" in source
+        # Placement is decided before the local manager is even consulted.
+        assert source.index("_entry_target_node") < source.index("embedding_manager")

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 import aiohttp
+from urllib.parse import quote
 from aiohttp import web
 
 from ainode.api.params import str_field
@@ -167,6 +168,8 @@ def create_app(
     # node whose launch failed.
     app.router.add_post("/api/engine/compile-cache", _clear_compile_cache)
     app.router.add_post("/api/cluster/compile-cache", handle_cluster_compile_cache)
+    app.router.add_post("/api/cluster/embeddings/load", handle_cluster_embedding_load)
+    app.router.add_post("/api/cluster/embeddings/unload", handle_cluster_embedding_unload)
     app.router.add_post("/api/cluster/unload", handle_cluster_unload)
     app.router.add_post("/api/cluster/update-all", handle_cluster_update_all)
     app.router.add_get("/api/cluster/update-status", handle_cluster_update_status)
@@ -643,6 +646,11 @@ async def _cluster_sync_loop(app: web.Application) -> None:
                     updates["instances"] = (
                         _head_instances(config) if (dmode == "head" and engine_serving) else []
                     )
+                # Embedding models are in-process and appear in no instance
+                # record, so without this the head cannot see that the RAG
+                # model is running on another node — cannot list it, cannot
+                # route to it, and cannot capture it into a profile.
+                updates["embedding_models"] = _local_embedding_models(app)
                 if sender:
                     sender.update_announcement(**updates)
                     # Keep the app-level announcement in sync so /api/status sees fresh values
@@ -987,6 +995,74 @@ async def handle_cluster_load(request: web.Request) -> web.Response:
     return await _cluster_dispatch(request, "/api/models/load")
 
 
+class _MatchInfoShim:
+    """A request whose match_info names one model — the embedding routes read
+    the model from the URL, and a cluster dispatch carries it in the body."""
+
+    def __init__(self, original, model_id: str):
+        self._original = original
+        self.match_info = {"model_id": model_id}
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+
+async def _embedding_dispatch(request: web.Request, action: str) -> web.Response:
+    """POST /api/cluster/embeddings/{load,unload} {node_id, model}.
+
+    Embedding models are in-process, so they load on whichever node's API is
+    asked — which meant the only way to place one on node 3 was to open node
+    3's own UI. The placement is a deployment decision; it belongs in the same
+    dialog as everything else.
+    """
+    config: NodeConfig = request.app["config"]
+    cluster = request.app.get("cluster_state")
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    model = str_field(body, "model", "model_id")
+    if not model:
+        return web.json_response({"error": "model required"}, status=400)
+    node_id = str_field(body, "node_id")
+
+    if not node_id or node_id == config.node_id:
+        from ainode.embeddings.api_routes import (
+            handle_load_embedding_model,
+            handle_unload_embedding_model,
+        )
+
+        handler = (handle_load_embedding_model if action == "load"
+                   else handle_unload_embedding_model)
+        return await handler(_MatchInfoShim(request, model))
+
+    node = cluster.get_node(node_id) if cluster is not None else None
+    host = (getattr(node, "fabric_ip", "") or "") if node else ""
+    if not host:
+        return web.json_response(
+            {"error": f"node '{node_id}' not found or has no fabric IP"}, status=404)
+    url = (f"http://{host}:{node.web_port}/api/embeddings/models/"
+           f"{quote(model, safe='')}/{action}")
+    session: aiohttp.ClientSession = request.app["client_session"]
+    try:
+        async with session.post(url, timeout=aiohttp.ClientTimeout(total=600)) as upstream:
+            data = await upstream.read()
+            ctype = upstream.headers.get(
+                "Content-Type", "application/json").split(";")[0].strip()
+            return web.Response(status=upstream.status, body=data, content_type=ctype)
+    except aiohttp.ClientError as exc:
+        return web.json_response(
+            {"error": f"failed to reach node '{node_id}' at {url}: {exc}"}, status=502)
+
+
+async def handle_cluster_embedding_load(request: web.Request) -> web.Response:
+    return await _embedding_dispatch(request, "load")
+
+
+async def handle_cluster_embedding_unload(request: web.Request) -> web.Response:
+    return await _embedding_dispatch(request, "unload")
+
+
 async def _clear_compile_cache(request: web.Request) -> web.Response:
     from ainode.models.api_routes import handle_clear_compile_cache
 
@@ -1083,13 +1159,7 @@ def _routing_table(cluster, local_node_id: str, local_port: int) -> dict:
 
 
 def _local_embedding_models(app) -> list[str]:
-    """Embedding models loaded on THIS node.
-
-    Only this node's. They are advertised nowhere in discovery and
-    /v1/embeddings is served locally, with no proxy to a peer — so listing a
-    peer's would promise an endpoint that then answers "not loaded". When
-    embeddings gain routing, this is where the fleet's join in.
-    """
+    """Embedding models loaded on THIS node."""
     manager = app.get("embedding_manager")
     if manager is None:
         return []
@@ -1115,7 +1185,19 @@ async def handle_v1_models(request: web.Request) -> web.Response:
     # the routing table, and a RAG client that asks /v1/models before calling
     # /v1/embeddings concluded the model it had just loaded was unavailable.
     # OpenAI lists its embedding models here; so do we.
-    for model_id in _local_embedding_models(request.app):
+    #
+    # The whole fleet's, not only this node's: peers advertise what they have
+    # loaded and /v1/embeddings forwards to the node that has it, so a model
+    # listed here is one this address can actually answer for — which is the
+    # only promise the list makes.
+    embeddings = set(_local_embedding_models(request.app))
+    if cluster is not None:
+        try:
+            for node in cluster.get_nodes():
+                embeddings.update(getattr(node, "embedding_models", []) or [])
+        except Exception:
+            logger.debug("could not read peers' embedding models", exc_info=True)
+    for model_id in sorted(embeddings):
         if model_id not in table:
             data.append({"id": model_id, "object": "model", "owned_by": "ainode"})
     return web.json_response({"object": "list", "data": data})

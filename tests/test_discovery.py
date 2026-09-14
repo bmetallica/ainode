@@ -55,6 +55,10 @@ class TestNodeAnnouncement:
             "fabric_ip",
             "ib_ips",  # RoCE link addresses, bulk transfer only (mesh)
             "instances",  # Phase 2: distributed instances this node heads
+            # In-process embedding models. Not vLLM instances, so they appear
+            # in no instance record — without this a head cannot see, route to
+            # or place the RAG model running on another node.
+            "embedding_models",
         }
         assert set(data.keys()) == expected_keys
 

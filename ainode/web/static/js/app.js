@@ -5070,6 +5070,22 @@ const AINode = {
   //  UTILITIES
   // ========================================================================
 
+  _embedNodeSelect() {
+    // Where an embedding model should run. Defaults to this node, which is
+    // what happened implicitly before and stays the least surprising choice.
+    var own = (this.state.status && this.state.status.node_id) || '';
+    var options = ['<option value="">this node</option>'];
+    (this.state.nodes || []).forEach(function (n) {
+      if (!n.node_id || n.node_id === own) return;
+      var label = n.node_name || n.hostname || n.node_id;
+      options.push('<option value="' + n.node_id + '">' + label + '</option>');
+    });
+    return '<select id="embed-node" class="mono" ' +
+      'style="padding:5px 6px;background:var(--bg-input,#111);color:inherit;' +
+      'border:1px solid var(--border,#333);border-radius:4px">' +
+      options.join('') + '</select>';
+  },
+
   _nodeIdForLabel(label) {
     // Cards show the friendly name (and sometimes name:port); the API wants
     // the id. An unknown label means the local node, which is the right
@@ -6578,7 +6594,12 @@ const AINode = {
         '           style="width:100%;max-width:420px;padding:6px 8px;background:var(--bg-input,#111);' +
         '                  color:inherit;border:1px solid var(--border,#333);border-radius:4px">' +
         '  </div>' +
-        '  <div class="server-loaded-right">' +
+        '  <div class="server-loaded-right" style="gap:8px">' +
+        // Which node runs it. An embedding model loads on whichever node's API
+        // is asked, so before this the only way to put one on node 3 was to
+        // open node 3's own UI — and a profile saved on the head then brought
+        // it back on the head.
+        '    ' + self._embedNodeSelect() +
         '    <button class="btn-nvidia server-btn-sm" id="embed-any-load">Load</button>' +
         '  </div>' +
         '</div>' +
@@ -6598,7 +6619,8 @@ const AINode = {
           '</div>' +
           '<div class="server-loaded-right">' +
           (loaded
-            ? '  <span class="server-badge ready">LOADED</span>'
+            ? '  <span class="server-badge ready">LOADED' +
+              (m.node_name ? ' · ' + self.esc(m.node_name) : '') + '</span>'
             : '  <button class="btn-nvidia server-btn-sm" data-action="embed-load" data-model="' + self.esc(m.id) + '">Load</button>'
           ) +
           '</div>' +
@@ -6616,9 +6638,16 @@ const AINode = {
       var loadEmbedding = async function (id, btn, restoreLabel) {
         btn.disabled = true;
         btn.textContent = 'Loading…';
+        // Always through the cluster route, even for this node: one path, and
+        // an empty node_id means "here". Two paths is how the placement got
+        // lost in the first place.
+        var sel = body.querySelector('#embed-node');
+        var nodeId = sel ? sel.value : '';
         try {
-          var resp = await fetch('/api/embeddings/models/' + encodeURIComponent(id) + '/load',
-                                 { method: 'POST' });
+          var resp = await fetch('/api/cluster/embeddings/load', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: id, node_id: nodeId }),
+          });
           var payload = await resp.json().catch(function () { return {}; });
           if (resp.ok) {
             self.toast('Loaded ' + id, 'success');
