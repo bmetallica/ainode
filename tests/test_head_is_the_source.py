@@ -267,3 +267,110 @@ class TestTheUiCanBeSwitchedOff:
         app = create_app(config=NodeConfig(node_id="n1"), engine=None)
         async with TestClient(TestServer(app)) as client:
             assert (await client.get("/")).status == 200
+
+
+class TestADependencyIsPartOfTheModel:
+    """The drafter that made this necessary.
+
+    Gemma 4 26B's recipe names google/gemma-4-26B-A4B-it-assistant, and vLLM
+    downloads it at LAUNCH time, on whichever node is launching. Measured: 801
+    MB, 113 seconds from Hugging Face, on a sub-node — which is precisely the
+    thing a head-only deployment forbids, and the head did not have it at all.
+
+    Telling the operator to rsync it back by hand was the wrong answer: "das
+    muss doch alles automatisch gemacht werden".
+    """
+
+    SPEC = ('{"method":"mtp","model":"google/gemma-4-26B-A4B-it-assistant",'
+            '"num_speculative_tokens":4}')
+    DRAFTER = "google/gemma-4-26B-A4B-it-assistant"
+
+    class _Info:
+        def __init__(self, args):
+            self.extra_vllm_args = args
+
+    def _app(self, tmp_path, **config_kw):
+        class _Manager:
+            def __init__(self, info):
+                self._info = info
+
+            def _find_catalog_by_hf_repo(self, repo):
+                return self._info
+
+        return {
+            "config": NodeConfig(node_id="head", ssh_user="admin",
+                                 models_dir=str(tmp_path), **config_kw),
+            "cluster_state": _Cluster([]),
+            "model_manager": _Manager(self._Info(["--speculative-config", self.SPEC])),
+        }
+
+    def test_a_peer_is_asked_before_the_internet(self, tmp_path):
+        """The copy that exists is on the fabric — the sub-node downloaded it.
+        Fetching it back over the link beats fetching it again over the
+        uplink."""
+        app = self._app(tmp_path)
+        with mock.patch("ainode.engine.acquire.fetch_model_from_peer",
+                        return_value="fetched") as peer, \
+             mock.patch("huggingface_hub.snapshot_download") as hub:
+            assert mirror.ensure_dependencies(app, MODEL) == [self.DRAFTER]
+        assert peer.call_args.kwargs["model"] == self.DRAFTER
+        hub.assert_not_called()
+
+    def test_the_hub_is_the_fallback(self, tmp_path):
+        app = self._app(tmp_path)
+        with mock.patch("ainode.engine.acquire.fetch_model_from_peer",
+                        return_value="absent"), \
+             mock.patch("huggingface_hub.snapshot_download") as hub:
+            assert mirror.ensure_dependencies(app, MODEL) == [self.DRAFTER]
+        assert hub.call_args.kwargs["repo_id"] == self.DRAFTER
+
+    def test_an_already_present_dependency_is_not_fetched(self, tmp_path):
+        target = tmp_path / "models--google--gemma-4-26B-A4B-it-assistant"
+        target.mkdir()
+        (target / "w.safetensors").write_bytes(b"\x00")
+        app = self._app(tmp_path)
+        with mock.patch("ainode.engine.acquire.fetch_model_from_peer") as peer, \
+             mock.patch("huggingface_hub.snapshot_download") as hub:
+            assert mirror.ensure_dependencies(app, MODEL) == [self.DRAFTER]
+        peer.assert_not_called()
+        hub.assert_not_called()
+
+    def test_a_sub_node_fetches_nothing(self, tmp_path):
+        """It may not download, and the head is supposed to have sent this."""
+        app = self._app(tmp_path, download_from_hub=False)
+        with mock.patch("huggingface_hub.snapshot_download") as hub:
+            assert mirror.ensure_dependencies(app, MODEL) == []
+        hub.assert_not_called()
+
+    def test_a_failure_does_not_fail_the_download(self, tmp_path):
+        """Refusing to finish a model that is otherwise complete helps nobody;
+        the launch would have failed either way, and says so more clearly."""
+        app = self._app(tmp_path)
+        with mock.patch("ainode.engine.acquire.fetch_model_from_peer",
+                        return_value="absent"), \
+             mock.patch("huggingface_hub.snapshot_download",
+                        side_effect=RuntimeError("404")):
+            assert mirror.ensure_dependencies(app, MODEL) == []
+
+    def test_a_model_with_no_recipe_wants_nothing(self, tmp_path):
+        app = self._app(tmp_path)
+        app["model_manager"] = None
+        assert mirror.ensure_dependencies(app, MODEL) == []
+
+    def test_the_sweep_mirrors_them_too(self):
+        import inspect
+
+        from ainode.api.server import handle_cluster_mirror_models
+
+        source = inspect.getsource(handle_cluster_mirror_models)
+        assert "ensure_dependencies" in source
+        assert "for repo in [model, *extras]:" in source
+
+    def test_a_download_mirrors_them_too(self):
+        import inspect
+
+        from ainode.models.api_routes import _mirror_after_download
+
+        source = inspect.getsource(_mirror_after_download)
+        assert "ensure_dependencies" in source
+        assert "for repo in [model, *extras]:" in source

@@ -22,11 +22,92 @@ import logging
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
+from ainode.engine.acquire import model_is_local, required_repos
 from ainode.engine.distribute import DistributionError, ensure_peer_has_dir, hf_cache_dir_name
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["model_source_dir", "peer_targets", "mirror_model_to_peers"]
+__all__ = ["model_source_dir", "peer_targets", "mirror_model_to_peers",
+           "ensure_dependencies"]
+
+
+def ensure_dependencies(app, model: str) -> List[str]:
+    """Download, here, the repos ``model``'s recipe pulls in of its own accord.
+
+    A checkpoint is not always the whole of what a launch fetches. Gemma 4
+    26B's recipe names a speculative drafter — google/gemma-4-26B-A4B-it-assistant,
+    801 MB — and vLLM downloads it separately, at launch, on whichever node
+    is launching. That produced exactly the situation this deployment exists
+    to prevent: the drafter ended up on a sub-node, downloaded from Hugging
+    Face, and the head did not have it at all.
+
+    A dependency is part of the model. Downloading it here, with the model,
+    means the mirror carries it and no sub-node ever reaches for it.
+
+    Only on a node that may download, and never fatal: a drafter that cannot
+    be fetched leaves a launch that would have failed anyway, and failing the
+    *download* of a model that is otherwise complete helps nobody.
+
+    Returns the dependency repos now on this node.
+    """
+    config = app.get("config")
+    if not getattr(config, "download_from_hub", True):
+        return []
+    models_dir = str(getattr(config, "models_dir", "") or "")
+    if not models_dir:
+        return []
+
+    manager = app.get("model_manager")
+    info = None
+    if manager is not None:
+        try:
+            info = manager._find_catalog_by_hf_repo(model)
+        except Exception:
+            logger.debug("no catalog entry for %s", model, exc_info=True)
+    recipe_args = list(getattr(info, "extra_vllm_args", []) or [])
+    wanted = [repo for repo in required_repos(model, recipe_args) if repo != model]
+
+    present: List[str] = []
+    for repo in wanted:
+        if model_is_local(repo, models_dir):
+            present.append(repo)
+            continue
+        # A peer before the internet. The drafter that started this was
+        # downloaded by a sub-node at launch time, so the copy that exists is
+        # on the fabric and the head is the one missing it — fetching it back
+        # over the link beats fetching it again over the uplink.
+        try:
+            from ainode.core.config import host_path
+            from ainode.engine.acquire import fetch_model_from_peer
+
+            outcome = fetch_model_from_peer(
+                cluster=app.get("cluster_state"),
+                own_node_id=str(getattr(config, "node_id", "") or ""),
+                ssh_user=str(getattr(config, "ssh_user", "") or ""),
+                model=repo,
+                models_dir=models_dir,
+                host_models_dir=host_path(models_dir),
+            )
+        except Exception:
+            logger.exception("could not ask the cluster for %s", repo)
+            outcome = "absent"
+        if outcome in ("fetched", "present"):
+            present.append(repo)
+            continue
+
+        try:
+            from huggingface_hub import snapshot_download
+
+            logger.info("fetching %s, which %s's recipe requires", repo, model)
+            snapshot_download(
+                repo_id=repo,
+                cache_dir=models_dir,
+                token=str(getattr(config, "hf_token", "") or "") or None,
+            )
+            present.append(repo)
+        except Exception:
+            logger.exception("could not fetch %s for %s", repo, model)
+    return present
 
 
 def model_source_dir(model: str, models_dir: str) -> Optional[Tuple[str, str]]:
