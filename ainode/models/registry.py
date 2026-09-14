@@ -376,12 +376,36 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
     "minimax-m2.7-awq": ModelInfo(
         id="minimax-m2.7-awq",
         name="MiniMax-M2.7 (AWQ-4bit)",
-        hf_repo="demon-zombie/MiniMax-M2.7-AWQ-4bit",
-        size_gb=120.0,
-        description="The community's top agentic-coding pick — 'Sonnet at home'. Large MoE (A10B active), AWQ-4bit. ~42 tok/s across 2 Sparks (TP=2). fp8 KV recommended.",
+        # Renamed upstream: demon-zombie/... now 307-redirects here. The hub
+        # client follows it, but a redirect is not a name to keep in a catalog.
+        hf_repo="et0dev/MiniMax-M2.7-AWQ-4bit",
+        # MEASURED from the Hub's file listing: 24 shards, 111.6 GB. The 120.0
+        # that stood here was 230B x 4 bits, the same arithmetic that put Gemma
+        # 4 31B at half its real size. This one happens to land the other way —
+        # it is SMALLER than the guess, which is what makes two nodes
+        # comfortable rather than tight.
+        size_gb=111.6,
+        description=(
+            "The community's top agentic-coding pick — 'Sonnet at home'. MoE, "
+            "256 experts with 8 active (A10B), int4 pack-quantized. ~42 tok/s "
+            "across 2 Sparks (TP=2). 62 layers with 8 KV heads at head_dim "
+            "128, so fp8 KV costs 124 KiB per token: at gpu_memory_utilization "
+            "0.87 two nodes leave about 85 GB for the cache, near 700k tokens "
+            "— roughly 11 concurrent sessions at 64K context each. TP=2 splits "
+            "the 8 KV heads 4 and 4, with no replication."
+        ),
         quantization="AWQ", min_memory_gb=130, family="minimax", params_b=230.0,
         proven_tp=2, verified=False,
-        context_length=131072, license="MiniMax", recommended=True, format="awq",
+        # From the checkpoint's config.json (max_position_embeddings), not the
+        # 131072 that was here.
+        context_length=196608, license="MiniMax", recommended=True, format="awq",
+        capabilities=["tool_use", "reasoning", "code"],
+        extra_vllm_args=[
+            "--kv-cache-dtype", "fp8",
+            "--enable-prefix-caching",
+            "--enable-chunked-prefill",
+        ],
+        recommended_gmu=0.87,
     ),
     "qwen3-235b-a22b-nvfp4": ModelInfo(
         id="qwen3-235b-a22b-nvfp4",
