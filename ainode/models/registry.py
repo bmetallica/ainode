@@ -500,15 +500,18 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         description=(
             "256K context on an EXPERIMENTAL B12X serving stack, and 175 GB of "
             "weights. Needs its own engine image (vllm-node-b12x) — see "
-            "docs/mesh/B12X-IMAGE.md — and more than one node. Two is what the "
-            "upstream recipe uses and it is very tight: measured here, a "
-            "two-node launch reached warmup and was then killed for memory. "
-            "Three nodes (pipeline) leave room. Not verified by us; the flags "
-            "come from the upstream recipe apart from three the hardware and "
-            "the checkpoint contradicted."
+            "docs/mesh/B12X-IMAGE.md — and exactly two nodes: this architecture "
+            "does not implement SupportsPP, so pipeline is out, and tensor "
+            "needs a power-of-two rank count. Served here on two Sparks at "
+            "TP=2: 1,072,101 tokens of KV cache at 131,072 per request "
+            "(8.18x concurrency), gpu_memory_utilization 0.87. The flags are "
+            "the upstream recipe's apart from four the hardware, the "
+            "checkpoint or the measurement contradicted."
         ),
         quantization="NVFP4", family="glm", params_b=0.0,
-        proven_tp=2, verified=False, curated=True,
+        # Served on this cluster on 2026-09-14 at TP=2 — the picker can
+        # default to it and show the badge.
+        proven_tp=2, verified=True, curated=True,
         # Measured: "NotImplementedError: Pipeline parallelism is not supported
         # for this model. Supported models implement the SupportsPP interface."
         # So the only axis is tensor, and tensor needs a power-of-two rank
@@ -579,7 +582,13 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "--reasoning-parser", "glm45",
             "--tool-call-parser", "glm47",
             "--enable-auto-tool-choice",
-            "--kv-cache-memory-bytes", "8G",
+            # eugr's recipe caps the KV cache at 8G. Dropped, and this is
+            # measured: uncapped on two nodes at gpu_memory_utilization 0.87,
+            # vLLM sized it at 1,072,101 tokens — about 9.9 GB, so the cap was
+            # costing roughly a fifth of the cache for nothing. A hard byte
+            # cap also cannot follow the node count or the utilisation, and
+            # both of those are AINode's to decide. Set one in the launch
+            # panel if a particular launch needs the headroom elsewhere.
         ],
         extra_env={
             "CUTE_DSL_ARCH": "sm_121a",
