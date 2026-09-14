@@ -1830,6 +1830,11 @@ async def handle_cluster_set_id(request: web.Request) -> web.Response:
 # Fields that can be updated via PATCH /api/config. Keep this list tight --
 # never expose auth or secret-related fields here.
 PATCHABLE_CONFIG_FIELDS = {
+    # Deployment policy, settable over the API so a sub-node can be switched
+    # over from the head instead of by hand-editing JSON on each machine —
+    # which is the whole point of a head-only deployment.
+    "web_ui_enabled",
+    "download_from_hub",
     "node_name",
     "email",
     "host",
