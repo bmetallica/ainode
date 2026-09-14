@@ -218,6 +218,13 @@ class NodeConfig:
 
     # SSH user for head-to-worker passwordless login (eugr launcher uses it).
     ssh_user: str = "ubuntu"
+    #: Serve the browser UI from this node. False on a sub-node in a
+    #: head-only deployment: nothing is operated there, so the pages, the
+    #: polling they do and the catalog refresh behind them are work nobody
+    #: asked for. The API stays up either way — discovery, the cluster
+    #: dispatch that places models here, the federated proxy and /v1/* all
+    #: run over it, so this is not a way to close the node off.
+    web_ui_enabled: bool = True
     # Interface NCCL/Ray/Gloo bind to (e.g. "enp1s0f0np0" for DGX Spark direct
     # connect, or the dedicated cluster-switch NIC).
     #

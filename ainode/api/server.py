@@ -153,8 +153,15 @@ def create_app(
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
 
-    app.router.add_get("/", handle_index)
-    app.router.add_get("/onboarding", handle_onboarding)
+    # The browser UI, unless this node is not operated from a browser. The
+    # API below is registered either way: discovery, the cluster dispatch that
+    # places models here, the federated proxy and /v1/* all go through it.
+    if getattr(config, "web_ui_enabled", True):
+        app.router.add_get("/", handle_index)
+        app.router.add_get("/onboarding", handle_onboarding)
+    else:
+        app.router.add_get("/", _web_ui_disabled)
+        app.router.add_get("/onboarding", _web_ui_disabled)
     app.router.add_get("/api/health", handle_health)
     app.router.add_get("/api/status", handle_status)
     app.router.add_get("/api/nodes", handle_nodes)
@@ -168,6 +175,8 @@ def create_app(
     # node whose launch failed.
     app.router.add_post("/api/engine/compile-cache", _clear_compile_cache)
     app.router.add_post("/api/cluster/compile-cache", handle_cluster_compile_cache)
+    app.router.add_post("/api/cluster/mirror-models", handle_cluster_mirror_models)
+    app.router.add_get("/api/cluster/mirror-status", handle_cluster_mirror_status)
     app.router.add_post("/api/cluster/embeddings/load", handle_cluster_embedding_load)
     app.router.add_post("/api/cluster/embeddings/unload", handle_cluster_embedding_unload)
     app.router.add_post("/api/cluster/unload", handle_cluster_unload)
@@ -216,9 +225,35 @@ def create_app(
     # --- Server view routes --------------------------------------------------
     register_server_routes(app)
 
-    app.router.add_static("/static", get_static_path(), name="static")
+    if getattr(config, "web_ui_enabled", True):
+        app.router.add_static("/static", get_static_path(), name="static")
 
     return app
+
+
+async def _web_ui_disabled(request: web.Request) -> web.Response:
+    """Say why, rather than 404. A blank page on the wrong port is a support
+    ticket; "operate this cluster from the head" is an answer."""
+    config: NodeConfig = request.app["config"]
+    head = ""
+    cluster = request.app.get("cluster_state")
+    if cluster is not None:
+        try:
+            for node in cluster.get_nodes():
+                if getattr(node, "is_master", False) and getattr(node, "fabric_ip", ""):
+                    head = f"http://{node.fabric_ip}:{node.web_port}"
+                    break
+        except Exception:
+            logger.debug("could not name the head", exc_info=True)
+    return web.Response(
+        status=404,
+        content_type="text/plain",
+        text=(f"The web UI is switched off on {config.node_name or config.node_id}.\n"
+              f"This node is operated from the head"
+              + (f": {head}\n" if head else ".\n")
+              + "Its API is unaffected — /api/health, /v1/models and the "
+                "cluster routes all answer as usual.\n"),
+    )
 
 
 def _head_instances(config) -> list:
@@ -1053,6 +1088,70 @@ async def _embedding_dispatch(request: web.Request, action: str) -> web.Response
     except aiohttp.ClientError as exc:
         return web.json_response(
             {"error": f"failed to reach node '{node_id}' at {url}: {exc}"}, status=502)
+
+
+async def handle_cluster_mirror_models(request: web.Request) -> web.Response:
+    """POST /api/cluster/mirror-models {models?} — push this node's models out.
+
+    Downloads mirror themselves from now on, but everything already on the
+    head predates that and would otherwise stay put until someone launched it
+    somewhere — which is the slow path this exists to remove.
+
+    Explicit, never automatic: this can be several hundred gigabytes, and an
+    unannounced transfer of that size on a node someone is using is not a
+    favour. Runs in the background and reports per model and per node, because
+    a caller cannot hold a connection open for an hour.
+    """
+    jobs: dict = request.app.setdefault("mirror_jobs", {})
+    if jobs.get("running"):
+        return web.json_response({"error": "a mirror run is already in progress",
+                                  "status": jobs}, status=409)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    wanted = [str(m) for m in (body.get("models") or []) if m]
+
+    manager = request.app.get("model_manager")
+    if manager is None:
+        return web.json_response({"error": "no model manager"}, status=503)
+    try:
+        downloaded = [str(entry.get("hf_repo") or "")
+                      for entry in manager.list_downloaded()]
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+    models = [m for m in downloaded if m and (not wanted or m in wanted)]
+    if not models:
+        return web.json_response({"error": "nothing downloaded here to mirror"},
+                                 status=404)
+
+    jobs.clear()
+    jobs.update({"running": True, "started_at": time.time(), "models": {},
+                 "total": len(models), "done": 0})
+
+    async def _run() -> None:
+        from ainode.engine.mirror import mirror_model_to_peers
+
+        loop = asyncio.get_event_loop()
+        for model in models:
+            jobs["models"][model] = {"state": "copying"}
+            try:
+                results = await loop.run_in_executor(
+                    None, lambda m=model: mirror_model_to_peers(request.app, m))
+                jobs["models"][model] = {"state": "done", "nodes": results}
+            except Exception as exc:  # pragma: no cover - mirror never raises
+                jobs["models"][model] = {"state": "failed", "error": str(exc)}
+            jobs["done"] += 1
+        jobs["running"] = False
+        jobs["finished_at"] = time.time()
+
+    asyncio.get_event_loop().create_task(_run())
+    return web.json_response({"started": True, "models": models}, status=202)
+
+
+async def handle_cluster_mirror_status(request: web.Request) -> web.Response:
+    """GET /api/cluster/mirror-status — how the mirror run is going."""
+    return web.json_response(request.app.get("mirror_jobs") or {"running": False})
 
 
 async def handle_cluster_embedding_load(request: web.Request) -> web.Response:

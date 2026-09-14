@@ -80,7 +80,14 @@ def _peer_has(host: str, port: int, model: str) -> bool:
 
 
 def peers_with_model(cluster, own_node_id: str, model: str) -> List[Tuple[str, str, list]]:
-    """(node_id, coordination ip, ib_ips) for every peer that has ``model``."""
+    """(node_id, coordination ip, ib_ips) for every peer that has ``model``.
+
+    The head first. The operating rule is that models arrive on the head and
+    are mirrored outward, so the head holds the version that defines the
+    others; taking a copy from an arbitrary peer could propagate whatever that
+    peer happened to end up with. The rest follow, because a head that is busy
+    or down is not a reason to fall back to the internet.
+    """
     if cluster is None or not model:
         return []
     try:
@@ -95,8 +102,10 @@ def peers_with_model(cluster, own_node_id: str, model: str) -> List[Tuple[str, s
         if not host:
             continue
         if _peer_has(host, node.web_port, model):
-            found.append((node.node_id, host, list(getattr(node, "ib_ips", []) or [])))
-    return found
+            found.append((bool(getattr(node, "is_master", False)), node.node_id,
+                          host, list(getattr(node, "ib_ips", []) or [])))
+    found.sort(key=lambda item: (not item[0], item[1]))
+    return [(node_id, host, ib) for _, node_id, host, ib in found]
 
 
 def _transfer_ip(coord_ip: str, ib_ips: list) -> str:
@@ -118,15 +127,23 @@ def fetch_model_from_peer(
     model: str,
     models_dir: str,
     host_models_dir: Optional[str] = None,
+    sync: bool = False,
     on_start: Optional[Callable[[str], None]] = None,
 ) -> str:
     """Try to copy ``model`` here from a peer that has it.
 
-    Returns "present" (already here), "fetched", or "absent" — never raises.
-    A caller that gets anything other than "fetched" simply launches, and the
-    engine downloads as it always did.
+    Returns "present" (already here and not syncing), "fetched", "synced" or
+    "absent" — never raises. A caller that gets anything else than a transfer
+    simply launches, and the engine downloads as it always did.
+
+    ``sync`` keeps going when the weights are already here, so the head's copy
+    decides what this node serves. rsync compares sizes and timestamps, so an
+    unchanged checkpoint costs a directory listing and sends nothing — which
+    is what makes this affordable on every launch rather than a second full
+    copy.
     """
-    if model_is_local(model, models_dir):
+    have_it = model_is_local(model, models_dir)
+    if have_it and not sync:
         return "present"
 
     for node_id, coord_ip, ib_ips in peers_with_model(cluster, own_node_id, model):
@@ -157,5 +174,5 @@ def fetch_model_from_peer(
                 logger.exception("fetching %s from %s failed", model, node_id)
                 continue
             if placed:
-                return "fetched"
-    return "absent"
+                return "synced" if have_it else "fetched"
+    return "present" if have_it else "absent"

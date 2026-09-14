@@ -461,9 +461,14 @@ def _fetch_weights_from_a_peer(app, backend, model: str, config) -> None:
             # container whose view of AINODE_HOME differs, and the ssh lands on
             # the peer's host, not in its container.
             host_models_dir=host_path(models_dir),
+            # Even when the weights are already here. The head is the source
+            # of truth and a sub-node's copy is a mirror of it; rsync sends
+            # only what differs, so an unchanged checkpoint costs a listing.
+            sync=True,
         )
-        if outcome == "fetched":
-            logger.info("Fetched %s from a peer instead of downloading it", model)
+        if outcome in ("fetched", "synced"):
+            logger.info("%s %s from a peer instead of downloading it",
+                        "Fetched" if outcome == "fetched" else "Synced", model)
     except Exception:
         logger.exception("peer weight fetch failed for %s; downloading instead", model)
 
@@ -1157,7 +1162,7 @@ async def handle_download_model(request: web.Request) -> web.Response:
     _cleanup_old_jobs(jobs)
 
     loop = asyncio.get_event_loop()
-    loop.create_task(_run_download(manager, model_id, job_id, jobs))
+    loop.create_task(_run_download(manager, model_id, job_id, jobs, request.app))
 
     return web.json_response(
         {"job_id": job_id, "model_id": model_id, "status": "downloading"},
@@ -1184,7 +1189,7 @@ async def handle_download_repo(request: web.Request) -> web.Response:
     _cleanup_old_jobs(jobs)
 
     loop = asyncio.get_event_loop()
-    loop.create_task(_run_download_repo(manager, hf_repo, job_id, jobs))
+    loop.create_task(_run_download_repo(manager, hf_repo, job_id, jobs, request.app))
 
     return web.json_response(
         {"job_id": job_id, "hf_repo": hf_repo, "status": "downloading"},
@@ -1343,7 +1348,8 @@ async def handle_cancel_download(request: web.Request) -> web.Response:
     return web.json_response({"job_id": job_id, "status": "cancelling"})
 
 
-async def _run_download_repo(manager: "ModelManager", hf_repo: str, job_id: str, jobs: dict) -> None:
+async def _run_download_repo(manager: "ModelManager", hf_repo: str, job_id: str,
+                             jobs: dict, app=None) -> None:
     """Download an arbitrary HF repo that may not be in our catalog."""
     import shutil
     loop = asyncio.get_event_loop()
@@ -1474,6 +1480,9 @@ async def _run_download_repo(manager: "ModelManager", hf_repo: str, job_id: str,
     terminal["finished_at"] = time.time()
     jobs[job_id].update(terminal)
 
+    if terminal.get("status") == "completed":
+        await _mirror_after_download(app, hf_repo, jobs[job_id])
+
     if discard_partial:
         try:
             if target.exists():
@@ -1597,6 +1606,37 @@ async def handle_ollama_models(request: web.Request) -> web.Response:
     })
 
 
+async def _mirror_after_download(app, model: str, job: dict) -> None:
+    """Push a freshly downloaded model to every node, now rather than later.
+
+    The operating rule: everything comes through the head, and the sub-nodes
+    keep their copies. Doing it at download time means the transfer happens
+    while nobody is waiting for a model to come up — instead of at launch,
+    where it looked like a hang, or not at all, where the node fell back to
+    Hugging Face at 1.1 MB/s.
+
+    Best effort, and reported: the outcome per node lands on the download job
+    so the UI can show it. A peer that is down must not turn a successful
+    download into a failure.
+    """
+    if app is None or not model:
+        return
+    job.setdefault("mirror", {})
+    try:
+        from ainode.engine.mirror import mirror_model_to_peers
+
+        def progress(node_id: str, state: str) -> None:
+            job["mirror"][node_id] = state
+
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(
+            None, lambda: mirror_model_to_peers(app, model, progress))
+        job["mirror"].update(results)
+    except Exception as exc:
+        logger.exception("mirroring %s to peers failed", model)
+        job["mirror"]["error"] = str(exc)
+
+
 # -- Background download task -------------------------------------------------
 
 _DOWNLOAD_JOB_MAX_AGE = 3600
@@ -1613,6 +1653,7 @@ async def _run_download(
     model_id: str,
     job_id: str,
     jobs: dict,
+    app=None,
 ) -> None:
     """Run model download in a thread so we don't block the event loop."""
     loop = asyncio.get_event_loop()
@@ -1620,6 +1661,9 @@ async def _run_download(
         async with _download_gate():  # serialize with other downloads
             await loop.run_in_executor(None, manager.download_model, model_id)
         jobs[job_id]["status"] = "complete"
+        info = manager.get_catalog_map().get(model_id)
+        await _mirror_after_download(app, getattr(info, "hf_repo", "") or model_id,
+                                     jobs[job_id])
     except Exception as exc:
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(exc)

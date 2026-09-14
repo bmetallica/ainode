@@ -55,6 +55,7 @@ def ensure_peer_has_dir(
     dir_name: str,
     target_parent: str,
     label: str = "",
+    resync: bool = False,
     on_start: Optional[Callable[[], None]] = None,
 ) -> bool:
     """Copy ``source_parent/dir_name`` to ``target_parent/dir_name`` on a peer.
@@ -76,13 +77,21 @@ def ensure_peer_has_dir(
     ssh_target = f"{ssh_user}@{transfer_ip}"
     remote_dir = target_parent.rstrip("/") + "/" + dir_name
 
-    probe = subprocess.run(
-        ["ssh", *SSH_OPTS, ssh_target,
-         f"test -d {shlex.quote(remote_dir)} && echo present || echo missing"],
-        capture_output=True, text=True, timeout=30,
-    )
-    if "present" in (probe.stdout or ""):
-        return True
+    # "The directory exists" is not "the directory is right". A peer left with
+    # a half-finished copy — an interrupted transfer, an aborted download —
+    # passes this test and is then never corrected. With rsync the comparison
+    # is sizes and timestamps and an unchanged checkpoint sends nothing, so a
+    # caller that wants the peer to MATCH rather than merely have something
+    # asks for resync and pays almost nothing when it is already right. The
+    # tar fallback cannot do that, so the cheap test stays in place for it.
+    if not (resync and shutil.which("rsync")):
+        probe = subprocess.run(
+            ["ssh", *SSH_OPTS, ssh_target,
+             f"test -d {shlex.quote(remote_dir)} && echo present || echo missing"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if "present" in (probe.stdout or ""):
+            return True
 
     if on_start is not None:
         try:
