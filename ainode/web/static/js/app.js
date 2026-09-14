@@ -964,7 +964,16 @@ const AINode = {
         strategy: 'distributed',
         tp_size: di.tensor_parallel_size,
         nodes: di.member_names || [di.head_node_name || di.head_node_id].concat(di.peer_node_ids || di.peer_ips || []),
-        status: live ? 'READY' : 'STARTING',
+        // The instance's own status, not this browser's node. `live` is
+        // s.engine_ready — the readiness of whichever node the UI is pointed
+        // at — so a model serving on a sub-node read STARTING because the
+        // HEAD had no engine running, and a phase of "idle" drew 8%. An
+        // instance from an older build carries no status and defaults to
+        // serving, which is how those behaved before.
+        status: (di.status || 'serving') === 'serving' ? 'READY' : 'STARTING',
+        phase: di.status === 'failed' ? 'failed' : (di.load_phase || ''),
+        error: di.load_error || '',
+        detail: di.load_detail || '',
         // A single-node serve is SOLO even when the head advertises a
         // distributed_instance (it's configured with peers) — only badge
         // DISTRIBUTED when the model is actually split across nodes, on any

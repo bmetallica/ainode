@@ -1535,6 +1535,13 @@ async def handle_cluster_resources(request: web.Request) -> web.Response:
             ],
             "model": model,
             "status": inst.get("status", "serving"),
+            # This instance's own load state. Without it the card had nothing
+            # to draw and fell back to the state of whichever node the browser
+            # was pointed at — so a model serving happily on a sub-node read
+            # "STARTING · 8%" because the HEAD's engine was idle.
+            "load_phase": inst.get("load_phase") or "",
+            "load_detail": inst.get("load_detail") or "",
+            "load_error": inst.get("load_error") or "",
         }
 
     distributed_instances = []
