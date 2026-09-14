@@ -504,9 +504,9 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "does not implement SupportsPP, so pipeline is out, and tensor "
             "needs a power-of-two rank count. Served here on two Sparks at "
             "TP=2: 1,072,101 tokens of KV cache at 131,072 per request "
-            "(8.18x concurrency), gpu_memory_utilization 0.87. The flags are "
-            "the upstream recipe's apart from four the hardware, the "
-            "checkpoint or the measurement contradicted."
+            "(8.18x concurrency), gpu_memory_utilization 0.87, "
+            "--max-num-seqs 8. The flags are the upstream recipe's apart from "
+            "three the hardware or the checkpoint contradicted."
         ),
         quantization="NVFP4", family="glm", params_b=0.0,
         # Served on this cluster on 2026-09-14 at TP=2 — the picker can
@@ -582,13 +582,26 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "--reasoning-parser", "glm45",
             "--tool-call-parser", "glm47",
             "--enable-auto-tool-choice",
-            # eugr's recipe caps the KV cache at 8G. Dropped, and this is
-            # measured: uncapped on two nodes at gpu_memory_utilization 0.87,
-            # vLLM sized it at 1,072,101 tokens — about 9.9 GB, so the cap was
-            # costing roughly a fifth of the cache for nothing. A hard byte
-            # cap also cannot follow the node count or the utilisation, and
-            # both of those are AINode's to decide. Set one in the launch
-            # panel if a particular launch needs the headroom elsewhere.
+            # eugr's value, kept — and the arithmetic that briefly argued
+            # against it was wrong. Two launches, both logged:
+            #
+            #   4G, max_model_len 65536, max_num_seqs 4, gmu 0.82
+            #       -> GPU KV cache size:   434,176 tokens
+            #   8G, max_model_len 131072, max_num_seqs 8, gmu 0.87
+            #       -> GPU KV cache size: 1,072,101 tokens
+            #
+            # Reading 1,072,101 as "about 9.9 GB, so the 8G cap cannot have
+            # been in force" assumes a constant bytes-per-token. It is not
+            # constant here: this is a hybrid Mamba model launched with
+            # --mamba-cache-mode align, so the state cache is sized by
+            # max_num_seqs and the attention blocks are aligned, and both of
+            # those changed between the two runs. The 8G cap WAS active in
+            # the good one.
+            #
+            # What removing it would do is therefore unmeasured. Raise it in
+            # the launch panel and read "GPU KV cache size" back if you want
+            # to find out.
+            "--kv-cache-memory-bytes", "8G",
         ],
         extra_env={
             "CUTE_DSL_ARCH": "sm_121a",
