@@ -6199,6 +6199,21 @@ const AINode = {
     html += '  </div>';
     html += '</section>';
 
+    // --- Throughput benchmark ---
+    // Capacity on this hardware is not something to derive from parameter
+    // counts: a 26B MoE measured 70 tok/s alone and 544 across 16 streams,
+    // while a 230B across two nodes managed 20.5 where its catalog entry
+    // claimed 42. The cluster answers "how many users" better than any
+    // estimate, so the measurement belongs here rather than in a script.
+    html += '<section class="server-section">';
+    html += '  <div class="server-section-header">';
+    html += '    <h3 class="server-section-title">Throughput benchmark</h3>';
+    html += '    <span style="font-size:12px;color:var(--text-muted)">' +
+            'measures what a client actually gets, over /v1/chat/completions</span>';
+    html += '  </div>';
+    html += '  <div id="bench-panel">' + this._renderBenchPanel() + '</div>';
+    html += '</section>';
+
     // --- Developer Logs ---
     html += '<section class="server-section">';
     html += '  <div class="server-section-header">';
@@ -6268,6 +6283,265 @@ const AINode = {
       '</div>';
   },
 
+  // ---- Throughput benchmark -------------------------------------------
+
+  //: Context sizes worth measuring. Throughput at 1K and at 64K are
+  //: different numbers, and the second is what RAG and coding workloads look
+  //: like — so the prompt is padded to the chosen size rather than assumed.
+  BENCH_CONTEXTS: [
+    { label: 'short prompt', tokens: 0 },
+    { label: '4K context', tokens: 4096 },
+    { label: '16K context', tokens: 16384 },
+    { label: '32K context', tokens: 32768 },
+    { label: '64K context', tokens: 65536 },
+    { label: '128K context', tokens: 131072 },
+  ],
+
+  BENCH_LEVELS: ['1', '1,4,8', '1,4,8,16', '1,2,4,8,16,32'],
+
+  _benchState: { models: [], status: null, model: '', levels: '1,4,8',
+                 maxTokens: 256, promptTokens: 0, style: 'chat' },
+
+  _renderBenchPanel() {
+    var self = this;
+    var state = this._benchState;
+    var status = state.status || {};
+    var running = !!status.running;
+
+    var options = (state.models || []).map(function (id) {
+      return '<option value="' + self.esc(id) + '"' +
+        (id === state.model ? ' selected' : '') + '>' + self.esc(id) + '</option>';
+    }).join('');
+    if (!options) {
+      options = '<option value="">no model is serving</option>';
+    }
+
+    var contexts = this.BENCH_CONTEXTS.map(function (c) {
+      return '<option value="' + c.tokens + '"' +
+        (c.tokens === state.promptTokens ? ' selected' : '') + '>' +
+        c.label + '</option>';
+    }).join('');
+
+    var levels = this.BENCH_LEVELS.map(function (l) {
+      return '<option value="' + l + '"' + (l === state.levels ? ' selected' : '') +
+        '>' + l.split(',').length + ' Stufen (' + l + ')</option>';
+    }).join('');
+
+    var styles = ['chat', 'code', 'rag'].map(function (st) {
+      return '<option value="' + st + '"' + (st === state.style ? ' selected' : '') +
+        '>' + st + '</option>';
+    }).join('');
+
+    var field = 'padding:6px 8px;background:var(--bg-input,#111);color:inherit;' +
+      'border:1px solid var(--border,#333);border-radius:4px';
+    var label = 'font-size:11px;color:var(--text-muted);display:block;margin-bottom:3px';
+
+    var html = '<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;' +
+      'margin-bottom:14px">' +
+      '<div style="flex:1;min-width:220px"><label style="' + label + '">Model</label>' +
+      '<select id="bench-model" class="mono" style="' + field + ';width:100%"' +
+      (running ? ' disabled' : '') + '>' + options + '</select></div>' +
+      '<div><label style="' + label + '">Context</label>' +
+      '<select id="bench-context" style="' + field + '"' + (running ? ' disabled' : '') +
+      '>' + contexts + '</select></div>' +
+      '<div><label style="' + label + '">Concurrency</label>' +
+      '<select id="bench-levels" style="' + field + '"' + (running ? ' disabled' : '') +
+      '>' + levels + '</select></div>' +
+      '<div><label style="' + label + '">Output tokens</label>' +
+      '<input id="bench-max-tokens" type="number" min="1" max="4096" value="' +
+      state.maxTokens + '" style="' + field + ';width:100px"' +
+      (running ? ' disabled' : '') + '></div>' +
+      '<div><label style="' + label + '">Prompt</label>' +
+      '<select id="bench-style" style="' + field + '"' + (running ? ' disabled' : '') +
+      '>' + styles + '</select></div>' +
+      '<div>' + (running
+        ? '<button class="btn-ghost server-btn-sm" id="bench-cancel">Stop</button>'
+        : '<button class="btn-nvidia server-btn-sm" id="bench-run">Run</button>') +
+      '</div></div>';
+
+    // A benchmark is a load generator pointed at a production cluster. Say so
+    // where the button is, not in a manual nobody opens.
+    html += '<div style="font-size:11px;color:var(--text-muted);margin-bottom:12px">' +
+      'This occupies KV slots and bandwidth while it runs — real requests will ' +
+      'be slower. The highest concurrency level is the heaviest part.</div>';
+
+    if (running) {
+      html += '<div class="server-empty">Running' +
+        (status.current ? ' at ' + status.current + ' parallel…' : '…') +
+        ' ' + ((status.results || []).length) + ' of ' +
+        ((status.concurrency || []).length) + ' levels done.</div>';
+    }
+    if (status.error) {
+      html += '<div class="instance-failed-note">' + this.esc(status.error) + '</div>';
+    }
+
+    var results = status.results || [];
+    if (results.length) {
+      html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;' +
+        'font-size:12px">' +
+        '<thead><tr style="text-align:left;color:var(--text-muted)">' +
+        '<th style="padding:4px 8px">parallel</th>' +
+        '<th style="padding:4px 8px">total tok/s</th>' +
+        '<th style="padding:4px 8px">per stream</th>' +
+        '<th style="padding:4px 8px">prompt</th>' +
+        '<th style="padding:4px 8px">slowest</th>' +
+        '<th style="padding:4px 8px">failed</th></tr></thead><tbody>';
+      results.forEach(function (r) {
+        html += '<tr style="border-top:1px solid var(--border,#333)">' +
+          '<td style="padding:4px 8px" class="mono">' + r.concurrency + '</td>' +
+          '<td style="padding:4px 8px" class="mono">' + (r.total_tokens_per_second || 0) + '</td>' +
+          '<td style="padding:4px 8px" class="mono">' + (r.per_stream_tokens_per_second || 0) + '</td>' +
+          '<td style="padding:4px 8px" class="mono">' + (r.prompt_tokens || 0) + '</td>' +
+          '<td style="padding:4px 8px" class="mono">' + (r.slowest_seconds || 0) + 's</td>' +
+          '<td style="padding:4px 8px" class="mono">' +
+          (r.failed ? '<span style="color:var(--red,#e05)">' + r.failed + '</span>' : '0') +
+          '</td></tr>';
+        if (r.error) {
+          html += '<tr><td colspan="6" style="padding:2px 8px;color:var(--text-muted)">' +
+            self.esc(r.error) + '</td></tr>';
+        }
+      });
+      html += '</tbody></table></div>';
+
+      // The reading, not just the numbers. "Total keeps climbing while per
+      // stream holds" and "both fall" mean different things and call for
+      // different remedies, and that is the whole point of running this.
+      var reading = self._benchReading(results);
+      if (reading) {
+        html += '<div style="margin-top:10px;font-size:12px;color:var(--text-muted)">' +
+          self.esc(reading) + '</div>';
+      }
+    }
+    return html;
+  },
+
+  _benchReading(results) {
+    var usable = results.filter(function (r) { return r.ok > 0; });
+    if (usable.length < 2) return '';
+    var first = usable[0];
+    var last = usable[usable.length - 1];
+    if (!first.per_stream_tokens_per_second || !last.total_tokens_per_second) return '';
+    var gain = last.total_tokens_per_second / (first.total_tokens_per_second || 1);
+    var kept = last.per_stream_tokens_per_second / first.per_stream_tokens_per_second;
+    var scale = gain.toFixed(1) + 'x total throughput at ' + last.concurrency +
+      ' parallel, each stream at ' + Math.round(kept * 100) + '% of its solo rate. ';
+    if (kept > 0.7) {
+      return scale + 'Still scaling — try a higher concurrency level to find the knee.';
+    }
+    if (gain > 1.3) {
+      return scale + 'Past the knee: more concurrency still buys throughput, ' +
+        'but each user waits noticeably longer.';
+    }
+    return scale + 'Saturated — more concurrency costs latency without buying ' +
+      'throughput. This is the ceiling for this model on these nodes.';
+  },
+
+  async _loadBenchOptions() {
+    try {
+      var data = await this.fetchJSON('/api/bench/options');
+      this._benchState.models = (data && data.models) || [];
+      if (!this._benchState.model && this._benchState.models.length) {
+        this._benchState.model = this._benchState.models[0];
+      }
+    } catch (err) {
+      this._benchState.models = [];
+    }
+  },
+
+  _bindBenchPanel(root) {
+    var self = this;
+    var panel = root.querySelector('#bench-panel');
+    if (!panel) return;
+
+    var read = function () {
+      var model = panel.querySelector('#bench-model');
+      var context = panel.querySelector('#bench-context');
+      var levels = panel.querySelector('#bench-levels');
+      var maxTokens = panel.querySelector('#bench-max-tokens');
+      var style = panel.querySelector('#bench-style');
+      if (model) self._benchState.model = model.value;
+      if (context) self._benchState.promptTokens = parseInt(context.value, 10) || 0;
+      if (levels) self._benchState.levels = levels.value;
+      if (maxTokens) self._benchState.maxTokens = parseInt(maxTokens.value, 10) || 256;
+      if (style) self._benchState.style = style.value;
+    };
+    // Remember the selection across the poll-driven re-render, or a choice
+    // made while a run is in flight is lost a second later.
+    ['#bench-model', '#bench-context', '#bench-levels', '#bench-max-tokens',
+     '#bench-style'].forEach(function (sel) {
+      var el = panel.querySelector(sel);
+      if (el) el.addEventListener('change', read);
+    });
+
+    var runBtn = panel.querySelector('#bench-run');
+    if (runBtn) {
+      runBtn.addEventListener('click', async function () {
+        read();
+        if (!self._benchState.model) {
+          self.toast('No model is serving', 'error');
+          return;
+        }
+        runBtn.disabled = true;
+        try {
+          var resp = await fetch('/api/bench/run', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: self._benchState.model,
+              concurrency: self._benchState.levels.split(',').map(Number),
+              max_tokens: self._benchState.maxTokens,
+              prompt_tokens: self._benchState.promptTokens,
+              style: self._benchState.style,
+            }),
+          });
+          var payload = await resp.json().catch(function () { return {}; });
+          if (!resp.ok) {
+            self.toast(payload.error || 'Could not start the benchmark', 'error');
+            runBtn.disabled = false;
+            return;
+          }
+          self._pollBench();
+        } catch (err) {
+          self.toast('Could not start the benchmark: ' + err.message, 'error');
+          runBtn.disabled = false;
+        }
+      });
+    }
+
+    var cancelBtn = panel.querySelector('#bench-cancel');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', async function () {
+        cancelBtn.disabled = true;
+        await fetch('/api/bench/cancel', { method: 'POST' }).catch(function () {});
+        self._pollBench();
+      });
+    }
+  },
+
+  async _pollBench() {
+    var self = this;
+    if (this._benchPoll) return;
+    var tick = async function () {
+      try {
+        self._benchState.status = await self.fetchJSON('/api/bench/status');
+      } catch (err) {
+        self._benchState.status = null;
+      }
+      var panel = document.querySelector('#bench-panel');
+      if (panel) {
+        panel.innerHTML = self._renderBenchPanel();
+        self._bindBenchPanel(document);
+      }
+      if (!(self._benchState.status && self._benchState.status.running)) {
+        clearInterval(self._benchPoll);
+        self._benchPoll = null;
+      }
+    };
+    await tick();
+    if (this._benchState.status && this._benchState.status.running) {
+      this._benchPoll = setInterval(tick, 2000);
+    }
+  },
+
   _renderEndpointRows(baseUrl) {
     var self = this;
     var tab = this._serverState.endpointTab;
@@ -6328,6 +6602,21 @@ const AINode = {
         }).catch(function () { self.toast('Copy failed', 'error'); });
       });
     });
+
+    // Throughput benchmark: options once, then bind. A run already in
+    // flight — started here, or from another browser — resumes its poll, so
+    // reloading the page does not lose a measurement in progress.
+    this._bindBenchPanel(root);
+    if (!this._benchState.models.length) {
+      this._loadBenchOptions().then(function () {
+        var panel = document.querySelector('#bench-panel');
+        if (panel) {
+          panel.innerHTML = self._renderBenchPanel();
+          self._bindBenchPanel(document);
+        }
+      });
+    }
+    this._pollBench();
 
     // Endpoint tab pills
     root.querySelectorAll('.server-tab-pill').forEach(function (btn) {

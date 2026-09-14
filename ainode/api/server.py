@@ -41,6 +41,7 @@ from ainode.engine.ray_autostart import (
 from ainode.secrets import SecretsManager
 from ainode.secrets.api_routes import register_secrets_routes
 from ainode.embeddings.manager import EmbeddingManager
+from ainode.bench.api_routes import register_bench_routes
 from ainode.embeddings.api_routes import register_embedding_routes
 from ainode.profiles.api_routes import register_profile_routes
 from ainode.profiles.store import ProfileStore
@@ -224,6 +225,8 @@ def create_app(
 
     # --- Server view routes --------------------------------------------------
     register_server_routes(app)
+
+    register_bench_routes(app)
 
     if getattr(config, "web_ui_enabled", True):
         app.router.add_static("/static", get_static_path(), name="static")
