@@ -257,6 +257,55 @@ def _peer_embedding_models(app):
     return found
 
 
+async def _ensure_weights(app, model_id: str) -> str:
+    """Put ``model_id``'s weights on this node, or say why they are not here.
+
+    Returns "" when the load may proceed, or a message when it must not.
+    Mirrors the LLM path: a peer first, and on a node that may not download,
+    failing to get them from the head is a real failure rather than a reason
+    to fetch 274 MB over the uplink.
+    """
+    import asyncio
+
+    config = app.get("config")
+    manager = app.get("embedding_manager")
+    models_dir = str(getattr(manager, "models_dir", "") or "")
+    if not models_dir:
+        return ""
+
+    from ainode.engine.acquire import fetch_model_from_peer, model_is_local
+
+    if model_is_local(model_id, models_dir):
+        return ""
+
+    def _fetch() -> str:
+        from ainode.core.config import host_path
+
+        try:
+            return fetch_model_from_peer(
+                cluster=app.get("cluster_state"),
+                own_node_id=str(getattr(config, "node_id", "") or ""),
+                ssh_user=str(getattr(config, "ssh_user", "") or ""),
+                model=model_id,
+                models_dir=models_dir,
+                host_models_dir=host_path(models_dir),
+            )
+        except Exception:
+            logger.exception("could not ask the cluster for %s", model_id)
+            return "absent"
+
+    outcome = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    if outcome in ("fetched", "present"):
+        return ""
+    if getattr(config, "download_from_hub", True):
+        # Slower, not wrong: SentenceTransformer downloads it next.
+        return ""
+    return (f"{model_id} is not on this node, and no other node has it. This "
+            f"node does not download from Hugging Face (download_from_hub is "
+            f"off), so load it on the head first, or run "
+            f"POST /api/cluster/mirror-models there.")
+
+
 async def handle_load_embedding_model(request: web.Request) -> web.Response:
     manager: EmbeddingManager = request.app["embedding_manager"]
     model_id = request.match_info.get("model_id", "")
@@ -270,6 +319,14 @@ async def handle_load_embedding_model(request: web.Request) -> web.Response:
         return web.json_response(
             {"ok": True, "model_id": model_id, "status": "loaded", "model": meta}
         )
+
+    # The weights, by the same rule as an LLM's: from the head, or an error
+    # saying so. Before this the manager simply called SentenceTransformer,
+    # which downloads — on whichever node was asked, including one that is
+    # not allowed to reach Hugging Face at all.
+    blocked = await _ensure_weights(request.app, model_id)
+    if blocked:
+        return _error(blocked, code="weights_unavailable", status=502)
 
     try:
         meta = await manager.aload(model_id)

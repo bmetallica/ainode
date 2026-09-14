@@ -139,7 +139,10 @@ def create_app(
     app["broadcast_sender"] = None
     app["broadcast_listener"] = None
     app["secrets_manager"] = SecretsManager()
-    app["embedding_manager"] = EmbeddingManager()
+    # models_dir, so embedding weights land where LLM weights land: mounted,
+    # visible to list_downloaded(), and carried by the mirror to every node.
+    app["embedding_manager"] = EmbeddingManager(
+        models_dir=getattr(config, "models_dir", "") or "")
     # Profiles are read at construction, before the app starts serving, so the
     # startup restore and the routes share one store.
     app["profiles"] = ProfileStore()

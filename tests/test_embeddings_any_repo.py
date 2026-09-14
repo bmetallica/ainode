@@ -68,7 +68,7 @@ class TestTheBackendAlreadyAllowedIt:
                   "embeddings" / "manager.py").read_text()
         load = source[source.index("    def load(self, model_id"):]
         load = load[:load.index("\n    def ", 1)]
-        assert "SentenceTransformer(model_id)" in load
+        assert "SentenceTransformer(model_id, cache_folder=self.models_dir)" in load
         # The catalog is consulted for metadata only, never as a whitelist.
         assert "KNOWN_EMBEDDING_MODELS.get(model_id, {})" in load
 

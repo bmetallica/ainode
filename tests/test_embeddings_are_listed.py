@@ -20,6 +20,8 @@ Two separate blind spots:
 
 from __future__ import annotations
 
+from unittest import mock
+
 import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient, TestServer
@@ -214,3 +216,96 @@ class TestTheProfileRemembersTheNode:
         assert "handle_cluster_embedding_load" in source
         # Placement is decided before the local manager is even consulted.
         assert source.index("_entry_target_node") < source.index("embedding_manager")
+
+
+class TestTheWeightsLiveWhereTheMirrorLooks:
+    """Reported: nomic could not be started on node 3.
+
+    SentenceTransformer's default cache_folder is huggingface_hub's, which
+    inside this container is /root/.cache/huggingface. Three consequences,
+    all of them invisible until someone tried:
+
+      * not mounted — the model was re-downloaded after every restart;
+      * not under models_dir — list_downloaded() never saw it, so the mirror
+        never carried it to the other nodes;
+      * so a sub-node had to fetch it from Hugging Face itself, which is the
+        one thing a head-only deployment forbids.
+    """
+
+    def test_the_cache_folder_is_models_dir(self, tmp_path):
+        from ainode.embeddings.manager import EmbeddingManager
+
+        assert EmbeddingManager(models_dir=str(tmp_path)).models_dir == str(tmp_path)
+
+    def test_without_one_it_still_lands_somewhere_mounted(self, monkeypatch, tmp_path):
+        """AINODE_HOME/models, not the HF default: a manager built without a
+        config must not write to a directory that dies with the container."""
+        import ainode.core.config as config_module
+        from ainode.embeddings.manager import EmbeddingManager
+
+        monkeypatch.setattr(config_module, "AINODE_HOME", tmp_path)
+        assert EmbeddingManager().models_dir == str(tmp_path / "models")
+
+    def test_the_load_passes_it_through(self):
+        import inspect
+
+        from ainode.embeddings.manager import EmbeddingManager
+
+        source = inspect.getsource(EmbeddingManager.load)
+        assert "cache_folder=self.models_dir" in source
+
+    def test_the_server_gives_it_the_configured_directory(self):
+        import inspect
+
+        from ainode.api import server
+
+        source = inspect.getsource(server.create_app)
+        assert 'EmbeddingManager(\n        models_dir=getattr(config, "models_dir", "") or "")' \
+            in source
+
+    @pytest.mark.asyncio
+    async def test_a_sub_node_refuses_rather_than_downloading(self, tmp_path):
+        """The same rule as an LLM: from the head, or an error saying so."""
+        from ainode.core.config import NodeConfig
+        from ainode.embeddings.api_routes import _ensure_weights
+
+        app = {"config": NodeConfig(node_id="n3", ssh_user="admin",
+                                    models_dir=str(tmp_path),
+                                    download_from_hub=False),
+               "embedding_manager": _Manager([]),
+               "cluster_state": None}
+        app["embedding_manager"].models_dir = str(tmp_path)
+        with mock.patch("ainode.engine.acquire.fetch_model_from_peer",
+                        return_value="absent"):
+            message = await _ensure_weights(app, CURATED)
+        assert CURATED in message
+        assert "mirror-models" in message
+
+    @pytest.mark.asyncio
+    async def test_a_peer_copy_is_enough(self, tmp_path):
+        from ainode.core.config import NodeConfig
+        from ainode.embeddings.api_routes import _ensure_weights
+
+        app = {"config": NodeConfig(node_id="n3", ssh_user="admin",
+                                    models_dir=str(tmp_path),
+                                    download_from_hub=False),
+               "embedding_manager": _Manager([]),
+               "cluster_state": None}
+        app["embedding_manager"].models_dir = str(tmp_path)
+        with mock.patch("ainode.engine.acquire.fetch_model_from_peer",
+                        return_value="fetched"):
+            assert await _ensure_weights(app, CURATED) == ""
+
+    @pytest.mark.asyncio
+    async def test_the_head_may_still_download(self, tmp_path):
+        from ainode.core.config import NodeConfig
+        from ainode.embeddings.api_routes import _ensure_weights
+
+        app = {"config": NodeConfig(node_id="head", ssh_user="admin",
+                                    models_dir=str(tmp_path)),
+               "embedding_manager": _Manager([]),
+               "cluster_state": None}
+        app["embedding_manager"].models_dir = str(tmp_path)
+        with mock.patch("ainode.engine.acquire.fetch_model_from_peer",
+                        return_value="absent"):
+            assert await _ensure_weights(app, CURATED) == ""
