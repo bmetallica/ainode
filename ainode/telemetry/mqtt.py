@@ -241,6 +241,12 @@ class MqttPublisher:
         config = self._app.get("config")
         models_dir = getattr(config, "models_dir", "") or ""
         sampler = SystemSampler(disk_paths=[models_dir] if models_dir else [])
+        # Shared, so "publish now" measures against the loop's last sample
+        # rather than against nothing. A rate needs two readings and a fresh
+        # sampler has one, so a manual publish reported no network or CPU
+        # rates at all — the fields were simply absent, which reads as a
+        # broken metric rather than as a missing baseline.
+        self._app["_telemetry_sampler"] = sampler
         loop = asyncio.get_event_loop()
         reported_error = ""
 

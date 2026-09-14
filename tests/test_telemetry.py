@@ -441,3 +441,45 @@ class TestTheClusterPayloadIsTruthful:
         app = {"config": NodeConfig(node_id="head"),
                "cluster_state": mock.Mock(members=lambda: [node])}
         assert _cluster(app)["nodes"][0]["instances"][0]["model"] == "a/b"
+
+
+class TestTheSamplerIsShared:
+    """A rate needs two readings, and a fresh sampler has one.
+
+    "Publish now" built its own SystemSampler, so its first — and only —
+    sample had no baseline and the payload carried no tx_mbit_s, no
+    rx_mbit_s, no cpu percent. Absent fields read as a broken metric rather
+    than as a missing baseline, and the operator has no way to tell which.
+
+    The publish loop already keeps a sampler alive across ticks. Sharing it
+    is the whole fix.
+    """
+
+    def test_the_loop_publishes_its_sampler(self):
+        import inspect
+
+        from ainode.telemetry.mqtt import MqttPublisher
+
+        source = inspect.getsource(MqttPublisher)
+        assert '_app["_telemetry_sampler"] = sampler' in source
+
+    def test_publish_now_prefers_it(self):
+        import inspect
+
+        from ainode.telemetry import api_routes
+
+        source = inspect.getsource(api_routes.handle_publish_now)
+        assert 'request.app.get("_telemetry_sampler")' in source
+
+    def test_a_second_sample_carries_rates(self):
+        """The property that was missing: sample twice on one sampler and the
+        rate fields appear."""
+        from ainode.metrics.system import SystemSampler
+
+        sampler = SystemSampler()
+        first = sampler.sample()["network"]
+        second = sampler.sample()["network"]
+        assert first, "no interfaces to measure"
+        name = next(iter(first))
+        assert "tx_mbit_s" not in first[name]
+        assert "tx_mbit_s" in second[name]
