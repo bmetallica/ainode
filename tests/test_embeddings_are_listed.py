@@ -309,3 +309,63 @@ class TestTheWeightsLiveWhereTheMirrorLooks:
         with mock.patch("ainode.engine.acquire.fetch_model_from_peer",
                         return_value="absent"):
             assert await _ensure_weights(app, CURATED) == ""
+
+
+class TestACompilerFailureExplainsItself:
+    """A RAG tool reported:
+
+        AI provider at http://.../v1 answered HTTP 503:
+        Failed to find C compiler. Please specify via CC environment variable
+        or set triton.knobs.build.impl.
+
+    The model had loaded successfully minutes earlier — loading compiles
+    nothing, the first embed does — so nothing before that point pointed at
+    the image. The operator reasonably suspected the model, then vLLM's
+    pooling mode, then the endpoint. It was none of those: this container
+    gets --gpus all, nomic-bert's code reaches for Triton kernels, and Triton
+    builds its launcher stubs at runtime with a C compiler that
+    python:3.12-slim does not have.
+    """
+
+    def _raise(self, message: str):
+        from ainode.embeddings.manager import _explain
+
+        return _explain(RuntimeError(message))
+
+    def test_the_compiler_error_gets_a_hint(self):
+        raised = self._raise("Failed to find C compiler. Please specify via "
+                             "CC environment variable.")
+        assert "no C compiler" in str(raised)
+        assert "update-cluster.sh" in str(raised)
+
+    def test_the_triton_knobs_wording_matches_too(self):
+        assert "packaging fault" in str(self._raise("set triton.knobs.build.impl"))
+
+    def test_the_original_text_survives(self):
+        """A hint never replaces the evidence — the same rule the launch-phase
+        hints follow."""
+        assert "Failed to find C compiler" in str(
+            self._raise("Failed to find C compiler."))
+
+    def test_an_unrelated_failure_is_passed_through_unchanged(self):
+        original = RuntimeError("CUDA out of memory")
+        from ainode.embeddings.manager import _explain
+
+        assert _explain(original) is original
+
+    def test_the_image_ships_a_compiler(self):
+        from pathlib import Path
+
+        dockerfile = (Path(__file__).resolve().parent.parent / "scripts" /
+                      "Dockerfile.ainode").read_text()
+        assert "gcc libc6-dev" in dockerfile
+        # Only where torch is, since nothing else can invoke Triton.
+        assert 'if [ -n "${AINODE_EXTRAS}" ]' in dockerfile
+
+    def test_embed_routes_failures_through_the_explanation(self):
+        import inspect
+
+        from ainode.embeddings.manager import EmbeddingManager
+
+        source = inspect.getsource(EmbeddingManager.embed)
+        assert "raise _explain(exc) from exc" in source
