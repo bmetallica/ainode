@@ -82,6 +82,36 @@ _INSTALL_HINT = (
 # ---------------------------------------------------------------------------
 
 
+#: Failures whose raw text names a build tool rather than anything the
+#: operator did. Matched on the phrase because the exception type varies with
+#: the Triton version.
+_COMPILER_HINT = (
+    "this model builds GPU kernels at first use and the container has no C "
+    "compiler. It is a packaging fault, not a configuration one: rebuild the "
+    "AINode image (scripts/update-cluster.sh), which now ships gcc. Until "
+    "then, `docker exec ainode apt-get install -y gcc libc6-dev` fixes the "
+    "running container until it is next restarted."
+)
+
+
+def _explain(exc: Exception) -> Exception:
+    """Return the exception to raise, with a hint where the raw one is opaque.
+
+    An embedding request that dies with
+
+        Failed to find C compiler. Please specify via CC environment variable
+
+    reads as a broken model, or as a broken RAG tool, or as anything but what
+    it is. The model loaded fine — loading compiles nothing, the first embed
+    does — so nothing before that point pointed at the image.
+    """
+    text = str(exc)
+    lowered = text.lower()
+    if "c compiler" in lowered or "triton.knobs.build" in lowered:
+        return RuntimeError(f"{text} — {_COMPILER_HINT}")
+    return exc
+
+
 class EmbeddingManager:
     """Tracks loaded embedding models and serves embedding requests."""
 
@@ -262,7 +292,10 @@ class EmbeddingManager:
             with self._lock:
                 model = self._models[model_id]
 
-        vectors = model.encode(texts, convert_to_numpy=True)
+        try:
+            vectors = model.encode(texts, convert_to_numpy=True)
+        except Exception as exc:
+            raise _explain(exc) from exc
         # Normalize to list[list[float]] regardless of numpy / torch / list return
         try:
             return [list(map(float, v)) for v in vectors.tolist()]
