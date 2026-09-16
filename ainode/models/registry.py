@@ -31,12 +31,45 @@ _DTYPE_BYTES = {
 
 
 def _safetensors_size_gb(safetensors) -> float:
-    """Real on-disk size (decimal GB) from HF safetensors dtype breakdown."""
+    """Size (decimal GB) ESTIMATED from the HF safetensors dtype breakdown.
+
+    An estimate, and for a packed low-bit checkpoint a bad one. The metadata
+    counts tensor elements by declared dtype, and a 4-bit format stores many
+    values inside one U8 or I32 element — so the arithmetic below multiplies a
+    packed count by the container's width. Measured against usedStorage:
+
+        MiniMax-M2.7 AWQ-4bit     111.6 GiB actual   912 GB estimated
+        DeepSeek-V4-Flash NVFP4   164.1 GiB actual   306 GB estimated
+
+    The second one is why this matters: AINode marked a model that fits two
+    nodes "Too large for cluster" and hid it from the search. Prefer
+    :func:`repo_size_gb`, which uses the exact figure when the Hub gives one.
+    """
     params = getattr(safetensors, "parameters", None)
     if not params:
         return 0.0
     total_bytes = sum(_DTYPE_BYTES.get(dt, 2) * n for dt, n in params.items())
     return round(total_bytes / 1e9, 1)
+
+
+def repo_size_gb(model) -> float:
+    """On-disk size (decimal GB) of a Hub repo, exact where the Hub says so.
+
+    ``usedStorage`` is the byte count the Hub itself reports for the repo, and
+    it arrives in the same API response as everything else — no extra request.
+    It is exact for every format, including the packed ones the dtype
+    breakdown cannot read. The estimate remains the fallback for a repo that
+    reports no storage figure.
+    """
+    used = getattr(model, "used_storage", None)
+    if used is None:
+        used = getattr(model, "usedStorage", None)
+    try:
+        if used and int(used) > 0:
+            return round(int(used) / 1e9, 1)
+    except (TypeError, ValueError):
+        pass
+    return _safetensors_size_gb(getattr(model, "safetensors", None))
 
 
 def _download_max_workers() -> int:
@@ -1520,7 +1553,10 @@ class ModelManager:
                 pipeline_tag="text-generation",
                 limit=limit,
                 sort="downloads",
-                expand=["safetensors"],
+                # usedStorage is the Hub's own byte count for the repo —
+                # exact where the dtype breakdown only estimates, and free,
+                # since it rides along in the same response.
+                expand=["safetensors", "usedStorage"],
             )
             catalog_repos = {info.hf_repo.lower() for info in self.get_catalog()}
             results = []
@@ -1528,7 +1564,7 @@ class ModelManager:
                 repo = m.id
                 repo_l = repo.lower()
                 slug = repo.replace("/", "--").lower()
-                size_gb = _safetensors_size_gb(getattr(m, "safetensors", None))
+                size_gb = repo_size_gb(m)
                 sf = getattr(m, "safetensors", None)
                 total_params = getattr(sf, "total", 0) if sf else 0
                 # Quant/engine from repo name — drives the badge AND the
