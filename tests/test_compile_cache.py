@@ -153,3 +153,48 @@ class TestQuotedArguments:
         assert overrides is None
         assert err.status == 400
         assert "quotes" in json.loads(err.body)["error"]
+
+
+class TestNoDuplicateFlags:
+    """Every built-in flag has to be suppressible from extra_vllm_args.
+
+    Measured, on a launch where the operator typed --gpu-memory-utilization
+    in the advanced field:
+
+        WARNING [argparse_utils.py:441] Found duplicate keys
+                --gpu-memory-utilization
+
+    The `wanted()` check exists for exactly this, and --gpu-memory-utilization
+    sat outside it, written into the script template. It is the obvious flag
+    for an operator to type, since it is the knob that decides whether a model
+    fits at all.
+    """
+
+    def _script(self, tmp_path, **config_kw) -> str:
+        from unittest import mock
+
+        from ainode.core.config import NodeConfig
+        from ainode.engine.backends import eugr
+        from ainode.engine.parallelism import ParallelPlan
+
+        backend = eugr.EugrBackend(NodeConfig(
+            node_id="n", model="org/model", gpu_memory_utilization=0.6,
+            **config_kw))
+        with mock.patch.object(eugr, "detect_gpu", return_value=None), \
+             mock.patch.object(eugr, "EUGR_LAUNCHER", tmp_path / "launch-cluster.sh"), \
+             mock.patch.object(type(backend), "_serve_target_and_name",
+                               lambda s: ("org/model", "")):
+            return backend._write_launch_script(ParallelPlan(), solo=True).read_text()
+
+    def test_the_built_in_value_is_used_by_default(self, tmp_path):
+        assert "--gpu-memory-utilization 0.6" in self._script(tmp_path)
+
+    def test_a_supplied_one_suppresses_it(self, tmp_path):
+        script = self._script(
+            tmp_path, extra_vllm_args=["--gpu-memory-utilization", "0.87"])
+        assert script.count("--gpu-memory-utilization") == 1
+        assert "0.87" in script and "0.6" not in script
+
+    def test_the_equals_form_suppresses_it_too(self, tmp_path):
+        script = self._script(tmp_path, extra_vllm_args=["--gpu-memory-utilization=0.9"])
+        assert script.count("--gpu-memory-utilization") == 1
