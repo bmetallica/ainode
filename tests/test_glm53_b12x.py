@@ -383,3 +383,58 @@ class TestTheBlockSizeIsNotOptional:
     def test_the_recipe_still_asks_for_256(self):
         args = catalog_recipe(MODEL)["extra_vllm_args"]
         assert args[args.index("--block-size") + 1] == "256"
+
+
+class TestTheMixedBitHint:
+    """A launch that no flag can rescue should say so.
+
+    aquaman164/MiniMax-M3-AutoRound-3.2bit-longctx died with
+
+        Value error, Unsupported weight_bits: 16, currently only support
+        {8, 2, 3, 4}
+
+    and the operator's next move was to try different serve flags, which
+    cannot work. The 16 is not a mistake in the checkpoint: its
+    quantization_config carries bits=16 as the GLOBAL default and 22,249
+    per-layer overrides naming the real widths. Stock vLLM reads the default,
+    finds 16 and stops; reading the overrides is what the vendor's plugin
+    exists to do.
+    """
+
+    def _reason(self, line: str) -> str:
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        tracker = LoadPhaseTracker()
+        tracker.reset()
+        tracker.observe(line)
+        tracker.fail("the launcher exited (code 1)")
+        return tracker.failure_reason()
+
+    def test_it_fires_on_the_measured_line(self):
+        reason = self._reason(
+            "(APIServer pid=551) Value error, Unsupported weight_bits: 16, "
+            "currently only support {8, 2, 3, 4}.")
+        assert "mixed-bit" in reason or "different width" in reason
+
+    def test_it_says_no_flag_will_help(self):
+        """The operator's instinct is to try more arguments. Two hours of that
+        is the cost of not saying this."""
+        reason = self._reason("Unsupported weight_bits: 16")
+        assert "not a flag" in reason
+
+    def test_it_points_at_the_model_card(self):
+        assert "model card" in self._reason("Unsupported weight_bits: 16")
+
+    def test_the_evidence_survives(self):
+        assert "Unsupported weight_bits: 16" in self._reason(
+            "Unsupported weight_bits: 16")
+
+    def test_a_healthy_launch_gets_no_hint(self):
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        tracker = LoadPhaseTracker()
+        tracker.reset()
+        for line in ("Loading model from scratch...",
+                     "GPU KV cache size: 1,072,101 tokens"):
+            tracker.observe(line)
+        assert "not a flag" not in tracker.failure_reason()

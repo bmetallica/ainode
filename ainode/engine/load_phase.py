@@ -221,6 +221,26 @@ _B12X_LOADER_HINT = (
     "way."
 )
 
+# A mixed-precision AutoRound / GPTQ checkpoint. Seen on
+# aquaman164/MiniMax-M3-AutoRound-3.2bit-longctx:
+#
+#   Value error, Unsupported weight_bits: 16, currently only support
+#   {8, 2, 3, 4}
+#
+# The 16 is not a mistake in the checkpoint. Its quantization_config carries
+# bits=16 as the GLOBAL default and then 22,249 per-layer overrides naming the
+# real widths — 2, 3, 4 or float per module. Stock vLLM reads the global value,
+# finds 16, and stops; reading the overrides is what the vendor's own plugin
+# exists to do. No combination of serve flags changes that.
+_MIXED_BITS_HINT = (
+    "this checkpoint quantises each layer to a different width and records "
+    "the widths per module, with an unquantized default. vLLM's quantization "
+    "parser reads only the default, so it sees 16 bits and stops. It is not a "
+    "flag this launch is missing: reading a mixed-bit checkpoint needs the "
+    "quantization plugin the model's own card names, in the engine image. "
+    "Check the model card for the serving stack it was built against."
+)
+
 # vLLM implements pipeline parallelism per architecture, and a model that does
 # not gets minutes into a launch before saying so. The planner refuses this for
 # curated models; the log net covers everything else.
@@ -240,6 +260,7 @@ _FATAL_PATTERNS = [
     ("pipeline parallelism is not supported", "pipelineparallelismisnotsupported",
      _NO_PIPELINE_HINT),
     ("b12x loader requires", "b12xloaderrequires", _B12X_LOADER_HINT),
+    ("unsupported weight_bits", "unsupportedweight_bits", _MIXED_BITS_HINT),
     ("cudaerrorillegalinstruction", "cudaerrorillegalinstruction", _ILLEGAL_INSTRUCTION_HINT),
     ("illegal instruction", "illegalinstruction", _ILLEGAL_INSTRUCTION_HINT),
     ("cudaerrorillegaladdress", "cudaerrorillegaladdress", _ILLEGAL_ADDRESS_HINT),
