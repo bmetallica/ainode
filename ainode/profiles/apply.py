@@ -365,22 +365,72 @@ def capture_profile(app, name: str, description: str = "") -> Profile:
     # And the peers'. They advertise what they have loaded, so a profile saved
     # on the head describes the whole cluster rather than one machine of it.
     cluster = app.get("cluster_state")
+    nodes = []
     if cluster is not None:
         try:
-            nodes = cluster.get_nodes()
+            nodes = [n for n in cluster.get_nodes() if n.node_id != own_id]
         except Exception:
-            nodes = []
-        for node in nodes:
-            if node.node_id == own_id:
+            logger.debug("could not read the cluster for capture", exc_info=True)
+
+    for node in nodes:
+        for model_id in (getattr(node, "embedding_models", []) or []):
+            if model_id and model_id not in seen_embeddings:
+                seen_embeddings.add(model_id)
+                entries.append(ProfileEntry(model=model_id,
+                                            kind=KIND_EMBEDDING,
+                                            node_ids=[node.node_id]))
+
+    # The peers' LLM instances. Only this node's InstanceManager was read
+    # above, so a model launched on another node — a solo Qwen on node 3, say
+    # — was left out of the profile entirely, and applying it would bring the
+    # cluster back one model short. The same blind spot the embeddings had:
+    # the head describing itself and calling it the cluster.
+    served = {e.model for e in entries}
+    for node in nodes:
+        for record in (getattr(node, "instances", []) or []):
+            if not isinstance(record, dict):
                 continue
-            for model_id in (getattr(node, "embedding_models", []) or []):
-                if model_id and model_id not in seen_embeddings:
-                    seen_embeddings.add(model_id)
-                    entries.append(ProfileEntry(model=model_id,
-                                                kind=KIND_EMBEDDING,
-                                                node_ids=[node.node_id]))
+            model_id = str(record.get("model") or "")
+            if not model_id or model_id in served:
+                continue
+            if str(record.get("status") or "serving") == "failed":
+                # A profile is what should be running, and a launch that died
+                # is not that. Capturing it would restore the failure.
+                continue
+            served.add(model_id)
+            peers = list(record.get("peer_ips") or [])
+            node_ids = [node.node_id] + [_peer_node_id(app, ip) or ip for ip in peers]
+            entries.append(ProfileEntry(
+                model=model_id,
+                kind=KIND_LLM,
+                node_ids=node_ids if peers else [node.node_id],
+                # The axis it was launched on. An entry carries the strategy
+                # and the node set; the sizes follow from those, which is how
+                # a locally captured entry works too.
+                #
+                # The per-load overrides — memory fraction, context length,
+                # extra flags — live in that node's own config and do not
+                # cross the wire, so they stay empty and the launch falls back
+                # to the catalog recipe and the node's defaults. Recording a
+                # guess would be worse than recording nothing: it would look
+                # exact.
+                strategy=_strategy_of(record),
+            ))
 
     return Profile(name=name, description=description, entries=entries)
+
+
+def _strategy_of(record: dict) -> str:
+    """The parallel axis an advertised instance was launched on, or "" if solo."""
+    for size, strategy in (("tensor_parallel_size", "tensor"),
+                           ("pipeline_parallel_size", "pipeline"),
+                           ("data_parallel_size", "data")):
+        try:
+            if int(record.get(size) or 1) > 1:
+                return strategy
+        except (TypeError, ValueError):
+            continue
+    return ""
 
 
 def _peer_node_id(app, fabric_ip: str) -> Optional[str]:

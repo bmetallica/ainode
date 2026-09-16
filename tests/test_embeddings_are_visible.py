@@ -119,3 +119,96 @@ class TestTheClusterGraphic:
     def test_a_long_list_is_truncated_rather_than_overflowing(self):
         assert re.search(r"served\.slice\(0, \d\)", TOPOLOGY_JS)
         assert "' more'" in TOPOLOGY_JS
+
+
+class TestCaptureSeesEveryNode:
+    """A saved profile listed two of four models.
+
+    Reported: MiniMax-M2.7 across nodes 1+2, Qwen3.8 and an embedding model on
+    node 3. The profile held MiniMax and the embedding model — Qwen3.8 was
+    gone, so applying it would bring the cluster back one model short.
+
+    capture_profile read this node's InstanceManager and the cluster's
+    embedding models, and never a peer's LLM instances. The same blind spot
+    the Loaded Models view had: the head describing itself and calling it the
+    cluster.
+    """
+
+    def _app(self, peer_instances):
+        from ainode.core.config import NodeConfig
+
+        class _Cluster:
+            def __init__(self, nodes):
+                self._nodes = nodes
+
+            def get_nodes(self, include_offline=False):
+                return self._nodes
+
+        class _Node:
+            node_id = "n3"
+            node_name = "spark-659b"
+            fabric_ip = "10.0.0.3"
+            embedding_models = []
+
+            def __init__(self, instances):
+                self.instances = instances
+
+        return {
+            "config": NodeConfig(node_id="head", node_name="spark-13e1"),
+            "instances": None,
+            "embedding_manager": None,
+            "cluster_state": _Cluster([_Node(peer_instances)]),
+        }
+
+    def _capture(self, peer_instances):
+        from ainode.profiles.apply import capture_profile
+
+        return capture_profile(self._app(peer_instances), "def")
+
+    def test_a_peers_solo_model_is_captured(self):
+        profile = self._capture([{"model": "unsloth/Qwen3.8-27B-NVFP4",
+                                  "api_port": 8000, "status": "serving"}])
+        entry = next(e for e in profile.entries
+                     if e.model == "unsloth/Qwen3.8-27B-NVFP4")
+        assert entry.node_ids == ["n3"]
+        assert entry.strategy == ""
+
+    def test_a_peers_distributed_model_keeps_its_axis(self):
+        profile = self._capture([{"model": "org/big", "status": "serving",
+                                  "tensor_parallel_size": 2,
+                                  "peer_ips": ["10.0.0.9"]}])
+        entry = next(e for e in profile.entries if e.model == "org/big")
+        assert entry.strategy == "tensor"
+        assert entry.node_ids[0] == "n3" and len(entry.node_ids) == 2
+
+    def test_a_pipeline_split_is_recorded_as_such(self):
+        profile = self._capture([{"model": "org/pp", "status": "serving",
+                                  "pipeline_parallel_size": 3,
+                                  "peer_ips": ["10.0.0.8", "10.0.0.9"]}])
+        assert next(e for e in profile.entries
+                    if e.model == "org/pp").strategy == "pipeline"
+
+    def test_a_failed_instance_is_not_captured(self):
+        """A profile is what SHOULD be running. Capturing a launch that died
+        would restore the failure."""
+        profile = self._capture([{"model": "org/broken", "status": "failed"}])
+        assert all(e.model != "org/broken" for e in profile.entries)
+
+    def test_a_malformed_record_is_skipped(self):
+        profile = self._capture(["not a dict", {"api_port": 8000}])
+        assert profile.entries == []
+
+    def test_the_same_model_is_not_captured_twice(self):
+        """Two nodes serving the same model is one entry, not two — the node
+        set says where it runs."""
+        profile = self._capture([{"model": "org/x", "status": "serving"},
+                                 {"model": "org/x", "status": "serving"}])
+        assert len([e for e in profile.entries if e.model == "org/x"]) == 1
+
+    def test_overrides_are_left_empty_rather_than_guessed(self):
+        """They live in that node's own config and do not cross the wire.
+        A guess would look exact."""
+        profile = self._capture([{"model": "org/x", "status": "serving"}])
+        entry = next(e for e in profile.entries if e.model == "org/x")
+        assert entry.gpu_memory_utilization is None
+        assert entry.extra_vllm_args == []
