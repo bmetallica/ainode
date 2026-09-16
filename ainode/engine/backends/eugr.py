@@ -1317,6 +1317,16 @@ class EugrBackend(EngineBackend):
             dtype_line = "    --dtype bfloat16 \\\n"
 
         extra = ""
+        # Written here rather than in the template below, so that a caller who
+        # sets it in extra_vllm_args suppresses it like every other flag.
+        # Being in the template put it outside the `wanted` check, and vLLM
+        # warned "Found duplicate keys --gpu-memory-utilization" on any launch
+        # where the operator typed one — which is the obvious thing to type,
+        # since it is the knob that decides whether a model fits.
+        gmu_line = ""
+        if wanted("--gpu-memory-utilization"):
+            gmu_line = (f"    --gpu-memory-utilization "
+                        f"{self.config.gpu_memory_utilization} \\\n")
         if self.config.max_model_len and wanted("--max-model-len"):
             extra += f"    --max-model-len {int(self.config.max_model_len)} \\\n"
         if self.config.quantization and wanted("--quantization"):
@@ -1389,8 +1399,7 @@ class EugrBackend(EngineBackend):
 {env_init_hook}
 vllm serve {shlex.quote(serve_target or self.config.model)} \\
     --host 0.0.0.0 --port {int(self.config.api_port)} \\
-{executor_line}{parallel_lines}    --gpu-memory-utilization {self.config.gpu_memory_utilization} \\
-{dtype_line}{extra}    --download-dir {shlex.quote(ENGINE_MODELS_DIR)}
+{executor_line}{parallel_lines}{gmu_line}{dtype_line}{extra}    --download-dir {shlex.quote(ENGINE_MODELS_DIR)}
 """
         stem = "ainode-solo" if solo else "ainode-distributed"
         # Per instance: two models launching at once would otherwise overwrite
