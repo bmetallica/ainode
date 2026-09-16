@@ -338,6 +338,31 @@ async def handle_server_status(request: web.Request) -> web.Response:
                         "capabilities": ["chat", "completions"],
                         "loaded_at": getattr(m, "last_seen", start_time),
                     })
+
+                # And the peer's embedding models. They are in-process, so
+                # they appear in none of the instance records above — which
+                # meant an embedding model loaded on another node was running,
+                # answering, and invisible in Loaded Models. The local ones
+                # were already listed, so the view was right about this node
+                # and silent about every other.
+                for emb in (getattr(m, "embedding_models", []) or []):
+                    if not emb:
+                        continue
+                    loaded_models.append({
+                        "id": emb,
+                        "node_hostname": m.node_name,
+                        "node_id": m.node_id,
+                        "port": getattr(m, "web_port", 3000) or 3000,
+                        "ready": True,
+                        "ejectable": False,
+                        "type": "embed",
+                        "format": "SafeTensors",
+                        "quantization": None,
+                        "size_bytes": 0,
+                        "parallel": 1,
+                        "capabilities": ["embeddings"],
+                        "loaded_at": getattr(m, "last_seen", start_time),
+                    })
         except Exception:
             logger.exception("failed to list cluster-member instances")
 
