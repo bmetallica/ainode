@@ -959,6 +959,12 @@ async def handle_nodes(request: web.Request) -> web.Response:
                     for inst in (getattr(n, "instances", []) or [])
                     if isinstance(inst, dict) and inst.get("model")
                 ],
+                # In-process, so they are in no instance record — and the
+                # cluster graphic reads this endpoint, so without them a node
+                # serving embeddings looked idle on hover.
+                "embedding_models": [
+                    str(e) for e in (getattr(n, "embedding_models", []) or []) if e
+                ],
             })
     else:
         # Fallback: return this node

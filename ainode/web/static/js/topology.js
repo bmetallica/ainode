@@ -651,7 +651,18 @@
       const temp = Number(d.gpu_temp || 0);
       if (temp > 0) pairs.push({ label: 'Temp', value: temp.toFixed(0) + '°C' });
 
-      if (d.model) pairs.push({ label: 'Model', value: this._shortText(d.model, 30) });
+      // Everything this node serves, not just the primary. A node running a
+      // stacked second model, or an embedding model for RAG, showed the same
+      // tooltip as an idle one — and an embedding model appears in no
+      // instance record at all, because it runs in-process rather than in an
+      // engine container.
+      const served = this._servedModels(d);
+      served.slice(0, 4).forEach((entry, i) => {
+        pairs.push({ label: i === 0 ? 'Models' : '', value: entry });
+      });
+      if (served.length > 4) {
+        pairs.push({ label: '', value: '+' + (served.length - 4) + ' more' });
+      }
 
       const status = d.status || (d.engine_ready ? 'online' : 'idle');
       pairs.push({ label: 'Status', value: status, green: status === 'online' || status === 'serving' });
@@ -720,7 +731,27 @@
       return m ? m[0].replace(/\s+/g, '') : s.replace('NVIDIA', '').trim();
     }
 
-    _shortText(s, maxLen) {
+    _servedModels(d) {
+    // Primary, stacked instances, embedding models — de-duplicated, because
+    // a node's primary also appears in its own instance list.
+    const out = [];
+    const seen = new Set();
+    const add = (name, suffix) => {
+      if (!name || seen.has(name)) return;
+      seen.add(name);
+      out.push(this._shortText(name, 26) + (suffix || ''));
+    };
+    add(d.model);
+    (d.instances || []).forEach((inst) => {
+      if (!inst || !inst.model) return;
+      const stacked = inst.api_port && inst.api_port !== d.api_port;
+      add(inst.model, stacked ? ' :' + inst.api_port : '');
+    });
+    (d.embedding_models || []).forEach((name) => add(name, ' (embed)'));
+    return out;
+  }
+
+  _shortText(s, maxLen) {
       s = String(s || '');
       if (s.length <= maxLen) return s;
       return s.slice(0, maxLen - 1) + '…';
