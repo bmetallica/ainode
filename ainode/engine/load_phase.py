@@ -241,6 +241,28 @@ _MIXED_BITS_HINT = (
     "Check the model card for the serving stack it was built against."
 )
 
+# eugr's launcher copies its launch script to /workspace in the engine
+# container and execs it there. Its own images build everything under that
+# path, so the assumption is invisible until someone points a DISTRIBUTED
+# launch at an image that does not have it:
+#
+#   Copying launch script to head node...
+#   Error response from daemon: Could not find the file /workspace in
+#   container vllm_node
+#   Error: docker cp to head node failed
+#
+# vllm/vllm-openai uses /vllm-workspace and has no /workspace. It serves a
+# SOLO launch happily — which is what makes this confusing: the same image
+# works until the launch becomes distributed.
+_WORKSPACE_HINT = (
+    "the engine image is missing /workspace, which the cluster launcher "
+    "copies its start script into. The stock vllm/vllm-openai images use "
+    "/vllm-workspace and have none, and they serve a single-node launch "
+    "fine — the requirement only appears once the launch spans nodes. Clear "
+    "the model's engine image so the launch uses this node's default, which "
+    "is built for it."
+)
+
 # vLLM implements pipeline parallelism per architecture, and a model that does
 # not gets minutes into a launch before saying so. The planner refuses this for
 # curated models; the log net covers everything else.
@@ -261,6 +283,8 @@ _FATAL_PATTERNS = [
      _NO_PIPELINE_HINT),
     ("b12x loader requires", "b12xloaderrequires", _B12X_LOADER_HINT),
     ("unsupported weight_bits", "unsupportedweight_bits", _MIXED_BITS_HINT),
+    ("could not find the file /workspace", "couldnotfindthefile/workspace",
+     _WORKSPACE_HINT),
     ("cudaerrorillegalinstruction", "cudaerrorillegalinstruction", _ILLEGAL_INSTRUCTION_HINT),
     ("illegal instruction", "illegalinstruction", _ILLEGAL_INSTRUCTION_HINT),
     ("cudaerrorillegaladdress", "cudaerrorillegaladdress", _ILLEGAL_ADDRESS_HINT),

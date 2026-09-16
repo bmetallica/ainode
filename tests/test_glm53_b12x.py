@@ -438,3 +438,50 @@ class TestTheMixedBitHint:
                      "GPU KV cache size: 1,072,101 tokens"):
             tracker.observe(line)
         assert "not a flag" not in tracker.failure_reason()
+
+
+class TestTheWorkspaceHint:
+    """A distributed launch against an image without /workspace.
+
+        Copying launch script to head node...
+        Error response from daemon: Could not find the file /workspace in
+        container vllm_node
+        Error: docker cp to head node failed
+
+    eugr's launcher copies its start script to /workspace and execs it there.
+    Its own images build everything under that path, so the requirement is
+    invisible — until an operator sets a model's engine image to stock
+    vllm/vllm-openai, which uses /vllm-workspace.
+
+    What makes it confusing is that the same image serves a SOLO launch
+    perfectly well. The requirement appears only once the launch spans nodes,
+    so nothing in the working case hints at it.
+    """
+
+    def _reason(self, line: str) -> str:
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        tracker = LoadPhaseTracker()
+        tracker.reset()
+        tracker.observe(line)
+        tracker.fail("the launcher exited (code 1)")
+        return tracker.failure_reason()
+
+    def test_it_fires_on_the_measured_line(self):
+        reason = self._reason("Error response from daemon: Could not find the "
+                              "file /workspace in container vllm_node")
+        assert "/workspace" in reason and "engine image" in reason
+
+    def test_it_names_the_repair(self):
+        assert "Clear the model's engine image" in self._reason(
+            "Could not find the file /workspace in container vllm_node")
+
+    def test_it_says_why_solo_worked(self):
+        """Otherwise the operator concludes the image is fine, because it is —
+        for the launch they ran before."""
+        assert "single-node" in self._reason(
+            "Could not find the file /workspace in container vllm_node")
+
+    def test_the_evidence_survives(self):
+        assert "container vllm_node" in self._reason(
+            "Could not find the file /workspace in container vllm_node")
