@@ -20,10 +20,17 @@ can fix the one that broke.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import urllib.request
 from typing import List, Optional
 
-from ainode.profiles.store import KIND_EMBEDDING, Profile, ProfileEntry
+from ainode.profiles.store import (
+    KIND_EMBEDDING,
+    Profile,
+    ProfileEntry,
+    ProfileError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -313,6 +320,48 @@ async def apply_profile(app, profile: Profile, *, wait: bool = True) -> dict:
     }
 
 
+def local_launch_specs(app) -> List[dict]:
+    """Every LLM instance on THIS node, as profile-entry keyword arguments.
+
+    One extraction, used by two callers that must not disagree: the local half
+    of :func:`capture_profile`, and the /api/instances/launch-config endpoint a
+    head calls to learn what a peer is running. A profile whose peer entries
+    carried different fields from its local ones would restore two nodes
+    differently from one cluster.
+    """
+    from ainode.profiles.store import KIND_LLM
+
+    config = app.get("config")
+    manager = app.get("instances")
+    own_id = str(getattr(config, "node_id", "") or "head")
+
+    specs: List[dict] = []
+    for instance in (manager.instances() if manager is not None else []):
+        inst_config = _instance_config(instance)
+        record = instance.record
+        peers = list(getattr(record, "peer_ips", []) or [])
+        node_ids = [own_id] + [_peer_node_id(app, ip) or ip for ip in peers]
+        specs.append({
+            "model": record.model,
+            "kind": KIND_LLM,
+            "node_ids": node_ids if peers else [],
+            "strategy": str(getattr(inst_config, "parallel_strategy", "") or ""),
+            "gpu_memory_utilization": getattr(
+                inst_config, "gpu_memory_utilization", None),
+            "max_model_len": getattr(inst_config, "max_model_len", None),
+            "kv_cache_dtype": str(getattr(inst_config, "kv_cache_dtype", "") or ""),
+            "quantization": str(getattr(inst_config, "quantization", "") or ""),
+            "served_model_name": list(
+                getattr(inst_config, "served_model_name", None) or []),
+            "trust_remote_code": bool(
+                getattr(inst_config, "trust_remote_code", False)) or None,
+            "extra_vllm_args": list(getattr(inst_config, "extra_vllm_args", None) or []),
+            "extra_env": dict(getattr(inst_config, "extra_env", None) or {}),
+            "engine_image": str(getattr(inst_config, "engine_image", "") or ""),
+        })
+    return specs
+
+
 def capture_profile(app, name: str, description: str = "") -> Profile:
     """Turn what is running right now into a profile.
 
@@ -323,31 +372,12 @@ def capture_profile(app, name: str, description: str = "") -> Profile:
     from ainode.profiles.store import KIND_LLM
 
     config = app.get("config")
-    manager = app.get("instances")
     embeddings = app.get("embedding_manager")
     own_id = str(getattr(config, "node_id", "") or "head")
 
     entries: List[ProfileEntry] = []
-    for instance in (manager.instances() if manager is not None else []):
-        inst_config = _instance_config(instance)
-        record = instance.record
-        peers = list(getattr(record, "peer_ips", []) or [])
-        node_ids = [own_id] + [_peer_node_id(app, ip) or ip for ip in peers]
-        entries.append(ProfileEntry(
-            model=record.model,
-            kind=KIND_LLM,
-            node_ids=node_ids if peers else [],
-            strategy=str(getattr(inst_config, "parallel_strategy", "") or ""),
-            gpu_memory_utilization=getattr(inst_config, "gpu_memory_utilization", None),
-            max_model_len=getattr(inst_config, "max_model_len", None),
-            kv_cache_dtype=str(getattr(inst_config, "kv_cache_dtype", "") or ""),
-            quantization=str(getattr(inst_config, "quantization", "") or ""),
-            served_model_name=list(getattr(inst_config, "served_model_name", []) or []),
-            trust_remote_code=bool(getattr(inst_config, "trust_remote_code", False)) or None,
-            extra_vllm_args=list(getattr(inst_config, "extra_vllm_args", []) or []),
-            extra_env=dict(getattr(inst_config, "extra_env", {}) or {}),
-            engine_image=str(getattr(inst_config, "engine_image", "") or ""),
-        ))
+    for spec in local_launch_specs(app):
+        entries.append(ProfileEntry(**spec))
 
     # Embeddings, with the node each one is on. Recorded even for this node:
     # a profile is applied on whichever node has it, and an entry with no
@@ -385,8 +415,30 @@ def capture_profile(app, name: str, description: str = "") -> Profile:
     # — was left out of the profile entirely, and applying it would bring the
     # cluster back one model short. The same blind spot the embeddings had:
     # the head describing itself and calling it the cluster.
+    #
+    # Asked for, not inferred: each peer hands over the exact launch
+    # parameters of every model it runs. A profile without them restores the
+    # models and loses the flags they need, which is a failure nobody sees
+    # until the first request.
     served = {e.model for e in entries}
     for node in nodes:
+        for spec in _peer_launch_specs(node):
+            model_id = str(spec.get("model") or "")
+            if not model_id or model_id in served:
+                continue
+            served.add(model_id)
+            spec = dict(spec)
+            spec["kind"] = KIND_LLM
+            placement = [n for n in (spec.get("node_ids") or []) if n]
+            spec["node_ids"] = placement or [node.node_id]
+            try:
+                entries.append(ProfileEntry(**spec))
+            except (ProfileError, TypeError):
+                logger.exception("peer %s sent an unusable entry for %s",
+                                 node.node_id, model_id)
+        # Whatever the peer could not tell us about, from its announcement.
+        # An older build, or one that did not answer: the model still belongs
+        # in the profile, with the catalog recipe filling in the rest.
         for record in (getattr(node, "instances", []) or []):
             if not isinstance(record, dict):
                 continue
@@ -418,6 +470,35 @@ def capture_profile(app, name: str, description: str = "") -> Profile:
             ))
 
     return Profile(name=name, description=description, entries=entries)
+
+
+#: One request per peer, on an action a person performs deliberately and
+#: rarely. Short, because a node that has gone away must not hold up a save.
+_LAUNCH_CONFIG_TIMEOUT = 8
+
+
+def _peer_launch_specs(node) -> List[dict]:
+    """Ask a peer how it started its models. [] when it cannot say.
+
+    The launch parameters live in that node's InstanceManager and appear in no
+    announcement. A profile that omits them looks complete and restores a
+    model without the flags it needs.
+    """
+    host = getattr(node, "fabric_ip", "") or ""
+    if not host:
+        return []
+    url = f"http://{host}:{getattr(node, 'web_port', 3000) or 3000}/api/instances/launch-config"
+    try:
+        with urllib.request.urlopen(url, timeout=_LAUNCH_CONFIG_TIMEOUT) as response:
+            payload = json.loads(response.read().decode())
+    except Exception:
+        # An older build has no such route, and a node that is down answers
+        # nothing. Both fall back to the announcement.
+        logger.debug("no launch config from %s", getattr(node, "node_id", "?"),
+                     exc_info=True)
+        return []
+    specs = payload.get("instances")
+    return [s for s in specs if isinstance(s, dict)] if isinstance(specs, list) else []
 
 
 def _strategy_of(record: dict) -> str:

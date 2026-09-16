@@ -147,7 +147,11 @@ class TestCaptureSeesEveryNode:
         class _Node:
             node_id = "n3"
             node_name = "spark-659b"
-            fabric_ip = "10.0.0.3"
+            # No fabric_ip: these cases cover the ANNOUNCEMENT fallback, so
+            # the launch-config fetch must not be attempted. A test that
+            # reaches the network is a test that fails on a train.
+            fabric_ip = ""
+            web_port = 3000
             embedding_models = []
 
             def __init__(self, instances):
