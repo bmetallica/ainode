@@ -78,14 +78,95 @@ class TestTheFallback:
         assert repo_size_gb(_Model()) == 0.0
 
 
-class TestTheSearchAsksForIt:
-    def test_used_storage_is_in_the_expand_list(self):
-        """It rides along in the response the search already makes, so the
-        exact figure costs nothing."""
+class TestTheListEndpointCannotBeAskedForIt:
+    """The first fix broke the search outright.
+
+        Bad request:
+        * Invalid option: expected one of "author"|…|"safetensors"|… at expand[1]
+
+    usedStorage is valid on the single-model endpoint — which is where it was
+    verified — and rejected on the list endpoint. list_models then raised, the
+    search returned nothing, and "downloading from HF stopped working".
+    """
+
+    def test_the_list_call_does_not_ask_for_it(self):
         import inspect
 
         from ainode.models.registry import ModelManager
 
         source = inspect.getsource(ModelManager.search_huggingface)
-        assert 'expand=["safetensors", "usedStorage"]' in source
-        assert "repo_size_gb(m)" in source
+        assert '"usedStorage"' not in source.split("expand=")[1][:60]
+        assert 'expand=["safetensors"]' in source
+
+    def test_the_reason_is_recorded_where_someone_would_re_add_it(self):
+        import inspect
+
+        from ainode.models.registry import ModelManager
+
+        source = inspect.getsource(ModelManager.search_huggingface)
+        assert "NOT usedStorage" in source
+
+    def test_the_exact_lookup_uses_the_single_model_endpoint(self):
+        import inspect
+
+        from ainode.models.registry import exact_repo_size_gb
+
+        source = inspect.getsource(exact_repo_size_gb)
+        assert 'model_info(repo_id, expand=["usedStorage"])' in source
+
+    def test_an_unreachable_hub_yields_no_size_rather_than_raising(self):
+        from unittest import mock
+
+        from ainode.models import registry
+
+        with mock.patch("huggingface_hub.HfApi.model_info",
+                        side_effect=OSError("no route to host")):
+            assert registry.exact_repo_size_gb("org/model") == 0.0
+
+
+class TestSharpeningIsBounded:
+    """A search box that takes half a minute is a search box nobody uses."""
+
+    def _rows(self, n, gb):
+        return [{"hf_repo": "org/m%d" % i, "size_gb": gb} for i in range(n)]
+
+    def test_small_models_are_not_looked_up(self):
+        from unittest import mock
+
+        from ainode.models import registry
+
+        rows = self._rows(10, 8.0)
+        with mock.patch.object(registry, "exact_repo_size_gb") as lookup:
+            registry._sharpen_sizes(rows)
+        lookup.assert_not_called()
+
+    def test_large_ones_are(self):
+        from unittest import mock
+
+        from ainode.models import registry
+
+        rows = self._rows(3, 200.0)
+        with mock.patch.object(registry, "exact_repo_size_gb", return_value=176.2):
+            registry._sharpen_sizes(rows)
+        assert all(r["size_gb"] == 176.2 for r in rows)
+
+    def test_the_number_of_lookups_is_capped(self):
+        from unittest import mock
+
+        from ainode.models import registry
+
+        rows = self._rows(50, 200.0)
+        with mock.patch.object(registry, "exact_repo_size_gb",
+                               return_value=176.2) as lookup:
+            registry._sharpen_sizes(rows)
+        assert lookup.call_count == registry._EXACT_SIZE_LOOKUPS
+
+    def test_a_repo_that_reports_nothing_keeps_its_estimate(self):
+        from unittest import mock
+
+        from ainode.models import registry
+
+        rows = self._rows(2, 200.0)
+        with mock.patch.object(registry, "exact_repo_size_gb", return_value=0.0):
+            registry._sharpen_sizes(rows)
+        assert all(r["size_gb"] == 200.0 for r in rows)

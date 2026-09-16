@@ -52,14 +52,59 @@ def _safetensors_size_gb(safetensors) -> float:
     return round(total_bytes / 1e9, 1)
 
 
+#: Below this, the dtype estimate is good enough: a model that small fits any
+#: node whichever way the arithmetic lands, so paying a request to sharpen it
+#: buys nothing. Above it, the fit verdict depends on the number.
+_EXACT_SIZE_THRESHOLD_GB = 40.0
+
+#: Search returns up to 50 rows; verifying every large one serially would make
+#: the box feel broken. Bounded, in parallel, and the estimate stands for the
+#: rest — which only ever over-states, so nothing that fits is hidden.
+_EXACT_SIZE_LOOKUPS = 20
+
+
+def exact_repo_size_gb(repo_id: str) -> float:
+    """The Hub's own byte count for ``repo_id``, or 0.0 if it will not say.
+
+    ``usedStorage`` is exact for every format, including the packed low-bit
+    ones the dtype breakdown misreads by a factor of eight. It is available
+    only on the single-model endpoint — asking for it on the list endpoint is
+    a 400, which is how the search came to return nothing at all.
+    """
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().model_info(repo_id, expand=["usedStorage"])
+        used = getattr(info, "used_storage", None)
+        if used and int(used) > 0:
+            return round(int(used) / 1e9, 1)
+    except Exception:
+        logger.debug("no usedStorage for %s", repo_id, exc_info=True)
+    return 0.0
+
+
+def _sharpen_sizes(results: list) -> None:
+    """Replace the estimate with the Hub's byte count where it matters."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    big = [r for r in results if (r.get("size_gb") or 0) >= _EXACT_SIZE_THRESHOLD_GB]
+    big = big[:_EXACT_SIZE_LOOKUPS]
+    if not big:
+        return
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        exact = list(pool.map(lambda r: exact_repo_size_gb(r["hf_repo"]), big))
+    for row, size in zip(big, exact):
+        if size > 0:
+            row["size_gb"] = size
+
+
 def repo_size_gb(model) -> float:
     """On-disk size (decimal GB) of a Hub repo, exact where the Hub says so.
 
-    ``usedStorage`` is the byte count the Hub itself reports for the repo, and
-    it arrives in the same API response as everything else — no extra request.
-    It is exact for every format, including the packed ones the dtype
-    breakdown cannot read. The estimate remains the fallback for a repo that
-    reports no storage figure.
+    ``usedStorage`` is the byte count the Hub itself reports for the repo. It
+    is exact for every format, including the packed ones the dtype breakdown
+    cannot read. The estimate remains the fallback for a repo that reports no
+    storage figure.
     """
     used = getattr(model, "used_storage", None)
     if used is None:
@@ -1553,10 +1598,13 @@ class ModelManager:
                 pipeline_tag="text-generation",
                 limit=limit,
                 sort="downloads",
-                # usedStorage is the Hub's own byte count for the repo —
-                # exact where the dtype breakdown only estimates, and free,
-                # since it rides along in the same response.
-                expand=["safetensors", "usedStorage"],
+                # NOT usedStorage: the Hub rejects it on the LIST endpoint —
+                #   Invalid option: expected one of "author"|…|"safetensors"|…
+                # It is valid on the single-model endpoint, which is where it
+                # was verified, and adding it here turned every search into a
+                # BadRequestError: no results, so nothing to download. The
+                # exact size is fetched per repo below instead.
+                expand=["safetensors"],
             )
             catalog_repos = {info.hf_repo.lower() for info in self.get_catalog()}
             results = []
@@ -1597,6 +1645,15 @@ class ModelManager:
                     "likes": getattr(m, "likes", 0),
                     "in_catalog": repo_l in catalog_repos,
                 })
+            # Sharpen the sizes that decide a fit verdict. The dtype estimate
+            # over-states a packed low-bit checkpoint — measured at 8x for an
+            # AWQ 4-bit repo — and the UI hides anything it reads as too large
+            # for the cluster, so an estimate is the difference between a
+            # frontier model being offered and not existing. Only the large
+            # ones, only a bounded number, and in parallel: a search box that
+            # takes half a minute is a search box nobody uses.
+            _sharpen_sizes(results)
+
             # Always surface curated matches for the query — HF's download-sorted
             # page often ranks our vetted pick past the limit, so inject it.
             ql = query.lower()
