@@ -179,6 +179,7 @@ def create_app(
     # node whose launch failed.
     app.router.add_post("/api/engine/compile-cache", _clear_compile_cache)
     app.router.add_post("/api/cluster/compile-cache", handle_cluster_compile_cache)
+    app.router.add_get("/api/instances/launch-config", handle_launch_config)
     app.router.add_post("/api/cluster/mirror-models", handle_cluster_mirror_models)
     app.router.add_get("/api/cluster/mirror-status", handle_cluster_mirror_status)
     app.router.add_post("/api/cluster/embeddings/load", handle_cluster_embedding_load)
@@ -1100,6 +1101,31 @@ async def _embedding_dispatch(request: web.Request, action: str) -> web.Response
     except aiohttp.ClientError as exc:
         return web.json_response(
             {"error": f"failed to reach node '{node_id}' at {url}: {exc}"}, status=502)
+
+
+async def handle_launch_config(request: web.Request) -> web.Response:
+    """GET /api/instances/launch-config — how this node's models were started.
+
+    A profile has to carry the launch parameters, or applying it restores the
+    models without the flags they need and the operator finds out at the first
+    request. Those parameters live in each node's own InstanceManager and
+    appear in no announcement — a broadcast carrying every model's argument
+    list would be a different thing entirely.
+
+    So the head asks. One request per peer, on a deliberate action a person
+    performs rarely.
+    """
+    from ainode.profiles.apply import local_launch_specs
+
+    try:
+        specs = local_launch_specs(request.app)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("could not read the local launch config")
+        return web.json_response({"error": str(exc), "instances": []}, status=500)
+    return web.json_response({
+        "node_id": getattr(request.app["config"], "node_id", "") or "",
+        "instances": specs,
+    })
 
 
 async def handle_cluster_mirror_models(request: web.Request) -> web.Response:
