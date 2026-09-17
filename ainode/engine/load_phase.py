@@ -289,6 +289,27 @@ _DEEPGEMM_HINT = (
     "start on it regardless, which is why it goes unnoticed."
 )
 
+# The InstantTensor loader wants one contiguous staging buffer and refuses
+# when it does not fit. Seen on a node whose engine image had just been
+# rebuilt, on a model that had loaded on the same node for days:
+#
+#   RuntimeError: buffer_size (5086090240 B) exceeds device memory budget
+#   (825161728 B)
+#
+# Two knobs, both proven in this catalog: GLM's recipe caps
+# INSTANTTENSOR_BUFFER_SIZE at 64 MB, and any model loads without the loader
+# at all. It is a start-up optimisation — dropping it costs seconds of load
+# time and nothing else.
+_INSTANTTENSOR_BUDGET_HINT = (
+    "the InstantTensor loader asked for a staging buffer larger than the free "
+    "device memory it was given. It is a load-time optimisation, not "
+    "something the model needs: put drop:--load-format in the extra vLLM args "
+    "to load the ordinary way, or cap the buffer with an environment entry "
+    "INSTANTTENSOR_BUFFER_SIZE=67108864, which is what the GLM recipe does. "
+    "If another model is already loaded on that node, its reservation is what "
+    "left so little free."
+)
+
 # vLLM implements pipeline parallelism per architecture, and a model that does
 # not gets minutes into a launch before saying so. The planner refuses this for
 # curated models; the log net covers everything else.
@@ -310,6 +331,8 @@ _FATAL_PATTERNS = [
     ("b12x loader requires", "b12xloaderrequires", _B12X_LOADER_HINT),
     ("unsupported weight_bits", "unsupportedweight_bits", _MIXED_BITS_HINT),
     ("requires deepgemm", "requiresdeepgemm", _DEEPGEMM_HINT),
+    ("exceeds device memory budget", "exceedsdevicememorybudget",
+     _INSTANTTENSOR_BUDGET_HINT),
     ("could not find the file /workspace", "couldnotfindthefile/workspace",
      _WORKSPACE_HINT),
     ("cudaerrorillegalinstruction", "cudaerrorillegalinstruction", _ILLEGAL_INSTRUCTION_HINT),
