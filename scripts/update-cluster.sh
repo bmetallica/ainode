@@ -14,6 +14,8 @@
 #   4. optionally sets up the head's registry cache (--registry, idempotent)
 #   5. distributes the new image — through the local registry when it exists,
 #      otherwise by streaming it over SSH
+#   5b. distributes the ENGINE image too, but only after --base rebuilt it:
+#      eugr's launcher aborts when the nodes disagree about it
 #   6. restarts the service, members first, head last
 #   7. verifies every node reports the new version
 #
@@ -204,6 +206,66 @@ else
             docker save "$IMAGE" | ssh -o BatchMode=yes "$node" docker load
         fi
     done
+fi
+
+# --- 5b. the engine image ---------------------------------------------------
+#
+# --base rebuilt it HERE. eugr's launcher compares image ids across the
+# cluster before it starts anything and aborts when they differ:
+#
+#   Error: Cluster launch aborted because image 'vllm-node' is not in sync.
+#
+# which it is right to do — ranks on different builds fail later and far less
+# clearly. But it left the cluster unable to launch anything until someone
+# noticed, because a rebuild on one node is a divergence on the others.
+#
+# AINode's launch-time image distribution does not cover this one: it fires
+# only for a model whose recipe PINS an engine image, on the reasoning that
+# the launcher default is built locally on every node. That was true when
+# every node ran this script. It stopped being true the moment the build
+# moved to the head alone.
+
+if [[ $DO_BASE -eq 1 && ${#NODE_LIST[@]} -gt 0 ]]; then
+    step "Distributing the engine image"
+    ENGINE_IMAGE="${ENGINE_IMAGE:-vllm-node:latest}"
+    if ! docker image inspect "$ENGINE_IMAGE" >/dev/null 2>&1; then
+        warn "${ENGINE_IMAGE} is not here; skipping (did the build fail?)"
+    elif [[ -n "$REGISTRY" ]]; then
+        ENGINE_REMOTE="${REGISTRY}/${ENGINE_IMAGE}"
+        say "pushing ${ENGINE_IMAGE} to ${ENGINE_REMOTE} (~20 GB on the first run)"
+        run docker tag "$ENGINE_IMAGE" "$ENGINE_REMOTE"
+        run docker push "$ENGINE_REMOTE"
+        for node in "${NODE_LIST[@]}"; do
+            say "${node}: pulling the engine image"
+            run ssh -o BatchMode=yes "$node" \
+                "docker pull ${ENGINE_REMOTE} && docker tag ${ENGINE_REMOTE} ${ENGINE_IMAGE}"
+        done
+    else
+        for node in "${NODE_LIST[@]}"; do
+            say "${node}: streaming the engine image over SSH (~20 GB, slow)"
+            if [[ $CHECK -eq 1 ]]; then
+                printf '   would run: docker save %s | ssh %s docker load\n' \
+                    "$ENGINE_IMAGE" "$node"
+            else
+                docker save "$ENGINE_IMAGE" | ssh -o BatchMode=yes "$node" docker load
+            fi
+        done
+    fi
+
+    # The launcher compares ids, not tags. Say so here rather than letting the
+    # next launch be the thing that reports it.
+    if [[ $CHECK -eq 0 ]]; then
+        head_id="$(docker image inspect --format '{{.Id}}' "$ENGINE_IMAGE" 2>/dev/null || true)"
+        for node in "${NODE_LIST[@]}"; do
+            peer_id="$(ssh -o BatchMode=yes "$node" \
+                "docker image inspect --format '{{.Id}}' ${ENGINE_IMAGE}" 2>/dev/null || true)"
+            if [[ -n "$head_id" && "$peer_id" == "$head_id" ]]; then
+                say "${node}: engine image in sync"
+            else
+                warn "${node}: engine image still differs — a distributed launch will abort"
+            fi
+        done
+    fi
 fi
 
 # --- 6. restart -------------------------------------------------------------
