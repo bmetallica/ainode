@@ -263,6 +263,31 @@ _WORKSPACE_HINT = (
     "is built for it."
 )
 
+# A model whose kernels need DeepGEMM, on an image where the module is
+# present but does not load. Seen launching DeepSeek-V4-Flash:
+#
+#   RuntimeError: Sparse Attention Indexer CUDA op requires DeepGEMM support
+#   in the current vLLM environment.
+#
+# The cause is usually visible much earlier in the same log, as a warning
+# nothing else reacts to:
+#
+#   Module vllm.third_party.deep_gemm was found but failed to import
+#   ImportError: .../deep_gemm/_C...so: undefined symbol:
+#   _ZN3c1010ValueErrorC1ENS_14SourceLocation...
+#
+# That symbol is c10::ValueError from libtorch: the extension was compiled
+# against a different torch than the image ships. Models that do not reach
+# for DeepGEMM start anyway, so the image looks healthy until one does.
+_DEEPGEMM_HINT = (
+    "this model needs DeepGEMM kernels and the engine image cannot load them. "
+    "Search the same log for \"deep_gemm\" — an ImportError about an "
+    "undefined c10 symbol there means the module was built against a "
+    "different torch than the image ships, which is a fault in the image "
+    "rather than in the model or the launch. Models that do not use DeepGEMM "
+    "start on it regardless, which is why it goes unnoticed."
+)
+
 # vLLM implements pipeline parallelism per architecture, and a model that does
 # not gets minutes into a launch before saying so. The planner refuses this for
 # curated models; the log net covers everything else.
@@ -283,6 +308,7 @@ _FATAL_PATTERNS = [
      _NO_PIPELINE_HINT),
     ("b12x loader requires", "b12xloaderrequires", _B12X_LOADER_HINT),
     ("unsupported weight_bits", "unsupportedweight_bits", _MIXED_BITS_HINT),
+    ("requires deepgemm", "requiresdeepgemm", _DEEPGEMM_HINT),
     ("could not find the file /workspace", "couldnotfindthefile/workspace",
      _WORKSPACE_HINT),
     ("cudaerrorillegalinstruction", "cudaerrorillegalinstruction", _ILLEGAL_INSTRUCTION_HINT),

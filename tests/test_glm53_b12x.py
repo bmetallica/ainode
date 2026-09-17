@@ -485,3 +485,55 @@ class TestTheWorkspaceHint:
     def test_the_evidence_survives(self):
         assert "container vllm_node" in self._reason(
             "Could not find the file /workspace in container vllm_node")
+
+
+class TestTheDeepGemmHint:
+    """A launch that fails on a module the IMAGE cannot load.
+
+        RuntimeError: Sparse Attention Indexer CUDA op requires DeepGEMM
+        support in the current vLLM environment.
+
+    The cause sits much earlier in the same log, as a warning nothing reacts
+    to: vllm.third_party.deep_gemm fails to import with an undefined c10
+    symbol — the extension was built against a different torch than the image
+    ships. Models that do not reach for DeepGEMM start anyway, so the image
+    looks healthy until one does, and the operator looks at the model.
+    """
+
+    def _reason(self, line: str) -> str:
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        tracker = LoadPhaseTracker()
+        tracker.reset()
+        tracker.observe(line)
+        tracker.fail("the launcher exited (code 1)")
+        return tracker.failure_reason()
+
+    def test_it_fires_on_the_measured_line(self):
+        reason = self._reason(
+            "RuntimeError: Sparse Attention Indexer CUDA op requires DeepGEMM "
+            "support in the current vLLM environment.")
+        assert "engine image cannot load them" in reason
+
+    def test_it_points_at_the_earlier_warning(self):
+        """Which is the only place the actual cause appears."""
+        assert "deep_gemm" in self._reason("requires DeepGEMM support")
+
+    def test_it_says_the_image_is_at_fault_not_the_model(self):
+        assert "fault in the image" in self._reason("requires DeepGEMM support")
+
+    def test_the_evidence_survives(self):
+        assert "Sparse Attention Indexer" in self._reason(
+            "Sparse Attention Indexer CUDA op requires DeepGEMM support")
+
+    def test_the_harmless_import_warning_alone_is_not_a_failure(self):
+        """It appears in every launch on this image, including the ones that
+        work. Firing on it would put a hint on every healthy model."""
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        tracker = LoadPhaseTracker()
+        tracker.reset()
+        tracker.observe("WARNING Module vllm.third_party.deep_gemm was found "
+                        "but failed to import")
+        tracker.observe("GPU KV cache size: 1,072,101 tokens")
+        assert "engine image cannot load them" not in tracker.failure_reason()
