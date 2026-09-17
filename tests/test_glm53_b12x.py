@@ -544,3 +544,52 @@ class TestTheDeepGemmHint:
                         "but failed to import")
         tracker.observe("GPU KV cache size: 1,072,101 tokens")
         assert "engine image cannot load them" not in tracker.failure_reason()
+
+
+class TestTheInstantTensorBudgetHint:
+    """A model that had loaded for days stopped after an engine rebuild.
+
+        RuntimeError: buffer_size (5086090240 B) exceeds device memory budget
+        (825161728 B)
+
+    The InstantTensor loader wants one contiguous staging buffer. Nothing in
+    the message says it is a load-time OPTIMISATION — an operator reads
+    "device memory budget" and starts moving models off the node, when
+    dropping one flag costs seconds of load time and nothing else.
+
+    Both remedies are already proven in this catalog: GLM's recipe caps
+    INSTANTTENSOR_BUFFER_SIZE at 64 MB, and every model loads without the
+    loader at all.
+    """
+
+    def _reason(self, line: str) -> str:
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        tracker = LoadPhaseTracker()
+        tracker.reset()
+        tracker.observe(line)
+        tracker.fail("the launcher exited (code 1)")
+        return tracker.failure_reason()
+
+    LINE = ("RuntimeError: buffer_size (5086090240 B) exceeds device memory "
+            "budget (825161728 B)")
+
+    def test_it_fires_on_the_measured_line(self):
+        assert "InstantTensor loader" in self._reason(self.LINE)
+
+    def test_it_says_the_loader_is_optional(self):
+        """Otherwise the operator goes looking for memory to free."""
+        assert "not something the model needs" in self._reason(self.LINE)
+
+    def test_it_names_both_remedies(self):
+        reason = self._reason(self.LINE)
+        assert "drop:--load-format" in reason
+        assert "INSTANTTENSOR_BUFFER_SIZE=67108864" in reason
+
+    def test_it_mentions_a_neighbour_holding_the_memory(self):
+        """The other explanation for a small budget, and the one the operator
+        can check in a second."""
+        assert "already loaded on that node" in self._reason(self.LINE)
+
+    def test_the_evidence_survives(self):
+        assert "5086090240" in self._reason(self.LINE)
