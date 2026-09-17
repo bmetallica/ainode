@@ -161,8 +161,26 @@ import os, sys, pathlib
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
 plain = "        uv pip install /workspace/wheels/*.whl; \\\n"
+
+# Upstream took this over. At 346dc04 eugr's own Dockerfile carries
+#
+#   # quack-kernels 0.6.4 still declares CUTLASS DSL 4.6.2, so this solve
+#   # deliberately overrides that transitive constraint with the image-wide pin
+#   echo "nvidia-cutlass-dsl[cu13]==${CUTLASS_DSL_VERSION}" >> /tmp/wheel-override.txt
+#   uv pip install ... --override /tmp/wheel-override.txt
+#
+# which is what this patch existed to add. Patching on top would pin the
+# constraint twice, and failing here stops a build over a problem that is
+# already solved — which is what it did the first time the pin moved forward.
+upstream_handles_it = (
+    "--override /tmp/wheel-override.txt" in text
+    and "nvidia-cutlass-dsl" in text
+)
+
 if "ainode-override.txt" in text:
     print("    already patched (idempotent re-run)")
+elif upstream_handles_it:
+    print("    skipped: upstream already overrides the cutlass-dsl constraint")
 elif plain in text:
     lines = " && ".join(
         f"printf '%s\\n' {req!r} >> /tmp/ainode-override.txt"
@@ -177,7 +195,8 @@ elif plain in text:
     path.write_text(text.replace(plain, patched, 1))
     print("    wheel install now passes --override")
 else:
-    sys.exit("!! expected wheel-install line not found; re-audit this patch")
+    sys.exit("!! neither the old wheel-install line nor an upstream override "
+             "was found; the Dockerfile has changed shape — re-audit this patch")
 PATCH
 fi
 
