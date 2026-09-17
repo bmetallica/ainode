@@ -180,6 +180,7 @@ def create_app(
     app.router.add_post("/api/engine/compile-cache", _clear_compile_cache)
     app.router.add_post("/api/cluster/compile-cache", handle_cluster_compile_cache)
     app.router.add_get("/api/instances/launch-config", handle_launch_config)
+    app.router.add_get("/api/clients/opencode", handle_opencode_config)
     app.router.add_post("/api/cluster/mirror-models", handle_cluster_mirror_models)
     app.router.add_get("/api/cluster/mirror-status", handle_cluster_mirror_status)
     app.router.add_post("/api/cluster/embeddings/load", handle_cluster_embedding_load)
@@ -1101,6 +1102,41 @@ async def _embedding_dispatch(request: web.Request, action: str) -> web.Response
     except aiohttp.ClientError as exc:
         return web.json_response(
             {"error": f"failed to reach node '{node_id}' at {url}: {exc}"}, status=502)
+
+
+async def handle_opencode_config(request: web.Request) -> web.Response:
+    """GET /api/clients/opencode — a ready-to-paste OpenCode provider config.
+
+    Assembled from what is RUNNING, because the three settings that matter are
+    all per-instance: whether the model reasons, whether it takes images, and
+    the context window it was launched with. Getting any of them from the
+    model's own advertised figures produces a config that works until it
+    quietly does not.
+    """
+    from ainode.clients.opencode import build_opencode_config
+
+    config: NodeConfig = request.app["config"]
+    base = str_field(await _json_body(request), "base_url")
+    if not base:
+        host = getattr(config, "fabric_ip", "") or "127.0.0.1"
+        base = f"http://{host}:{getattr(config, 'web_port', 3000)}"
+    try:
+        loop = asyncio.get_event_loop()
+        payload = await loop.run_in_executor(
+            None, build_opencode_config, request.app, base)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("could not build the opencode config")
+        return web.json_response({"error": str(exc)}, status=500)
+    return web.json_response(payload)
+
+
+async def _json_body(request: web.Request) -> dict:
+    if request.method != "POST":
+        return {"base_url": request.query.get("base_url", "")}
+    try:
+        return await request.json()
+    except Exception:
+        return {}
 
 
 async def handle_launch_config(request: web.Request) -> web.Response:
