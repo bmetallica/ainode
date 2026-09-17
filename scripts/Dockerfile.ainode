@@ -83,8 +83,21 @@ RUN apt-get update \
 # Pinned to the same commit scripts/build-base-image.sh builds the engine from,
 # so the launcher and the image it drives always agree. Fetched as a tarball
 # rather than cloned: no git in this image, and we want the scripts, not the
-# history. Keep EUGR_COMMIT in step with build-base-image.sh.
-ARG EUGR_COMMIT=c026c92bd0c1236f947ac212565b15a33ba1b4e7
+# history. Keep EUGR_COMMIT in step with build-base-image.sh — a test asserts
+# the two are identical, because they were not: both said c026c92
+# (2026-04-13) while the engine images in service were built from a September
+# checkout, 207 commits and 644 lines of launch-cluster.sh later.
+#
+# That gap was not theoretical. The April launcher copies its start script to
+# /workspace WITHOUT creating the directory first — ensure_container_workspace
+# does not exist there — so a distributed launch against any image that does
+# not already have /workspace died with
+#
+#   Error response from daemon: Could not find the file /workspace in
+#   container vllm_node
+#
+# and the fault looked like the engine image's.
+ARG EUGR_COMMIT=346dc04fa11a4e1cb343153557e8b699b8488d30
 RUN set -eux; \
     mkdir -p /opt/spark-vllm-docker; \
     curl -fsSL "https://codeload.github.com/eugr/spark-vllm-docker/tar.gz/${EUGR_COMMIT}" \

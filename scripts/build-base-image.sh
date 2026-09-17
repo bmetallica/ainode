@@ -13,8 +13,22 @@ set -euo pipefail
 # -- Pinned eugr reference ---------------------------------------------------
 # Bumped by editing this file and committing; CI/build reproducibility
 # depends on this being explicit.
+#
+# Which is exactly why it has to be bumped. This sat at c026c92 (2026-04-13)
+# for five months while the cluster ran images built from a September
+# checkout — so the script named as the way to build the base image would
+# have produced an April one: no b12x, no GLM 5.3 loader, none of the
+# qwen3.8 work. A stale pin is worse than no pin, because it looks
+# deliberate.
+#
+# 346dc04 is the commit the running images were built from, so this
+# reproduces what is known to work on this hardware rather than what is
+# newest. Upstream is ahead; bump deliberately, and read the commits first —
+# the Dockerfile there carries hardware-specific workarounds (the DeepGEMM
+# ref is pinned back over an "SM121 DeepSeek-V4 MXFP4 grouped scale-factor
+# regression"), so moving forward is not automatically moving up.
 EUGR_REPO="${EUGR_REPO:-https://github.com/eugr/spark-vllm-docker}"
-EUGR_COMMIT="${EUGR_COMMIT:-c026c92bd0c1236f947ac212565b15a33ba1b4e7}"
+EUGR_COMMIT="${EUGR_COMMIT:-346dc04fa11a4e1cb343153557e8b699b8488d30}"
 EUGR_SHORT="${EUGR_COMMIT:0:7}"
 
 # AINode version coupling (kept in sync with pyproject.toml).

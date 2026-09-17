@@ -472,15 +472,22 @@ class TestTheWorkspaceHint:
                               "file /workspace in container vllm_node")
         assert "/workspace" in reason and "engine image" in reason
 
-    def test_it_names_the_repair(self):
-        assert "Clear the model's engine image" in self._reason(
+    def test_it_names_both_repairs(self):
+        reason = self._reason(
             "Could not find the file /workspace in container vllm_node")
+        assert "clear the" in reason.lower()
+        assert "engine image" in reason
 
-    def test_it_says_why_solo_worked(self):
-        """Otherwise the operator concludes the image is fine, because it is —
-        for the launch they ran before."""
-        assert "single-node" in self._reason(
+    def test_it_names_the_launcher_version_first(self):
+        """The likelier cause, found after the first version of this hint: a
+        current launcher creates /workspace before copying into it, and the
+        one baked into our image was five months behind. The hint blamed the
+        engine image, which is where the message points and not where the
+        fault was."""
+        reason = self._reason(
             "Could not find the file /workspace in container vllm_node")
+        assert "ainode image is" in reason
+        assert reason.index("launcher") < reason.index("clear the")
 
     def test_the_evidence_survives(self):
         assert "container vllm_node" in self._reason(

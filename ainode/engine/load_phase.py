@@ -255,12 +255,13 @@ _MIXED_BITS_HINT = (
 # SOLO launch happily — which is what makes this confusing: the same image
 # works until the launch becomes distributed.
 _WORKSPACE_HINT = (
-    "the engine image is missing /workspace, which the cluster launcher "
-    "copies its start script into. The stock vllm/vllm-openai images use "
-    "/vllm-workspace and have none, and they serve a single-node launch "
-    "fine — the requirement only appears once the launch spans nodes. Clear "
-    "the model's engine image so the launch uses this node's default, which "
-    "is built for it."
+    "the cluster launcher copied its start script to /workspace and the "
+    "engine image has no such directory — the stock vllm/vllm-openai images "
+    "use /vllm-workspace. A current launcher creates it first; one from "
+    "before that fix does not, so check whether this node's ainode image is "
+    "up to date before blaming the engine image. Failing that, clear the "
+    "model's engine image so the launch uses the node default, which has "
+    "/workspace already."
 )
 
 # A model whose kernels need DeepGEMM, on an image where the module is
