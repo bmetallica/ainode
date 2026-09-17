@@ -508,6 +508,58 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         proven_tp=1, verified=True,
         context_length=131072, license="NVIDIA Open Model", recommended=True, format="nvfp4",
     ),
+    "deepseek-v4-flash-dspark": ModelInfo(
+        id="deepseek-v4-flash-dspark",
+        name="DeepSeek V4 Flash + DSpark (2 nodes)",
+        hf_repo="deepseek-ai/DeepSeek-V4-Flash-DSpark",
+        # MEASURED from the Hub's usedStorage: 155.4 GiB. Over two nodes that
+        # is 77.7 GiB each against ~106 GiB addressable at 0.87 — the largest
+        # model that fits this cluster with room left for a real KV cache.
+        size_gb=166.9, min_memory_gb=175,
+        description=(
+            "284B MoE with 13B active, hybrid compressed-sparse attention, and "
+            "DeepSeek's DSpark speculative decoder (21B/~1B active) in the same "
+            "checkpoint — one file serves as both target and draft. MIT, so "
+            "commercial use is unencumbered. SERVED HERE on two Sparks at TP=2 "
+            "with expert parallelism: 1,226,910 tokens of KV cache, 9.36x "
+            "concurrency at 131,072 per request. The model advertises 1M "
+            "context and does not fit it: at max_model_len 1048576 the "
+            "bookkeeping leaves 3.37 GiB for the cache and the launch is "
+            "refused, so the recipe pins 131072. It reasons before answering "
+            "— budget output tokens accordingly and set reasoning support in "
+            "the client, or answers arrive empty."
+        ),
+        quantization=None, family="deepseek", params_b=284.0,
+        proven_tp=2, verified=True, curated=True,
+        context_length=1048576, license="MIT", recommended=True,
+        format="safetensors",
+        capabilities=["tool_use", "reasoning", "code"],
+        extra_vllm_args=[
+            # Required: the sparse-attention indexer needs DeepGEMM, and the
+            # checkpoint carries custom modelling code.
+            "--trust-remote-code",
+            # 256 experts with 6 active — without this every rank holds every
+            # expert and the weights do not fit.
+            "--enable-expert-parallel",
+            "--kv-cache-dtype", "fp8",
+            # NOT the model's 1048576. Measured: at 1M the activation and
+            # CUDA-graph bookkeeping consumes ~25 of the ~28 GiB left after
+            # the weights, and vLLM refuses with "5.4 GiB KV cache is needed,
+            # which is larger than the available KV cache memory (3.37 GiB)".
+            # At 131072 the same nodes hold 1,226,910 tokens. Raising this
+            # costs cache twice over: more per sequence, less in total.
+            "--max-model-len", "131072",
+            "--max-num-seqs", "8",
+            # The drafter that ships inside this checkpoint. NVIDIA's card
+            # gives these values; accepted by the engine here.
+            "--speculative-config",
+            '{"method":"dspark","num_speculative_tokens":7,'
+            '"draft_sample_method":"greedy"}',
+            "--enable-auto-tool-choice",
+            "--tool-call-parser", "deepseek_v4",
+        ],
+        recommended_gmu=0.87,
+    ),
     "minimax-m2.7-awq": ModelInfo(
         id="minimax-m2.7-awq",
         name="MiniMax-M2.7 (AWQ-4bit)",
