@@ -47,9 +47,31 @@ _CONTINUATION_LINES = 4
 # second traceback from the supervising process ending in vLLM's own
 # "Engine core initialization failed. See root cause above" — the tail of the
 # log, and the least useful line in it.
+# One `(...)` prefix was not enough. A worker's line carries the whole chain
+# of processes that relayed it, then a level, a timestamp and a source
+# location before the exception itself:
+#
+#   (EngineCore pid=676) (RayWorkerProc pid=918) (Worker_TP0 pid=918) ERROR
+#   09-14 07:08:06 [multiproc_executor.py:991] torch.AcceleratorError: CUDA
+#   error: an illegal memory access was encountered
+#
+# So the only thing that matched was the parent's own wrapper — which is the
+# one line in the traceback that says nothing. A distributed launch fails in
+# a worker by definition; missing those was missing the interesting half.
 _EXCEPTION_RE = re.compile(
-    r"^\s*(?:\([^)]*\)\s*)?(?:\[[^\]]*\]\s*)?"
+    r"^\s*(?:\([^)]*\)\s*)*"                     # any number of (pid=…) prefixes
+    r"(?:[A-Z]{3,}\s+[\d-]+\s+[\d:.]+\s+)?"        # ERROR 09-14 07:08:06
+    r"(?:\[[^\]]*\]\s*)*"                        # [multiproc_executor.py:991]
     r"([A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Exit)): (.+)$"
+)
+
+#: Exceptions that exist to point at another one. Recorded when nothing better
+#: has been seen, and replaced the moment something is — a launch reported as
+#: "See stack trace for root cause" tells the operator only that a root cause
+#: exists somewhere.
+_WRAPPER_RE = re.compile(
+    r"see (?:the )?stack trace|root cause|initialization failed due to",
+    re.IGNORECASE,
 )
 
 # Monotonic: a phase only ever moves forward within one launch.
@@ -364,6 +386,9 @@ class LoadPhaseTracker:
         #: First exception line of this launch — the root cause. Preferred over
         #: the tail, which is usually a supervising process's own traceback.
         self.root_cause = ""
+        #: True while root_cause holds an exception that only points at
+        #: another one, so a real exception may still replace it.
+        self._root_cause_is_wrapper = False
         #: How many further lines still belong to that root cause. Some
         #: exceptions put nothing useful on their own line:
         #:
@@ -397,6 +422,7 @@ class LoadPhaseTracker:
         self.error = ""
         self.tail = []
         self.root_cause = ""
+        self._root_cause_is_wrapper = False
         self._root_cause_continues = 0
         self.fatal_hint = ""
         self.offending_line = ""
@@ -437,12 +463,20 @@ class LoadPhaseTracker:
         if stripped:
             self.tail.append(stripped)
             del self.tail[:-_TAIL_LINES]
-            if not self.root_cause:
+            if not self.root_cause or self._root_cause_is_wrapper:
                 match = _EXCEPTION_RE.match(stripped)
                 if match:
-                    self.root_cause = f"{match.group(1)}: {match.group(2)}".strip()
-                    if _CONTINUES_RE.search(self.root_cause):
-                        self._root_cause_continues = _CONTINUATION_LINES
+                    candidate = f"{match.group(1)}: {match.group(2)}".strip()
+                    is_wrapper = bool(_WRAPPER_RE.search(candidate))
+                    # A wrapper is kept only until something real turns up, and
+                    # never overwrites one: the outer exception is raised after
+                    # the inner one and would otherwise always win.
+                    if not (is_wrapper and self.root_cause):
+                        self.root_cause = candidate
+                        self._root_cause_is_wrapper = is_wrapper
+                        self._root_cause_continues = (
+                            _CONTINUATION_LINES
+                            if _CONTINUES_RE.search(self.root_cause) else 0)
             elif self._root_cause_continues and not _is_teardown(stripped):
                 self._root_cause_continues -= 1
                 if len(self.root_cause) < 600:
