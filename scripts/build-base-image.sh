@@ -60,7 +60,19 @@ WORKTREE="$SCRIPT_DIR/_eugr"
 echo "==> Preparing eugr worktree at $WORKTREE (commit $EUGR_SHORT)"
 if [ -d "$WORKTREE/.git" ]; then
     git -C "$WORKTREE" fetch --depth=1 origin "$EUGR_COMMIT"
-    git -C "$WORKTREE" checkout -q "$EUGR_COMMIT"
+    # -f, because this script patches the Dockerfile further down (the NCCL
+    # pin) and a plain checkout then refuses on its own leftovers:
+    #
+    #   error: Your local changes to the following files would be overwritten
+    #   by checkout: Dockerfile
+    #
+    # So the second --base build of any given clone failed, always, while the
+    # first succeeded — which reads as a machine problem rather than a script
+    # that cannot run twice. Discarding is right here and only here: this
+    # directory is a scratch checkout this script owns, re-created from
+    # scratch when absent, and every local change in it was put there by the
+    # patch step that runs again a few lines below.
+    git -C "$WORKTREE" checkout -q -f "$EUGR_COMMIT"
 else
     rm -rf "$WORKTREE"
     git clone --depth=1 "$EUGR_REPO" "$WORKTREE"
