@@ -311,6 +311,25 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "--tool-call-parser", "qwen3_xml",
             "--enable-auto-tool-choice",
         ],
+        extra_env={
+            # Capped. The loader stages weights through one contiguous
+            # buffer and asks the driver how much device memory it may use;
+            # on GB10 it gets an answer that has nothing to do with the
+            # machine. Measured on an idle node with 28 GB genuinely free:
+            #
+            #   RuntimeError: buffer_size (5086090240 B) exceeds device
+            #   memory budget (825161728 B)
+            #
+            # and 862404608 B on the next attempt — a figure that moves
+            # between runs, so it comes from a runtime query rather than from
+            # gpu-memory-utilization. nvidia-smi reports [N/A] for memory on
+            # this hardware too; unified memory is the common thread.
+            #
+            # 64 MiB is what the GLM recipe uses and what has loaded a 175 GB
+            # checkpoint here. Raise or drop it (drop:--load-format) if a
+            # future engine image reports the budget correctly.
+            "INSTANTTENSOR_BUFFER_SIZE": "67108864",
+        },
         recommended_gmu=0.91,
     ),
     "qwen3.8-27b-nvfp4": ModelInfo(
@@ -348,6 +367,25 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "--enable-auto-tool-choice",
             "--speculative_config", '{"method":"qwen3_5_mtp","num_speculative_tokens":2}',
         ],
+        extra_env={
+            # Capped. The loader stages weights through one contiguous
+            # buffer and asks the driver how much device memory it may use;
+            # on GB10 it gets an answer that has nothing to do with the
+            # machine. Measured on an idle node with 28 GB genuinely free:
+            #
+            #   RuntimeError: buffer_size (5086090240 B) exceeds device
+            #   memory budget (825161728 B)
+            #
+            # and 862404608 B on the next attempt — a figure that moves
+            # between runs, so it comes from a runtime query rather than from
+            # gpu-memory-utilization. nvidia-smi reports [N/A] for memory on
+            # this hardware too; unified memory is the common thread.
+            #
+            # 64 MiB is what the GLM recipe uses and what has loaded a 175 GB
+            # checkpoint here. Raise or drop it (drop:--load-format) if a
+            # future engine image reports the budget correctly.
+            "INSTANTTENSOR_BUFFER_SIZE": "67108864",
+        },
         recommended_gmu=0.60,
     ),
     "gemma4-26b-a4b-nvfp4": ModelInfo(
@@ -394,6 +432,25 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             '{"method":"mtp","model":"google/gemma-4-26B-A4B-it-assistant",'
             '"num_speculative_tokens":4,"moe_backend":"triton"}',
         ],
+        extra_env={
+            # Capped. The loader stages weights through one contiguous
+            # buffer and asks the driver how much device memory it may use;
+            # on GB10 it gets an answer that has nothing to do with the
+            # machine. Measured on an idle node with 28 GB genuinely free:
+            #
+            #   RuntimeError: buffer_size (5086090240 B) exceeds device
+            #   memory budget (825161728 B)
+            #
+            # and 862404608 B on the next attempt — a figure that moves
+            # between runs, so it comes from a runtime query rather than from
+            # gpu-memory-utilization. nvidia-smi reports [N/A] for memory on
+            # this hardware too; unified memory is the common thread.
+            #
+            # 64 MiB is what the GLM recipe uses and what has loaded a 175 GB
+            # checkpoint here. Raise or drop it (drop:--load-format) if a
+            # future engine image reports the budget correctly.
+            "INSTANTTENSOR_BUFFER_SIZE": "67108864",
+        },
         recommended_gmu=0.70,
     ),
     # --- Fast single-node quantized chat models (AWQ-4bit, awq_marlin on GB10) ---
@@ -587,6 +644,25 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # vision model on the fp8 default. See the note on the 26B entry.
             "--kv-cache-dtype", "auto",
         ],
+        extra_env={
+            # Capped. The loader stages weights through one contiguous
+            # buffer and asks the driver how much device memory it may use;
+            # on GB10 it gets an answer that has nothing to do with the
+            # machine. Measured on an idle node with 28 GB genuinely free:
+            #
+            #   RuntimeError: buffer_size (5086090240 B) exceeds device
+            #   memory budget (825161728 B)
+            #
+            # and 862404608 B on the next attempt — a figure that moves
+            # between runs, so it comes from a runtime query rather than from
+            # gpu-memory-utilization. nvidia-smi reports [N/A] for memory on
+            # this hardware too; unified memory is the common thread.
+            #
+            # 64 MiB is what the GLM recipe uses and what has loaded a 175 GB
+            # checkpoint here. Raise or drop it (drop:--load-format) if a
+            # future engine image reports the budget correctly.
+            "INSTANTTENSOR_BUFFER_SIZE": "67108864",
+        },
         recommended_gmu=0.80,
     ),
     "glm-5.3-flash-nvfp4-spark": ModelInfo(
