@@ -6197,6 +6197,18 @@ const AINode = {
     html += '  <div class="server-endpoints-list" id="server-endpoints-list">';
     html += this._renderEndpointRows(primaryUrl);
     html += '  </div>';
+    // A ready-made client config. The three settings that decide whether a
+    // coding session works — does the model reason, does it take images, and
+    // how much context was it LAUNCHED with — are per-instance, and getting
+    // any of them from the model's advertised figures produces a config that
+    // works until it quietly does not.
+    html += '  <div style="margin-top:14px;display:flex;gap:10px;align-items:center">';
+    html += '    <button class="btn-ghost server-btn-sm" id="opencode-config">' +
+            'Generate OpenCode config</button>';
+    html += '    <span style="font-size:11px;color:var(--text-muted)">' +
+            'for every model the cluster is serving right now</span>';
+    html += '  </div>';
+    html += '  <div id="opencode-config-out"></div>';
     html += '</section>';
 
     // --- Throughput benchmark ---
@@ -6602,6 +6614,49 @@ const AINode = {
         }).catch(function () { self.toast('Copy failed', 'error'); });
       });
     });
+
+    var openCodeBtn = root.querySelector('#opencode-config');
+    if (openCodeBtn) {
+      openCodeBtn.addEventListener('click', async function () {
+        var out = document.querySelector('#opencode-config-out');
+        openCodeBtn.disabled = true;
+        var label = openCodeBtn.textContent;
+        openCodeBtn.textContent = 'Reading the cluster…';
+        try {
+          // The head's own address, so the pasted config points where the
+          // operator is already talking to rather than at localhost.
+          var base = location.protocol + '//' + location.host;
+          var data = await self.fetchJSON(
+            '/api/clients/opencode?base_url=' + encodeURIComponent(base));
+          var text = JSON.stringify(data.config, null, 2);
+          var notes = (data.notes || []).map(function (n) {
+            return '<div style="color:var(--text-muted);font-size:11px;' +
+              'margin-bottom:4px">' + self.esc(n) + '</div>';
+          }).join('');
+          out.innerHTML = notes +
+            '<div style="display:flex;gap:8px;margin:8px 0">' +
+            '<button class="btn-nvidia server-btn-sm" data-copy="' +
+              self.esc(text) + '">Copy</button>' +
+            '<span style="font-size:11px;color:var(--text-muted);align-self:center">' +
+              'save as ~/.config/opencode/opencode.json</span></div>' +
+            '<pre style="max-height:320px;overflow:auto;background:var(--bg-input,#111);' +
+            'padding:10px;border-radius:4px;font-size:11px">' +
+            self.esc(text) + '</pre>';
+          out.querySelectorAll('[data-copy]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              navigator.clipboard.writeText(b.dataset.copy).then(function () {
+                self.toast('Config copied', 'success');
+              }).catch(function () { self.toast('Copy failed', 'error'); });
+            });
+          });
+        } catch (err) {
+          out.innerHTML = '<div class="server-empty">Could not build it: ' +
+            self.esc(err.message) + '</div>';
+        }
+        openCodeBtn.disabled = false;
+        openCodeBtn.textContent = label;
+      });
+    }
 
     // Throughput benchmark: options once, then bind. A run already in
     // flight — started here, or from another browser — resumes its poll, so
