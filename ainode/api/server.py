@@ -44,6 +44,7 @@ from ainode.embeddings.manager import EmbeddingManager
 from ainode.bench.api_routes import register_bench_routes
 from ainode.embeddings.api_routes import register_embedding_routes
 from ainode.placement.api_routes import register_placement_routes
+from ainode.assist.api_routes import register_assist_routes
 from ainode.profiles.api_routes import register_profile_routes
 from ainode.profiles.store import ProfileStore
 from ainode.telemetry.api_routes import register_telemetry_routes
@@ -227,6 +228,10 @@ def create_app(
     register_profile_routes(app)
 
     register_placement_routes(app)
+
+    # The error assistant. Registered on every node: the head asks a peer for
+    # its engine log, and a peer's own UI has to be able to diagnose too.
+    register_assist_routes(app)
 
     # --- Telemetry routes ----------------------------------------------------
     register_telemetry_routes(app)
