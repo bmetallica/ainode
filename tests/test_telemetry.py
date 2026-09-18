@@ -287,9 +287,29 @@ class TestSettingsApi:
         resp = _call(handle_put_settings, app, {"mqtt_enabled": True, "mqtt_host": ""})
         assert resp.status == 400
 
-    def test_the_interval_is_clamped(self, app):
+    def test_one_second_is_allowed(self, app):
+        """Asked for: an operator watching a launch or a transfer wants to see
+        it move. The old floor of 5 s was a guess about sampling cost, not a
+        measurement of it."""
         resp = _call(handle_put_settings, app, {"mqtt_host": "h", "mqtt_interval": 1})
+        assert _json(resp)["settings"]["mqtt_interval"] == 1
+
+    def test_below_one_is_still_clamped(self, app):
+        """0 would spin the publish loop without yielding."""
+        resp = _call(handle_put_settings, app, {"mqtt_host": "h", "mqtt_interval": 0})
         assert _json(resp)["settings"]["mqtt_interval"] == mqtt_mod.MIN_INTERVAL
+
+    def test_the_upper_bound_still_holds(self, app):
+        resp = _call(handle_put_settings, app, {"mqtt_host": "h",
+                                                "mqtt_interval": 99999})
+        assert _json(resp)["settings"]["mqtt_interval"] == mqtt_mod.MAX_INTERVAL
+
+    def test_the_publisher_honours_one_second(self, app):
+        """The clamp in the loop is separate from the one in the route, and a
+        floor left behind there would silently override the setting."""
+        config = type("C", (), {"mqtt_interval": 1})()
+        publisher = mqtt_mod.MqttPublisher.__new__(mqtt_mod.MqttPublisher)
+        assert publisher._interval(config) == 1
 
     def test_junk_is_not_a_500(self, app):
         assert _call(handle_put_settings, app, None).status == 400
