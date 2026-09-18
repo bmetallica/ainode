@@ -1054,6 +1054,26 @@ h4.chat-h { font-size: 14px; color: var(--nvidia-green); }
   background: rgba(255, 184, 77, 0.06);
 }
 
+.launch-pin {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.2px;
+  margin: -4px 0 4px 0;
+  cursor: pointer;
+}
+
+.launch-pin input {
+  accent-color: var(--nvidia-green);
+  margin: 0;
+}
+
+.launch-pin-note {
+  color: var(--nvidia-green);
+}
+
 /* ============================================================
    BOTTOM BAR — Input Area
    ============================================================ */

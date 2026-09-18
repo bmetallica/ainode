@@ -83,6 +83,25 @@ async def handle_sharding_plan(request: web.Request) -> web.Response:
     })
 
 
+def _remembered_placement(app, model: str):
+    """Where this model was last told to run, or None.
+
+    Never raises: a placement is a convenience, and a broken placement file or
+    a missing store must cost the operator a click, not a launch.
+    """
+    try:
+        from ainode.placement.api_routes import get_placement_store
+
+        placement = get_placement_store(app).get(model)
+    except Exception:
+        logger.debug("could not read the placement for %s", model, exc_info=True)
+        return None
+    if placement is not None:
+        logger.info("placement for %s: nodes=%s strategy=%s",
+                    model, placement.node_ids, placement.strategy or "auto")
+    return placement
+
+
 async def handle_sharding_launch(request: web.Request) -> web.Response:
     """POST /api/sharding/launch — launch a model distributed across the cluster.
 
@@ -133,6 +152,16 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     # node + the rest as peers. `tp_size` is the legacy count form. Either sets
     # the effective node count so the min_nodes<=1 solo path still triggers.
     node_ids = str_list_field(body, "node_ids") or None
+    remembered = None
+    if not node_ids:
+        # Nothing chosen for this launch: use where this model was last told
+        # to run. A cluster settles into an arrangement, and re-picking the
+        # nodes on every relaunch, every restart and every retry after a
+        # failed load is the difference between running a cluster and
+        # re-configuring one. An explicit choice always wins.
+        remembered = _remembered_placement(request.app, model)
+        if remembered is not None and remembered.node_ids:
+            node_ids = list(remembered.node_ids)
     if node_ids:
         min_nodes = len(node_ids)
     else:
@@ -149,6 +178,11 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     # bogus `strategy` to "auto" would hand the caller a working launch on an
     # axis they did not ask for — on a cluster, for minutes.
     strategy_str = body.get("strategy")
+    if (strategy_str is None or strategy_str == "") and remembered is not None:
+        # Same rule as the nodes: remembered only when the caller said
+        # nothing. Stored empty means "let the planner decide", which is what
+        # an absent value already does, so it changes nothing.
+        strategy_str = remembered.strategy or strategy_str
     try:
         strategy = Strategy.parse(strategy_str)
     except ParallelPlanError as exc:

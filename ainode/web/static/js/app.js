@@ -1365,6 +1365,7 @@ const AINode = {
           // (fired on model-select onchange) must NOT clobber that choice.
           self._launchNodesUserPicked = true;
           updateLaunchHint();
+          self.repinIfPinned();
         });
       });
       updateLaunchHint();
@@ -1454,7 +1455,19 @@ const AINode = {
     // Update hint when strategy pill changes too
     document.querySelectorAll('#sharding-pills .pill').forEach(function (pill) {
       pill.addEventListener('click', updateLaunchHint);
+      // A pinned model keeps its pin current: changing the axis while the box
+      // is ticked rewrites the placement rather than leaving the tick
+      // describing a set of nodes that is no longer on screen.
+      pill.addEventListener('click', function () { self.repinIfPinned(); });
     });
+
+    var pinBox = document.getElementById('launch-pin');
+    if (pinBox) {
+      pinBox.addEventListener('change', function () {
+        self.savePlacement(pinBox.checked);
+      });
+    }
+    this.loadPlacements();
     // And on every refresh (cluster state may change)
     this._launchHintUpdater = updateLaunchHint;
     updateLaunchHint();
@@ -1523,6 +1536,105 @@ const AINode = {
     if (this._launchHintUpdater) this._launchHintUpdater();
   },
 
+  // ========================================================================
+  //  PERSISTENT PLACEMENT — "this model runs here"
+  // ========================================================================
+  // The server keeps the same answer in ~/.ainode/placement.json and reads it
+  // on every launch that does not name its own nodes, so a pin also holds for
+  // launches this form never sees: a relaunch after a failed load, a restart,
+  // a profile entry without an explicit node list.
+
+  loadPlacements() {
+    var self = this;
+    return this.fetchJSON('/api/placement').then(function (data) {
+      var map = {};
+      ((data && data.placements) || []).forEach(function (p) {
+        if (p && p.model) map[p.model] = p;
+      });
+      self.state.placements = map;
+      self.syncPinUI();
+      return map;
+    });
+  },
+
+  placementFor(model) {
+    return (this.state.placements || {})[model] || null;
+  },
+
+  // What the form currently says: the dots that are on, and the active axis.
+  launchSelection() {
+    var sel = document.getElementById('node-selector');
+    var ids = sel ? Array.prototype.map.call(
+      sel.querySelectorAll('.node-dot.active'),
+      function (d) { return d.dataset.nodeId; }) : [];
+    var pill = document.querySelector('#sharding-pills .pill.active');
+    return { node_ids: ids, strategy: pill ? pill.dataset.value : 'tensor' };
+  },
+
+  // Put the form where the placement says. Returns false when there is none,
+  // so the caller can fall back to the recommendation.
+  applyPlacement(model) {
+    var p = this.placementFor(model);
+    if (!p || !(p.node_ids || []).length) return false;
+    if (this._selectNodeIds) this._selectNodeIds(p.node_ids);
+    if (p.strategy) {
+      var pills = document.getElementById('sharding-pills');
+      if (pills) pills.querySelectorAll('.pill').forEach(function (pill) {
+        pill.classList.toggle('active', pill.dataset.value === p.strategy);
+      });
+    }
+    if (this._launchHintUpdater) this._launchHintUpdater();
+    return true;
+  },
+
+  syncPinUI() {
+    var box = document.getElementById('launch-pin');
+    if (!box) return;
+    var select = document.getElementById('launch-model');
+    var model = select ? select.value : '';
+    var p = model ? this.placementFor(model) : null;
+    box.disabled = !model;
+    box.checked = !!p;
+    var note = document.getElementById('launch-pin-note');
+    if (note) {
+      note.textContent = p ? '\u2713 ' + (p.node_ids || []).length + ' node'
+        + ((p.node_ids || []).length === 1 ? '' : 's')
+        + (p.strategy ? ' \u00b7 ' + p.strategy : '') : '';
+    }
+  },
+
+  repinIfPinned() {
+    var box = document.getElementById('launch-pin');
+    if (box && box.checked && !box.disabled) this.savePlacement(true);
+  },
+
+  async savePlacement(pinned) {
+    var select = document.getElementById('launch-model');
+    var model = select ? select.value : '';
+    if (!model) return;
+    try {
+      var resp;
+      if (pinned) {
+        var sel = this.launchSelection();
+        resp = await fetch('/api/placement', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: model, node_ids: sel.node_ids, strategy: sel.strategy,
+          }),
+        });
+      } else {
+        resp = await fetch('/api/placement/' + encodeURIComponent(model),
+                           { method: 'DELETE' });
+      }
+      var data = await resp.json();
+      if (data && data.error) this.toast(data.error, 'error');
+    } catch (err) {
+      this.toast('Error: ' + err.message, 'error');
+    }
+    await this.loadPlacements();
+  },
+
   populateLaunchModels() {
     var select = document.getElementById('launch-model');
     if (!select) return;
@@ -1588,12 +1700,18 @@ const AINode = {
       // free memory on each node.
       select.onchange = function () {
         var opt = select.options[select.selectedIndex];
-        if (!opt || !opt.value) return;
-        self.recommendLaunch({
-          proven_tp: parseInt(opt.getAttribute('data-proven-tp') || '0', 10),
-          size_gb: parseFloat(opt.getAttribute('data-size-gb') || '0'),
-          min_mem: parseFloat(opt.getAttribute('data-min-mem') || '0'),
-        });
+        if (!opt || !opt.value) { self.syncPinUI(); return; }
+        // A pin is a decision already made about this model. It outranks the
+        // free-memory recommendation, which would otherwise move a pinned
+        // model onto whichever nodes happen to be idle right now.
+        if (!self.applyPlacement(opt.value)) {
+          self.recommendLaunch({
+            proven_tp: parseInt(opt.getAttribute('data-proven-tp') || '0', 10),
+            size_gb: parseFloat(opt.getAttribute('data-size-gb') || '0'),
+            min_mem: parseFloat(opt.getAttribute('data-min-mem') || '0'),
+          });
+        }
+        self.syncPinUI();
       };
     });
   },
