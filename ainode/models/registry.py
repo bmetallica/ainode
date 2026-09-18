@@ -1714,18 +1714,47 @@ class ModelManager:
         total = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
         return total / (1024**3)
 
+    #: Pipeline tags this engine can serve. A vision-language model is a text
+    #: generator that also takes pictures, and vLLM treats it as one — but the
+    #: Hub files it under image-text-to-text, so filtering on text-generation
+    #: alone hid every multimodal model from the search. MiniMax M3 and its
+    #: quantisations are tagged that way; an operator looking for one found
+    #: nothing and reasonably concluded it did not exist.
+    #:
+    #: One query per tag, merged: list_models takes a single pipeline_tag, and
+    #: dropping the filter entirely would bury the results under embeddings
+    #: and classifiers that this node cannot run at all.
+    SERVABLE_PIPELINE_TAGS = ("text-generation", "image-text-to-text")
+
+    @staticmethod
+    def _search_every_servable_tag(api, *, query, limit, **kwargs):
+        """One search per servable pipeline tag, merged and download-sorted.
+
+        A tag that errors is skipped rather than failing the search: the Hub
+        has renamed pipeline tags before, and one unknown name should not cost
+        the results of the others.
+        """
+        found: dict = {}
+        for tag in ModelManager.SERVABLE_PIPELINE_TAGS:
+            try:
+                for model in api.list_models(search=query, pipeline_tag=tag,
+                                             limit=limit, **kwargs):
+                    found.setdefault(model.id, model)
+            except Exception:
+                logger.debug("search failed for pipeline_tag=%s", tag, exc_info=True)
+        ranked = sorted(found.values(),
+                        key=lambda m: getattr(m, "downloads", 0) or 0, reverse=True)
+        return ranked[:limit]
+
     def search_huggingface(self, query: str, limit: int = 50) -> list[dict]:
-        """Search HuggingFace Hub for text-generation models matching the query."""
+        """Search HuggingFace Hub for models this engine could serve."""
         try:
             from huggingface_hub import HfApi
             api = HfApi()
             # huggingface_hub >=1.x dropped `direction`/`task`; use pipeline_tag.
             # expand=safetensors pulls the dtype breakdown so we can show real size.
-            models = api.list_models(
-                search=query,
-                pipeline_tag="text-generation",
-                limit=limit,
-                sort="downloads",
+            models = self._search_every_servable_tag(
+                api, query=query, limit=limit,
                 # NOT usedStorage: the Hub rejects it on the LIST endpoint —
                 #   Invalid option: expected one of "author"|…|"safetensors"|…
                 # It is valid on the single-model endpoint, which is where it

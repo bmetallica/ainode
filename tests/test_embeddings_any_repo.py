@@ -17,7 +17,6 @@ always worked over curl. Only the UI said otherwise.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from ainode.embeddings.manager import KNOWN_EMBEDDING_MODELS
@@ -74,13 +73,17 @@ class TestTheBackendAlreadyAllowedIt:
 
 
 class TestTheSearchCannotFindThem:
-    def test_the_model_search_is_text_generation_only(self):
+    def test_the_model_search_cannot_reach_an_embedding_model(self):
         """Recorded so the next person does not go looking for a bug in the
-        search: an embedding model is excluded by the query itself."""
-        source = (Path(__file__).resolve().parent.parent / "ainode" / "models" /
-                  "registry.py").read_text()
-        search = source[source.index("    def search_huggingface"):]
-        assert re.search(r'pipeline_tag="text-generation"', search[:2000])
+        search: an embedding model is excluded by the query itself.
+
+        The list of servable tags has since grown — multimodal models were
+        hidden by the same filter — but it covers what this engine can SERVE,
+        and sentence-similarity is not that. Embeddings keep their own tab."""
+        from ainode.models.registry import ModelManager
+
+        assert "sentence-similarity" not in ModelManager.SERVABLE_PIPELINE_TAGS
+        assert "feature-extraction" not in ModelManager.SERVABLE_PIPELINE_TAGS
 
     def test_the_curated_list_is_still_there(self):
         assert "nomic-ai/nomic-embed-text-v1.5" in KNOWN_EMBEDDING_MODELS
