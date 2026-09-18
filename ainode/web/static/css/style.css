@@ -1075,6 +1075,52 @@ h4.chat-h { font-size: 14px; color: var(--nvidia-green); }
 }
 
 /* ============================================================
+   ERROR ASSISTANT — under the raw error, never instead of it
+   ============================================================ */
+.assist-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.assist-hint {
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  color: var(--text-muted);
+}
+
+.assist-hint.warn {
+  color: #ffb84d;
+}
+
+.assist-answer {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(118, 185, 0, 0.25);
+  border-radius: 3px;
+  background: rgba(118, 185, 0, 0.04);
+}
+
+.assist-caption {
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.assist-text {
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-primary);
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+/* ============================================================
    BOTTOM BAR — Input Area
    ============================================================ */
 .bottom-bar {
