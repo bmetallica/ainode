@@ -169,7 +169,14 @@ class TestTheDownloadPushesOutward:
 
 class TestTheInitialSweep:
     """Models already on the head predate all of this and would otherwise sit
-    there until someone launched them somewhere."""
+    there until someone launched them somewhere.
+
+    Both halves of the sweep are patched, not just the copy: ensure_dependencies
+    reaches the Hub, and leaving it live made teardown wait out a real
+    snapshot_download — 47 seconds in a suite that otherwise runs in
+    seventeen. A test that touches the network is a test that fails on a
+    train.
+    """
 
     @pytest_asyncio.fixture
     async def client(self, tmp_path):
@@ -182,7 +189,8 @@ class TestTheInitialSweep:
     async def test_it_reports_what_it_will_send(self, client):
         with mock.patch.object(type(client.app["model_manager"]), "list_downloaded",
                                lambda self: [{"hf_repo": MODEL}]), \
-             mock.patch("ainode.engine.mirror.mirror_model_to_peers", return_value={}):
+             mock.patch("ainode.engine.mirror.mirror_model_to_peers", return_value={}), \
+             mock.patch("ainode.engine.mirror.ensure_dependencies", return_value=[]):
             response = await client.post("/api/cluster/mirror-models", json={})
             assert response.status == 202
             assert (await response.json())["models"] == [MODEL]
@@ -198,7 +206,8 @@ class TestTheInitialSweep:
     async def test_a_named_subset_is_honoured(self, client):
         with mock.patch.object(type(client.app["model_manager"]), "list_downloaded",
                                lambda self: [{"hf_repo": MODEL}, {"hf_repo": "a/b"}]), \
-             mock.patch("ainode.engine.mirror.mirror_model_to_peers", return_value={}):
+             mock.patch("ainode.engine.mirror.mirror_model_to_peers", return_value={}), \
+             mock.patch("ainode.engine.mirror.ensure_dependencies", return_value=[]):
             response = await client.post("/api/cluster/mirror-models",
                                          json={"models": [MODEL]})
         assert (await response.json())["models"] == [MODEL]
