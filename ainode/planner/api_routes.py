@@ -1,0 +1,142 @@
+"""GET /api/planner — the launch this model should get, and the arithmetic.
+
+One endpoint, deliberately read-only. It computes; it does not launch. The
+launch form uses it to fill itself in, the fit hint uses it to say what will
+actually happen, and an operator can call it directly to check a plan before
+committing a node for ten minutes.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from aiohttp import web
+
+from ainode.planner.compute import NodeBudget, plan_for
+from ainode.planner.facts import local_facts
+
+logger = logging.getLogger(__name__)
+
+__all__ = ["register_planner_routes", "node_budgets"]
+
+
+def register_planner_routes(app: web.Application) -> None:
+    app.router.add_get("/api/planner", handle_plan)
+
+
+def node_budgets(app, node_ids=None) -> list:
+    """Every node's memory as the planner needs it: total and genuinely free.
+
+    Free, not total. A node already serving a model has most of its memory
+    inside that engine's pool, and planning against the total is how a second
+    load gets recommended onto a node that has nothing left to give.
+    """
+    cluster = app.get("cluster_state")
+    wanted = set(node_ids or [])
+    out = []
+    for node in (cluster.members() if cluster is not None else []):
+        node_id = str(getattr(node, "node_id", "") or "")
+        if wanted and node_id not in wanted:
+            continue
+        status = node.status.value if hasattr(node.status, "value") else str(node.status)
+        if not wanted and status not in ("online", "serving", "member-ready"):
+            continue
+        total_mb = float(getattr(node, "gpu_memory_total_mb", 0) or 0)
+        used_mb = float(getattr(node, "gpu_memory_used_mb", 0) or 0)
+        total_gb = float(getattr(node, "gpu_memory_gb", 0) or 0) or total_mb / 1024
+        free_gb = (total_mb - used_mb) / 1024 if total_mb else total_gb
+        out.append(NodeBudget(
+            node_id=node_id,
+            name=str(getattr(node, "node_name", "") or node_id),
+            total_gb=round(total_gb, 1),
+            free_gb=round(max(0.0, free_gb), 1),
+        ))
+    return out
+
+
+def _recipe(app, model: str):
+    """The catalog entry for this model, if there is one.
+
+    ``_catalog_lookup`` rather than the public ``get_model_info``: the latter
+    returns a serialised dict for the UI, and the planner wants the recipe
+    object — ``supports_pipeline`` and ``recommended_gmu`` are not in that
+    dict, and they are two of the three things the recipe contributes.
+    """
+    manager = app.get("model_manager")
+    lookup = getattr(manager, "_catalog_lookup", None)
+    if not callable(lookup):
+        return None
+    try:
+        return lookup(model)
+    except Exception:
+        logger.debug("could not look %s up in the catalog", model, exc_info=True)
+        return None
+
+
+def _int(request, name, default=0):
+    try:
+        return int(request.query.get(name) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+async def handle_plan(request: web.Request) -> web.Response:
+    """GET /api/planner?model=&nodes=&strategy=&max_model_len=&kv_cache_dtype=
+    &concurrency="""
+    model = request.query.get("model") or ""
+    if not model:
+        return web.json_response({"error": "model parameter required"}, status=400)
+
+    node_ids = [n for n in (request.query.get("nodes") or "").split(",") if n]
+    nodes = node_budgets(request.app, node_ids)
+    manager = request.app.get("model_manager")
+    if manager is None:
+        return web.json_response({"error": "no model manager"}, status=503)
+
+    facts = local_facts(manager, model)
+    recipe = _recipe(request.app, model)
+
+    kv_dtype = request.query.get("kv_cache_dtype") or ""
+    if not kv_dtype and recipe is not None:
+        # The recipe's own flags are part of the plan: a model whose proven
+        # configuration is fp8 should be planned with an fp8-sized cache, or
+        # the planner and the launch disagree by a factor of two.
+        args = list(getattr(recipe, "extra_vllm_args", None) or [])
+        if "--kv-cache-dtype" in args:
+            index = args.index("--kv-cache-dtype")
+            if index + 1 < len(args):
+                kv_dtype = args[index + 1]
+
+    plan = plan_for(
+        facts, nodes,
+        strategy=(request.query.get("strategy") or "auto").lower(),
+        max_model_len=_int(request, "max_model_len"),
+        kv_cache_dtype=kv_dtype or "auto",
+        concurrency=_int(request, "concurrency", 1),
+        supports_pipeline=bool(getattr(recipe, "supports_pipeline", True)),
+        recipe_context=int(getattr(recipe, "context_length", 0) or 0),
+        recommended_gmu=float(getattr(recipe, "recommended_gmu", 0.0) or 0.0),
+    )
+
+    payload = plan.to_dict()
+    payload["kv_cache_dtype"] = kv_dtype or "auto"
+    payload["nodes"] = [{"node_id": n.node_id, "name": n.name,
+                         "total_gb": n.total_gb, "free_gb": n.free_gb}
+                        for n in nodes]
+    payload["facts"] = {
+        "architecture": facts.architecture,
+        "num_layers": facts.num_layers,
+        "attention_layers": facts.attention_layers,
+        "num_kv_heads": facts.num_kv_heads,
+        "head_dim": facts.head_dim,
+        "max_position_embeddings": facts.max_position_embeddings,
+        "torch_dtype": facts.torch_dtype,
+        "quantization": facts.quantization,
+        "is_moe": facts.is_moe,
+        "num_experts": facts.num_experts,
+        "is_hybrid": facts.is_hybrid,
+        "weights_gb": round(facts.weights_gb, 1),
+        "unknown": list(facts.unknown),
+    }
+    payload["from_catalog"] = recipe is not None
+    return web.json_response(payload)
