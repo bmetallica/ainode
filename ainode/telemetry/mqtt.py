@@ -29,8 +29,17 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["MqttPublisher", "MqttUnavailable", "publish_once", "test_connection"]
 
-#: Below this the sampling cost starts showing up in the numbers themselves.
-MIN_INTERVAL = 5
+#: One second, because an operator watching a launch or a transfer wants to
+#: see it move, and 5 s was a guess about cost rather than a measurement of
+#: it. The sampler reads /proc and sysfs; at one-second intervals that is
+#: noise next to an idle node, let alone a busy one.
+#:
+#: It is still a floor rather than no limit: 0 or a negative value would spin
+#: the publish loop without yielding, and a broker does not thank anyone for
+#: that. Rates measured over a one-second window are correspondingly
+#: coarser — a counter that ticks a few times a second reads as a step
+#: function — which is a property of the window, not a fault to fix.
+MIN_INTERVAL = 1
 MAX_INTERVAL = 3600
 CONNECT_TIMEOUT = 10
 

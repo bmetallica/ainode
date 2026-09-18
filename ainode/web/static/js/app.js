@@ -5930,7 +5930,7 @@ const AINode = {
     html += this._field('Topic prefix', 'mqtt_topic_prefix', s.mqtt_topic_prefix,
                         { hint: 'Topics become prefix/node-id/system, /gpu, /models — plus prefix/cluster from the head' });
     html += this._field('Interval (seconds)', 'mqtt_interval', s.mqtt_interval,
-                        { type: 'number', hint: 'How often to publish. 5-3600.' });
+                        { type: 'number', hint: 'How often to publish. 1-3600 — one second is for watching something happen, not for leaving on.' });
     html += '<div><label class="config-field-label">TLS</label>' +
             '<label style="display:flex;align-items:center;gap:8px;margin-top:6px">' +
             '<input type="checkbox" id="cfg-mqtt-tls"' + (s.mqtt_tls ? ' checked' : '') + '> use TLS</label></div>';
