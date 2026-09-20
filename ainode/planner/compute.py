@@ -84,6 +84,10 @@ class Plan:
     weights_gb: float = 0.0
     weights_per_node_gb: float = 0.0
     concurrent_requests: int = 0
+    #: What --max-num-seqs should be. Not cosmetic: vLLM derives its CUDA
+    #: graph capture list from this value, and capturing those graphs is paid
+    #: in full at every single launch.
+    max_num_seqs: int = 0
     #: The arithmetic, in the order it was done. This is the point: a number
     #: an operator cannot check is a number they cannot overrule.
     notes: List[str] = field(default_factory=list)
@@ -107,6 +111,7 @@ class Plan:
             "weights_gb": round(self.weights_gb, 1),
             "weights_per_node_gb": round(self.weights_per_node_gb, 1),
             "concurrent_requests": self.concurrent_requests,
+            "max_num_seqs": self.max_num_seqs,
             "notes": list(self.notes),
             "warnings": list(self.warnings),
             "blocker": self.blocker,
@@ -322,6 +327,7 @@ def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,
                                   or _round_len(headroom))
         if plan.max_model_len:
             plan.concurrent_requests = max(1, headroom // plan.max_model_len)
+            plan.max_num_seqs = plan.concurrent_requests
         else:
             # Less cache left than the smallest window worth serving. The
             # weights fit, and that is exactly the trap: the engine would
@@ -381,6 +387,13 @@ def _explain(facts: ModelFacts, plan: Plan, best: _Candidate,
             notes.append(
                 f"At {plan.max_model_len:,} context that is "
                 f"{plan.concurrent_requests} concurrent request(s)")
+        if plan.max_num_seqs:
+            notes.append(
+                f"Set --max-num-seqs {plan.max_num_seqs}: the cache cannot "
+                f"back more at this context, and vLLM derives its CUDA graph "
+                f"capture list from this number — leaving it at the default "
+                f"captures dozens of sizes, which is paid in full at every "
+                f"launch and buys nothing the cache can serve")
     return notes
 
 

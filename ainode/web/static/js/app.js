@@ -1933,6 +1933,12 @@ const AINode = {
     }
     var len = document.getElementById('launch-max-len');
     if (len && plan.max_model_len) len.value = plan.max_model_len;
+    // Not cosmetic: vLLM builds its CUDA graph capture list from this, and
+    // capturing those graphs is paid in full at every launch. Measured here:
+    // 56 sizes took 93 seconds. A cache that backs ten requests has no use
+    // for fifty captured sizes.
+    var seqs = document.getElementById('launch-max-seqs');
+    if (seqs && plan.max_num_seqs) seqs.value = plan.max_num_seqs;
     this.repinIfPinned();
     this.toast('Plan applied — review the advanced fields before launching',
                'info');
