@@ -404,6 +404,7 @@ def _build_announcement(config: NodeConfig, engine=None) -> NodeAnnouncement:
         fabric_ip=fabric_ip,
         ib_ips=ib_ips,
         instances=(_head_instances(config) if (distributed_mode == "head" and engine_ready) else []),
+        version=__version__,
     )
 
 

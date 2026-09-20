@@ -59,6 +59,10 @@ class TestNodeAnnouncement:
             # in no instance record — without this a head cannot see, route to
             # or place the RAG model running on another node.
             "embedding_models",
+            # The build this node runs, so the head can tell when the fleet
+            # does not agree with itself — the launcher aborts a distributed
+            # start over exactly that, minutes in.
+            "version",
         }
         assert set(data.keys()) == expected_keys
 

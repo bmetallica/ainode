@@ -88,6 +88,11 @@ class NodeAnnouncement:
     # profile captured on the head to record where each one belongs. Empty on
     # older peers; from_json drops unknown keys, so the wire stays compatible.
     embedding_models: List[str] = field(default_factory=list)
+    # The build this node is running. Carried so the head can tell when the
+    # fleet does not agree with itself: eugr's launcher compares engine
+    # images across nodes and aborts when they differ, minutes into a
+    # distributed launch. Empty from an older peer, like everything above.
+    version: str = ""
 
     def to_json(self) -> str:
         """Serialize to JSON string."""
