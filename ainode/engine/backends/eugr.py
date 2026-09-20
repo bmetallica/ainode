@@ -144,8 +144,16 @@ class EugrBackend(EngineBackend):
         self._topology_cache: Optional[TopologyInfo] = None
         self._phase = LoadPhaseTracker()
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        self._log_file: Path = LOGS_DIR / "vllm.log"
-        self._distributed_log: Path = LOGS_DIR / "distributed.log"
+        # One file per instance. Every stacked instance used to tee into the
+        # same vllm.log, so two models loading at once produced one file with
+        # both their output interleaved — unreadable, and impossible to
+        # attribute a failure from. The primary keeps the plain name, because
+        # documentation and muscle memory point at it.
+        token = str(instance_id or "").strip()
+        self._log_file: Path = LOGS_DIR / (f"vllm-{token}.log" if token
+                                           else "vllm.log")
+        self._distributed_log: Path = LOGS_DIR / (f"distributed-{token}.log"
+                                                  if token else "distributed.log")
 
     @property
     def container_name(self) -> str:

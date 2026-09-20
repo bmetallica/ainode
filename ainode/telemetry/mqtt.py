@@ -256,6 +256,10 @@ class MqttPublisher:
         # rates at all — the fields were simply absent, which reads as a
         # broken metric rather than as a missing baseline.
         self._app["_telemetry_sampler"] = sampler
+        from ainode.telemetry.logs import LogPublisher
+
+        log_publisher = LogPublisher(self._app)
+        self._app["_log_publisher"] = log_publisher
         loop = asyncio.get_event_loop()
         reported_error = ""
 
@@ -267,6 +271,16 @@ class MqttPublisher:
                     await loop.run_in_executor(None, self._connect, config)
                 payloads = await loop.run_in_executor(
                     None, build_payloads, self._app, sampler)
+                # Logs are built here rather than in build_payloads because
+                # they are stateful — each source publishes what has been
+                # ADDED since the last cycle — and build_payloads is also
+                # called by "publish now" and by the settings preview, which
+                # must not consume anything.
+                if log_publisher is not None:
+                    try:
+                        payloads.update(log_publisher.payloads())
+                    except Exception:
+                        logger.debug("log payloads failed", exc_info=True)
                 for suffix, payload in payloads.items():
                     self._client.publish(
                         _topic(config, suffix), json.dumps(payload),
