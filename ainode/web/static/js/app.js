@@ -1481,6 +1481,7 @@ const AINode = {
           self._launchNodesUserPicked = true;
           updateLaunchHint();
           self.repinIfPinned();
+          self.schedulePlan();
         });
       });
       updateLaunchHint();
@@ -1499,20 +1500,39 @@ const AINode = {
       updateLaunchHint();
     };
 
-    // Activate a specific set of node ids (head always stays on).
+    // Activate exactly this set of node ids.
+    //
+    // The head used to be forced on regardless, which made two things
+    // inexpressible: a solo load on another node (the single-node path sends
+    // the one selected dot, so head + n3 is a two-node distributed launch),
+    // and a pin or a plan that deliberately leaves this node out. An empty
+    // set still falls back to the head — a launch needs a target.
     this._selectNodeIds = function (ids) {
       var sel = document.getElementById('node-selector'); if (!sel) return;
       var want = {}; (ids || []).forEach(function (id) { want[id] = true; });
+      var any = false;
       sel.querySelectorAll('.node-dot').forEach(function (d) {
-        if (d.dataset.head) { d.classList.add('active'); return; }
-        d.classList.toggle('active', !!want[d.dataset.nodeId]);
+        var on = !!want[d.dataset.nodeId];
+        d.classList.toggle('active', on);
+        any = any || on;
       });
+      if (!any) {
+        var head = sel.querySelector('.node-dot[data-head]') ||
+                   sel.querySelector('.node-dot');
+        if (head) head.classList.add('active');
+      }
     };
 
     // Fit-aware hint, recomputed on every refresh + node/strategy change so it
     // survives polling. Reads the selected model's size and each node's free mem.
     function updateLaunchHint() {
       if (!launchHint) return;
+      // The planner's answer wins when it describes this exact selection. It
+      // read the checkpoint's own config.json and the nodes' free memory; the
+      // estimate below reads a size and a percentage. The estimate stays as
+      // the fallback for a model that is not on disk yet, where the planner
+      // correctly refuses to guess.
+      if (self.renderPlanHint()) return;
       var active = nodeSelector ? nodeSelector.querySelectorAll('.node-dot.active') : [];
       var n = active.length || 1;
       var names = Array.prototype.map.call(active, function (d) { return d.textContent.replace('★', '').trim(); }).join(' + ');
@@ -1574,7 +1594,14 @@ const AINode = {
       // is ticked rewrites the placement rather than leaving the tick
       // describing a set of nodes that is no longer on screen.
       pill.addEventListener('click', function () { self.repinIfPinned(); });
+      pill.addEventListener('click', function () { self.schedulePlan(); });
     });
+
+    if (launchHint) {
+      launchHint.addEventListener('click', function (e) {
+        if (e.target && e.target.id === 'plan-apply') self.applyPlan();
+      });
+    }
 
     var pinBox = document.getElementById('launch-pin');
     if (pinBox) {
@@ -1750,6 +1777,123 @@ const AINode = {
     await this.loadPlacements();
   },
 
+  // ========================================================================
+  //  LAUNCH PLANNER
+  // ========================================================================
+  // The server reads the checkpoint's own config.json, the nodes' free memory
+  // and the catalog recipe, and works out whether it fits, on how many nodes,
+  // along which axis, what context that leaves and how many people can use it
+  // at once. The form fills itself in from that instead of from a size
+  // estimate and a percentage.
+
+  launchPlanKey() {
+    var select = document.getElementById('launch-model');
+    var model = select ? select.value : '';
+    var sel = this.launchSelection();
+    var len = document.getElementById('launch-max-len');
+    var seqs = document.getElementById('launch-max-seqs');
+    return {
+      model: model,
+      nodes: sel.node_ids,
+      strategy: sel.strategy,
+      max_model_len: (len && len.value) || '',
+      concurrency: (seqs && seqs.value) || '',
+      key: [model, sel.node_ids.join(','), sel.strategy,
+            (len && len.value) || '', (seqs && seqs.value) || ''].join('|'),
+    };
+  },
+
+  // Debounced: clicking three node dots in a row should ask once, not three
+  // times, and the answer takes a directory walk over the weights.
+  schedulePlan(delay) {
+    var self = this;
+    clearTimeout(this._planTimer);
+    this._planTimer = setTimeout(function () { self.fetchPlan(); },
+                                 delay === undefined ? 350 : delay);
+  },
+
+  async fetchPlan() {
+    var want = this.launchPlanKey();
+    if (!want.model) { this.state.launchPlan = null; return; }
+    if (this.state.launchPlan && this.state.launchPlan.key === want.key) return;
+    var params = new URLSearchParams({ model: want.model });
+    if (want.nodes.length) params.set('nodes', want.nodes.join(','));
+    if (want.strategy) params.set('strategy', want.strategy);
+    if (want.max_model_len) params.set('max_model_len', want.max_model_len);
+    if (want.concurrency) params.set('concurrency', want.concurrency);
+    var data = await this.fetchJSON('/api/planner?' + params.toString());
+    if (!data || data.error) { this.state.launchPlan = null; return; }
+    data.key = want.key;
+    this.state.launchPlan = data;
+    if (this._launchHintUpdater) this._launchHintUpdater();
+  },
+
+  // Returns true when it has drawn the hint itself.
+  renderPlanHint() {
+    var hint = document.getElementById('launch-hint');
+    var plan = this.state.launchPlan;
+    if (!hint || !plan) return false;
+    if (plan.key !== this.launchPlanKey().key) return false;
+
+    if (!plan.fits) {
+      hint.className = 'launch-hint warn';
+      hint.innerHTML = '⚠ ' + this.esc(plan.blocker || 'This will not fit.');
+      return true;
+    }
+    var axis = plan.strategy === 'solo' ? 'Solo'
+      : (plan.strategy === 'pipeline' ? 'Pipeline · PP=' + plan.pipeline_parallel_size
+                                      : 'Tensor · TP=' + plan.tensor_parallel_size);
+    var names = (plan.node_ids || []).map(function (id) {
+      var node = (plan.nodes || []).find(function (n) { return n.node_id === id; });
+      return (node && node.name) || id;
+    }).join(' + ');
+    var line = '✓ ' + axis + ' on ' + this.esc(names) +
+      ' — ' + Math.round(plan.weights_per_node_gb) + ' GB/node, ' +
+      Math.round(plan.kv_gb) + ' GB cache';
+    if (plan.max_model_len) {
+      line += ' = ' + plan.kv_tokens.toLocaleString() + ' tokens, ' +
+        plan.concurrent_requests + ' concurrent at ' +
+        plan.max_model_len.toLocaleString();
+    }
+    var warn = (plan.warnings || []).map(function (w) {
+      return '<div class="plan-warn">⚠ ' + this.esc(w) + '</div>';
+    }, this).join('');
+    hint.className = 'launch-hint' + ((plan.warnings || []).length ? ' warn' : '');
+    hint.innerHTML = line + warn +
+      '<div class="plan-notes">' +
+      (plan.notes || []).map(function (n) {
+        return '<div>' + this.esc(n) + '</div>';
+      }, this).join('') + '</div>' +
+      '<div class="assist-row"><button class="btn-ghost server-btn-sm" ' +
+      'id="plan-apply">USE THIS PLAN</button>' +
+      '<span class="assist-hint">sets the nodes, the axis, the memory ' +
+      'fraction and the context length</span></div>';
+    return true;
+  },
+
+  applyPlan() {
+    var plan = this.state.launchPlan;
+    if (!plan || !plan.fits) return;
+    if (this._selectNodeIds) this._selectNodeIds(plan.node_ids || []);
+    this._launchNodesUserPicked = true;
+    var axis = plan.strategy === 'pipeline' ? 'pipeline'
+      : (plan.pipeline_parallel_size > 1 ? 'pipeline' : 'tensor');
+    var pills = document.getElementById('sharding-pills');
+    if (pills) pills.querySelectorAll('.pill').forEach(function (pill) {
+      pill.classList.toggle('active', pill.dataset.value === axis);
+    });
+    var gmu = document.getElementById('launch-gmu');
+    if (gmu && plan.gpu_memory_utilization) {
+      gmu.value = plan.gpu_memory_utilization;
+    }
+    var len = document.getElementById('launch-max-len');
+    if (len && plan.max_model_len) len.value = plan.max_model_len;
+    this.repinIfPinned();
+    this.toast('Plan applied — review the advanced fields before launching',
+               'info');
+    this.schedulePlan(0);
+  },
+
   populateLaunchModels() {
     var select = document.getElementById('launch-model');
     if (!select) return;
@@ -1827,6 +1971,7 @@ const AINode = {
           });
         }
         self.syncPinUI();
+        self.schedulePlan();
       };
     });
   },
