@@ -1,6 +1,7 @@
 """AINode API proxy server — aiohttp app that serves the web UI and proxies to vLLM."""
 
 import asyncio
+import json
 import logging
 import os
 import socket
@@ -186,6 +187,8 @@ def create_app(
     app.router.add_get("/api/instances/launch-config", handle_launch_config)
     app.router.add_get("/api/cluster/models", handle_cluster_models)
     app.router.add_post("/api/cluster/delete-repo", handle_cluster_delete_repo)
+    app.router.add_get("/api/cluster/safety/memory", handle_cluster_memory_get)
+    app.router.add_put("/api/cluster/safety/memory", handle_cluster_memory_put)
     app.router.add_get("/api/clients/opencode", handle_opencode_config)
     app.router.add_post("/api/cluster/mirror-models", handle_cluster_mirror_models)
     app.router.add_get("/api/cluster/mirror-status", handle_cluster_mirror_status)
@@ -1251,6 +1254,128 @@ async def handle_launch_config(request: web.Request) -> web.Response:
         "node_id": getattr(request.app["config"], "node_id", "") or "",
         "instances": specs,
     })
+
+
+async def handle_cluster_memory_get(request: web.Request) -> web.Response:
+    """GET /api/cluster/safety/memory — every node's reserve and reading.
+
+    The whole fleet in one answer, because the reserve is a per-node setting
+    and the nodes that ran out are not the one whose UI is open. A settings
+    page that could only show this node's figure would be the least useful
+    place to look after a node has just been lost.
+    """
+    config: NodeConfig = request.app["config"]
+    cluster = request.app.get("cluster_state")
+    session: aiohttp.ClientSession = request.app.get("client_session")
+
+    async def _local() -> dict:
+        from ainode.safety.api_routes import handle_get
+
+        resp = await handle_get(request)
+        row = json.loads(resp.body)
+        row.update({"node_id": config.node_id or "local",
+                    "node_name": getattr(config, "node_name", "") or "",
+                    "reachable": True})
+        return row
+
+    async def _peer(node) -> dict:
+        row = {"node_id": node.node_id,
+               "node_name": getattr(node, "node_name", "") or node.node_id,
+               "reachable": False, "available": False}
+        host = (getattr(node, "fabric_ip", "") or "").strip()
+        if not host or session is None:
+            return row
+        url = f"http://{host}:{getattr(node, 'web_port', 3000)}/api/safety/memory"
+        try:
+            async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status == 200:
+                    row.update(await resp.json(content_type=None))
+                    row["reachable"] = True
+        except Exception:
+            logger.debug("could not ask %s about its memory reserve",
+                         node.node_id, exc_info=True)
+        return row
+
+    tasks = [_local()]
+    for node in (cluster.members() if cluster is not None else []):
+        if node.node_id == config.node_id:
+            continue
+        status = node.status.value if hasattr(node.status, "value") else str(node.status)
+        if status not in ("online", "serving", "member-ready"):
+            continue
+        tasks.append(_peer(node))
+
+    rows = [r for r in await asyncio.gather(*tasks, return_exceptions=True)
+            if not isinstance(r, BaseException)]
+    return web.json_response({"nodes": rows})
+
+
+async def handle_cluster_memory_put(request: web.Request) -> web.Response:
+    """PUT /api/cluster/safety/memory {node_id|all, warn_gb, critical_gb, …}.
+
+    ``all: true`` sets every reachable node at once — one reserve policy for
+    the fleet is what an operator actually wants, and setting three nodes by
+    opening three UIs is how the setting ends up inconsistent.
+    """
+    config: NodeConfig = request.app["config"]
+    cluster = request.app.get("cluster_state")
+    session: aiohttp.ClientSession = request.app.get("client_session")
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    settings = {k: v for k, v in body.items() if k not in ("node_id", "all")}
+    targets = []
+    if body.get("all"):
+        targets = [n for n in (cluster.members() if cluster is not None else [])
+                   if n.node_id != config.node_id]
+    node_id = str_field(body, "node_id")
+    local = bool(body.get("all")) or not node_id or node_id == config.node_id
+    if node_id and not body.get("all"):
+        targets = [n for n in (cluster.members() if cluster is not None else [])
+                   if n.node_id == node_id]
+
+    results = []
+    if local:
+        from ainode.safety.api_routes import handle_put
+
+        class _Shim:
+            def __init__(self, orig, payload):
+                self._o, self._b = orig, payload
+
+            def __getattr__(self, name):
+                return getattr(self._o, name)
+
+            async def json(self):
+                return self._b
+
+        resp = await handle_put(_Shim(request, settings))
+        results.append({"node_id": config.node_id or "local",
+                        "ok": resp.status == 200,
+                        "result": json.loads(resp.body)})
+
+    async def _peer(node):
+        host = (getattr(node, "fabric_ip", "") or "").strip()
+        if not host or session is None:
+            return {"node_id": node.node_id, "ok": False,
+                    "error": "no fabric IP"}
+        url = f"http://{host}:{getattr(node, 'web_port', 3000)}/api/safety/memory"
+        try:
+            async with session.put(
+                    url, json=settings,
+                    timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                return {"node_id": node.node_id, "ok": resp.status == 200,
+                        "result": await resp.json(content_type=None)}
+        except Exception as exc:
+            return {"node_id": node.node_id, "ok": False, "error": str(exc)}
+
+    if targets:
+        results.extend([r for r in await asyncio.gather(
+            *[_peer(n) for n in targets], return_exceptions=True)
+            if not isinstance(r, BaseException)])
+    return web.json_response({"results": results})
 
 
 async def handle_cluster_delete_repo(request: web.Request) -> web.Response:

@@ -5842,6 +5842,7 @@ const AINode = {
       case 'cluster':     return this.renderConfigCluster();
       case 'node':        return this.renderConfigNode();
       case 'storage':     return this.renderConfigStorage();
+      case 'memory':      return this.renderConfigMemory();
       case 'training':    return this.renderConfigTrainingDefaults();
       case 'security':    return this.renderConfigSecurity();
       case 'network':     return this.renderConfigNetwork();
@@ -6395,6 +6396,135 @@ const AINode = {
         hf_cache_dir: document.getElementById('cfg-f-hf_cache_dir').value,
       });
     });
+  },
+
+  // ----- Memory Guard -------------------------------------------------------
+  // Per node, and every node at once, because the reserve is a per-node
+  // setting and the nodes that ran out are not the one whose UI is open.
+  async renderConfigMemory() {
+    var mount = this._configMount();
+    if (!mount) return;
+    mount.innerHTML = '<div class="config-empty">Loading…</div>';
+    var self = this;
+    var data = await this.fetchJSON('/api/cluster/safety/memory');
+    var rows = (data && data.nodes) || [];
+    if (!rows.length) {
+      mount.innerHTML = '<div class="config-empty">No node reported a memory ' +
+        'guard. A node running an older build has none.</div>';
+      return;
+    }
+
+    var html = '';
+    html += '<h2 class="config-section-title">Memory Guard</h2>';
+    html += '<p class="config-section-desc">On this hardware the GPU ' +
+      'allocation and the operating system share one pool, so an engine that ' +
+      'over-allocates does not fail with a CUDA error — it starves the kernel ' +
+      'and the node has to be power-cycled. Below the <strong>warning</strong> ' +
+      'line no new model may be launched; below the <strong>critical</strong> ' +
+      'line the most recently started engine is killed. Set per node — the ' +
+      'node that runs out is rarely the one you are looking at.</p>';
+
+    html += '<div class="config-card">';
+    html += '<div class="config-actions" style="justify-content:flex-start;gap:8px">';
+    html += '<button class="config-btn" data-mem-preset="dgx-spark">DGX Spark preset (8 / 4 GB)</button>';
+    html += '<button class="config-btn" data-mem-preset="generic">Generic preset (2 / 1 GB)</button>';
+    html += '<span class="config-field-hint" style="align-self:center">applies to every node</span>';
+    html += '</div></div>';
+
+    rows.forEach(function (row) {
+      var id = row.node_id;
+      var name = row.node_name || id;
+      var free = row.available_mb ? (row.available_mb / 1024).toFixed(1) : null;
+      var total = row.total_mb ? (row.total_mb / 1024).toFixed(0) : null;
+      var enforced = row.warn_mb
+        ? (row.warn_mb / 1024).toFixed(1) + ' / ' + (row.critical_mb / 1024).toFixed(1) + ' GB'
+        : '—';
+      html += '<div class="config-card">';
+      html += '<h3 class="config-card-title">' + self.esc(name) + '</h3>';
+      if (!row.reachable) {
+        html += '<p class="config-card-desc">Not reachable right now.</p></div>';
+        return;
+      }
+      if (!row.available) {
+        html += '<p class="config-card-desc">This node runs a build without ' +
+          'the memory guard.</p></div>';
+        return;
+      }
+      html += '<p class="config-card-desc">' +
+        (free ? free + ' GB free of ' + total + ' GB' : 'memory unreadable') +
+        ' · enforcing <strong>' + enforced + '</strong>' +
+        (row.blocking ? ' · <span style="color:#ffb84d">refusing new launches</span>' : '') +
+        (row.enabled ? '' : ' · <span style="color:#ff5c5c">disabled</span>') +
+        '</p>';
+      // The configured value and the enforced one differ only when the
+      // reserve is larger than a share of the machine's total memory — which
+      // never happens on a 128 GB node, and stops an 8 GB one refusing every
+      // launch. Both are shown so the difference is never a surprise.
+      if (row.warn_gb && Math.abs(row.warn_gb - row.warn_mb / 1024) > 0.05) {
+        html += '<p class="config-card-desc">Configured ' + row.warn_gb +
+          ' / ' + row.critical_gb + ' GB, capped to the enforced values above ' +
+          'because this machine is too small to hold that much back.</p>';
+      }
+      html += '<div class="config-form-grid">';
+      html += '<div><label class="config-field-label">Warning (GB)</label>' +
+        '<input class="form-input" type="number" min="0" step="0.5" ' +
+        'id="mem-warn-' + self.esc(id) + '" value="' + (row.warn_gb || 0) + '"></div>';
+      html += '<div><label class="config-field-label">Critical (GB)</label>' +
+        '<input class="form-input" type="number" min="0" step="0.5" ' +
+        'id="mem-crit-' + self.esc(id) + '" value="' + (row.critical_gb || 0) + '"></div>';
+      html += '</div>';
+      html += '<label class="launch-pin" style="margin-top:10px">' +
+        '<input type="checkbox" id="mem-on-' + self.esc(id) + '"' +
+        (row.enabled ? ' checked' : '') + '> Guard enabled on this node</label>';
+      html += '<div class="config-actions">' +
+        '<button class="config-btn" data-mem-save="' + self.esc(id) + '">Save</button>' +
+        '</div></div>';
+    });
+    mount.innerHTML = html;
+
+    mount.querySelectorAll('[data-mem-save]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-mem-save');
+        self._saveMemoryGuard({
+          node_id: id,
+          warn_gb: parseFloat(document.getElementById('mem-warn-' + id).value),
+          critical_gb: parseFloat(document.getElementById('mem-crit-' + id).value),
+          enabled: document.getElementById('mem-on-' + id).checked,
+        });
+      });
+    });
+    mount.querySelectorAll('[data-mem-preset]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        self._saveMemoryGuard({ all: true,
+                                preset: btn.getAttribute('data-mem-preset') });
+      });
+    });
+  },
+
+  async _saveMemoryGuard(body) {
+    try {
+      var resp = await fetch('/api/cluster/safety/memory', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      var data = await resp.json().catch(function () { return {}; });
+      var failed = ((data && data.results) || []).filter(function (r) {
+        return !r.ok;
+      });
+      if (!resp.ok || data.error) {
+        this.toast(data.error || 'Could not save the reserve', 'error');
+      } else if (failed.length) {
+        this.toast('Not saved on: ' + failed.map(function (r) {
+          return r.node_id;
+        }).join(', '), 'error');
+      } else {
+        this.toast('Memory reserve saved', 'success');
+      }
+    } catch (err) {
+      this.toast('Error: ' + err.message, 'error');
+    }
+    this.renderConfigMemory();
   },
 
   // ----- Training Defaults --------------------------------------------------
