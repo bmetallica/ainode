@@ -89,6 +89,16 @@ class NodeConfig:
     # for GB10 (still fits a 70B / per-node MoE share); push it higher per-load
     # (gpu_memory_utilization in the load body) for big-MoE long-context runs.
     gpu_memory_utilization: float = 0.5
+    # Host memory this node keeps out of reach of the engines. On GB10 the GPU
+    # allocation and the operating system share one physical pool, so an engine
+    # that over-allocates does not get a CUDA error — it starves the kernel and
+    # the node has to be power-cycled. Two nodes were lost that way.
+    #   warn:     no new model may be launched below this
+    #   critical: the newest engine is killed below this
+    # The defaults are the DGX Spark preset; see ainode/safety/memory_guard.py.
+    host_memory_guard: bool = True
+    host_memory_warn_gb: float = 8.0
+    host_memory_critical_gb: float = 4.0
     # KV-cache precision. fp8 is the GB10 design default — required for long
     # context (32k+) or vLLM OOMs sizing the cache at bf16 (see engine/AGENTS.md).
     # Set "" / "auto" to let vLLM choose if a model/quant ever rejects fp8.

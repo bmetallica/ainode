@@ -377,6 +377,51 @@ class EugrBackend(EngineBackend):
         self._ready = False
         self._phase.reset()
 
+    def kill(self) -> None:
+        """Take the engine down NOW, without waiting for it to agree.
+
+        ``stop()`` sends SIGTERM and waits fifteen seconds for the launcher,
+        then ``docker stop -t 30`` — up to a minute of politeness per
+        container. The host memory guard calls this instead, on a node that
+        has seconds of memory left: a teardown that is still being polite when
+        the kernel gives up has protected nothing.
+
+        Peers are killed too, and first: a rank still holding a hundred
+        gigabytes is the expensive half of a teardown that only half happened.
+        """
+        if self._process and self._process.poll() is None:
+            try:
+                self._process.kill()
+            except Exception:
+                logger.debug("could not kill the launcher", exc_info=True)
+            self._process = None
+        name = self.container_name
+        user = (getattr(self.config, "ssh_user", "") or "").strip()
+        for peer in list(getattr(self.config, "peer_ips", []) or []):
+            if user:
+                self._docker_kill(f"{user}@{self._transfer_ip(peer)}", name)
+        self._docker_kill(None, name)
+        self._ready = False
+
+    def _docker_kill(self, ssh_target: Optional[str], name: str) -> None:
+        args = ["docker", "kill", name]
+        cmd = (["ssh", *SSH_OPTS, ssh_target, " ".join(args)]
+               if ssh_target else args)
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        except Exception:
+            logger.exception("docker kill %s on %s failed", name,
+                             ssh_target or "this node")
+        # Removed as well, or the next launch inherits a dead container that
+        # still owns the name.
+        rm = ["docker", "rm", "-f", name]
+        try:
+            subprocess.run(["ssh", *SSH_OPTS, ssh_target, " ".join(rm)]
+                           if ssh_target else rm,
+                           capture_output=True, text=True, timeout=20)
+        except Exception:
+            logger.debug("docker rm after kill failed", exc_info=True)
+
     def _stop_container(self) -> None:
         """Stop and remove this instance's engine container.
 
