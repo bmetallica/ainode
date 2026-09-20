@@ -12,6 +12,23 @@ nicht beantworten kann.
 
 ---
 
+## Stand: abgearbeitet am 2026-09-20
+
+| Schritt | PR | Was daraus wurde |
+|---|---|---|
+| S1 Speicherwächter | #123 | eigener Thread, `/proc/meminfo`, Warn- und Kill-Grenze, Reserve auf 15 % der Maschine gedeckelt, Preset `dgx-spark` |
+| S2 Zulassungsprüfung | #123 | ein Tor für **beide** Startpfade, plant in dieselbe Reserve die der Wächter durchsetzt, `"force": true` übersteuert, antwortet 507 |
+| S3 Start aus der Event-Loop | #123 | solo, verteilt und das Entladen im Worker-Thread |
+| S4 Instanzkarte | #124 | Name, ein farbiges Statuswort, Details, Entladen — alles andere im Dialog, der mitläuft solange er offen ist |
+| S5 Modelle-Seite | #125 | Größen-Cache (mtime + 60-s-Backstop), TTL statt einmalig, `GET /api/cluster/models` |
+| S6 Server-Seite | #126 | alle Proben parallel, Timeout 1 s, Endpunkt-Katalog reist mit dem Status mit |
+| S7 UI-Durchgang | #127 | das Startformular scannte alle 5 s den ganzen Modellspeicher; dazu Knotenanzeige und knotenweites Löschen |
+
+Offen bleibt Teil 3 — die drei Fragen, die eine Messung auf der Hardware
+brauchen.
+
+---
+
 ## Teil 1 — Befunde
 
 ### B1 · Es gibt keinen Schutz des Host-Speichers  (Ursache des Absturzes)
