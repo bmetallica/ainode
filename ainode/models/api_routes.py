@@ -1360,6 +1360,7 @@ async def handle_delete_repo(request: web.Request) -> web.Response:
         for target in targets:
             size_gb += manager._dir_size_gb(target)
             shutil.rmtree(target)
+            _forget_size(manager, target)
         return web.json_response({
             "status": "deleted",
             "hf_repo": hf_repo,
@@ -1442,6 +1443,22 @@ async def handle_cancel_download(request: web.Request) -> web.Response:
     job["_cancel"] = True
     job["status"] = "cancelling"
     return web.json_response({"job_id": job_id, "status": "cancelling"})
+
+
+def _forget_size(manager, path) -> None:
+    """Drop a cached directory size, if this manager keeps any.
+
+    Duck-typed on purpose: the download path is handed stand-ins in tests and
+    by callers that only need part of the interface, and a cache invalidation
+    must never be the reason a download reports failure.
+    """
+    forget = getattr(manager, "forget_size", None)
+    if callable(forget):
+        try:
+            forget(path)
+        except Exception:
+            logger.debug("could not drop the cached size for %s", path,
+                         exc_info=True)
 
 
 async def _run_download_repo(manager: "ModelManager", hf_repo: str, job_id: str,
@@ -1576,6 +1593,11 @@ async def _run_download_repo(manager: "ModelManager", hf_repo: str, job_id: str,
     terminal["finished_at"] = time.time()
     jobs[job_id].update(terminal)
 
+    # The tree just changed under a directory whose own mtime may not have
+    # moved, so the cached size has to go or the Models page shows the size
+    # the repo had halfway through the download.
+    _forget_size(manager, target)
+
     if terminal.get("status") == "completed":
         await _mirror_after_download(app, hf_repo, jobs[job_id])
 
@@ -1583,6 +1605,7 @@ async def _run_download_repo(manager: "ModelManager", hf_repo: str, job_id: str,
         try:
             if target.exists():
                 shutil.rmtree(target)
+            _forget_size(manager, target)
         except Exception:
             pass
 

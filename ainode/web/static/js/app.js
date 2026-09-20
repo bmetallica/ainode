@@ -1518,6 +1518,7 @@ const AINode = {
       });
       if (resp.ok) {
         this.toast('Instance stopped: ' + model, 'success');
+        this.invalidate();
         this.refresh();
       } else {
         var data = await resp.json().catch(function () { return {}; });
@@ -1802,6 +1803,23 @@ const AINode = {
       self.syncPinUI();
       return map;
     });
+  },
+
+  // Fetch-once was the bug: the Models page holds two lists that were each
+  // fetched a single time per page load, so a download that finished, a model
+  // that was deleted or one that was launched afterwards never appeared. A
+  // TTL costs one request a minute; invalidate() makes an action's own result
+  // visible immediately.
+  _stale(key, ttlMs) {
+    this._fetchedAt = this._fetchedAt || {};
+    var last = this._fetchedAt[key] || 0;
+    if (Date.now() - last < (ttlMs || 60000)) return false;
+    this._fetchedAt[key] = Date.now();
+    return true;
+  },
+
+  invalidate() {
+    this._fetchedAt = {};
   },
 
   placementFor(model) {
@@ -2236,6 +2254,9 @@ const AINode = {
         // now starting, so it goes in front of the operator, not in a log.
         if (data.note) this.toast(data.note, 'info');
         this.toast('Launched: ' + model, 'success');
+        // A launch can pull the weights in from a peer, so what is on disk
+        // here may have changed too.
+        this.invalidate();
         // Launch submitted — the hand-picked-nodes intent is consumed, so the next
         // model pick auto-recommends again.
         this._launchNodesUserPicked = false;
@@ -2855,7 +2876,10 @@ const AINode = {
         }
         self.toast('Deleted ' + hfRepo + ' (freed ' + (data.freed_gb || '?') + ' GB)', 'success');
         close();
-        self.state.catalog = null;  // force catalog refresh
+        // Both lists, not just the catalog: the disk view is what just
+        // changed, and leaving it to the TTL shows the model as still there
+        // for up to a minute after its own delete reported success.
+        self.invalidate();
         self.refresh();
         self._downloadsViewInitialized = false;
         self.renderDownloads();
@@ -2955,7 +2979,9 @@ const AINode = {
         if (st.status === 'completed') {
           self.stopDownloadPolling(hfRepo);
           self.toast('Downloaded: ' + hfRepo, 'success');
-          self.state.catalog = null;  // refresh catalog next time
+          // The model is on disk now: both lists have to say so on the next
+          // render, not a minute later.
+          self.invalidate();
           // Keep in queue 8s so user sees completion, then remove
           dl.status = 'completed';
           dl.progress = 100;
@@ -3741,24 +3767,33 @@ const AINode = {
     var totalClusterMem = nodes.reduce(function (sum, n) { return sum + (n.gpu_memory_gb || 0); }, 0);
     var clusterNodeCount = nodes.length;
 
-    // Fetch downloaded models from disk — lazy load, refresh periodically
-    if (!this.state.downloadedModels) {
-      this.state.downloadedModels = {};
-      fetch('/api/models/downloaded').then(function (r) { return r.json(); }).then(function (data) {
-        var map = {};
-        (data.models || data || []).forEach(function (m) {
-          var repo = m.hf_repo || m.id || '';
-          if (repo) map[repo] = true;
-        });
-        self.state.downloadedModels = map;
-        self.state.downloadedList = (data.models || data || []);
-        self.renderDownloads();
-      }).catch(function () {});
+    // What is on disk, ACROSS THE CLUSTER and not only here. The page used
+    // to scan this node's disk while the panel beside it listed what the
+    // whole cluster was serving: a model downloaded to node 3 and running
+    // there appeared in one and not the other, which reads as the page having
+    // lost it. Refreshed on a TTL, because it used to be fetched exactly once
+    // per page load — so anything downloaded or started afterwards stayed
+    // invisible until the operator reloaded the browser.
+    if (this._stale('downloadedModels')) {
+      this.state.downloadedModels = this.state.downloadedModels || {};
+      fetch('/api/cluster/models').then(function (r) { return r.json(); })
+        .then(function (data) {
+          var map = {};
+          var list = (data && data.models) || [];
+          list.forEach(function (m) {
+            var repo = m.hf_repo || m.id || '';
+            if (repo) map[repo] = true;
+          });
+          self.state.downloadedModels = map;
+          self.state.downloadedList = list;
+          self.state.modelNodeNames = (data && data.node_names) || {};
+          self.renderDownloads();
+        }).catch(function () {});
     }
 
-    // Fetch catalog from API (42+ models) — lazy load once
-    if (!this.state.catalog) {
-      this.state.catalog = [];
+    // Fetch catalog from API (42+ models) — refreshed on the same TTL
+    if (this._stale('catalog')) {
+      this.state.catalog = this.state.catalog || [];
       fetch('/api/models').then(function (r) { return r.json(); }).then(function (data) {
         self.state.catalog = (data.models || []).map(function (m) {
           return {

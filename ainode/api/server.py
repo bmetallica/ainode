@@ -184,6 +184,7 @@ def create_app(
     app.router.add_post("/api/engine/compile-cache", _clear_compile_cache)
     app.router.add_post("/api/cluster/compile-cache", handle_cluster_compile_cache)
     app.router.add_get("/api/instances/launch-config", handle_launch_config)
+    app.router.add_get("/api/cluster/models", handle_cluster_models)
     app.router.add_get("/api/clients/opencode", handle_opencode_config)
     app.router.add_post("/api/cluster/mirror-models", handle_cluster_mirror_models)
     app.router.add_get("/api/cluster/mirror-status", handle_cluster_mirror_status)
@@ -1244,6 +1245,92 @@ async def handle_launch_config(request: web.Request) -> web.Response:
     return web.json_response({
         "node_id": getattr(request.app["config"], "node_id", "") or "",
         "instances": specs,
+    })
+
+
+async def handle_cluster_models(request: web.Request) -> web.Response:
+    """GET /api/cluster/models — which models are on which node's disk.
+
+    The Models page showed a scan of THIS node's disk, while the instance
+    panel beside it showed what the whole cluster was serving. A model
+    downloaded to node 3 and running there appeared in one and not the other,
+    which reads as the page having lost it.
+
+    One request per peer, in parallel, each with a short timeout: a node that
+    does not answer costs its own row, not the page.
+    """
+    config: NodeConfig = request.app["config"]
+    cluster = request.app.get("cluster_state")
+    session: aiohttp.ClientSession = request.app.get("client_session")
+
+    async def _local() -> tuple:
+        manager = request.app.get("model_manager")
+        if manager is None:
+            return config.node_id or "local", []
+        loop = asyncio.get_event_loop()
+        try:
+            models = await loop.run_in_executor(None, manager.list_downloaded)
+        except Exception:
+            logger.exception("could not list this node's models")
+            models = []
+        return config.node_id or "local", models
+
+    async def _peer(node) -> tuple:
+        host = (getattr(node, "fabric_ip", "") or "").strip()
+        if not host or session is None:
+            return node.node_id, []
+        url = f"http://{host}:{getattr(node, 'web_port', 3000)}/api/models/downloaded"
+        try:
+            async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    return node.node_id, []
+                data = await resp.json(content_type=None)
+        except Exception:
+            logger.debug("could not ask %s for its models", node.node_id,
+                         exc_info=True)
+            return node.node_id, []
+        return node.node_id, (data or {}).get("models") or []
+
+    tasks = [_local()]
+    names = {config.node_id or "local": getattr(config, "node_name", "") or ""}
+    for node in (cluster.members() if cluster is not None else []):
+        if node.node_id == config.node_id:
+            continue
+        status = node.status.value if hasattr(node.status, "value") else str(node.status)
+        if status not in ("online", "serving", "member-ready"):
+            continue
+        names[node.node_id] = getattr(node, "node_name", "") or node.node_id
+        tasks.append(_peer(node))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    by_repo: dict = {}
+    for result in results:
+        if isinstance(result, BaseException):
+            continue
+        node_id, models = result
+        for entry in models:
+            repo = str(entry.get("hf_repo") or entry.get("id") or "")
+            if not repo:
+                continue
+            row = by_repo.setdefault(repo, {
+                "hf_repo": repo,
+                "name": entry.get("name") or repo,
+                "size_gb": entry.get("size_gb") or entry.get("local_size_gb") or 0,
+                "nodes": [],
+            })
+            if node_id not in row["nodes"]:
+                row["nodes"].append(node_id)
+            # The largest copy wins: a partial mirror on one node should not
+            # make the model look smaller than it is.
+            size = entry.get("local_size_gb") or entry.get("size_gb") or 0
+            if size and size > (row["size_gb"] or 0):
+                row["size_gb"] = size
+
+    return web.json_response({
+        "models": sorted(by_repo.values(), key=lambda r: r["hf_repo"].lower()),
+        "node_names": names,
     })
 
 
