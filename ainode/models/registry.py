@@ -1601,6 +1601,9 @@ class ModelManager:
             max_workers=_download_max_workers(),
         )
 
+        # The size on disk just changed under a directory whose own mtime may
+        # not have moved.
+        self.forget_size(local_dir)
         return Path(download_path)
 
     def delete_model(self, model_id: str) -> bool:
@@ -1612,6 +1615,7 @@ class ModelManager:
         removed = False
         for model_dir in self.model_dirs_for_repo(info.hf_repo):
             shutil.rmtree(model_dir)
+            self.forget_size(model_dir)
             removed = True
         return removed
 
@@ -1709,10 +1713,52 @@ class ModelManager:
         d = self._find_model_dir(info)
         return self._dir_size_gb(d) if d else None
 
-    @staticmethod
-    def _dir_size_gb(path: Path) -> float:
+    #: Directory → (mtime, size). A model directory is written once and then
+    #: only read, so its size is a constant until something changes it — and
+    #: the walk that produces it is expensive enough to have been the reason
+    #: the Models page took seconds to open. list_available() called it for
+    #: every catalog entry on disk and list_downloaded() twice per model, on
+    #: every single request, from six call sites in the UI. Hundreds of
+    #: gigabytes of stat() per page view, which also evicted the page cache
+    #: the next model launch was going to want.
+    _SIZE_CACHE: dict = {}
+
+    #: An entry also expires on time, not only when the directory's mtime
+    #: moves. A file rewritten inside an existing tree can leave the parent
+    #: untouched, and two writes inside one filesystem clock tick are
+    #: indistinguishable — mtime is a cheap hint, not a guarantee. Writers
+    #: call forget_size() as well; this is the backstop for everything that
+    #: changes the tree without going through them.
+    _SIZE_TTL_SECONDS = 60.0
+
+    @classmethod
+    def _dir_size_gb(cls, path: Path) -> float:
+        key = str(path)
+        try:
+            stamp = path.stat().st_mtime
+        except OSError:
+            return 0.0
+        now = time.time()
+        cached = cls._SIZE_CACHE.get(key)
+        if (cached is not None and cached[0] == stamp
+                and now - cached[2] < cls._SIZE_TTL_SECONDS):
+            return cached[1]
         total = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
-        return total / (1024**3)
+        size = total / (1024**3)
+        cls._SIZE_CACHE[key] = (stamp, size, now)
+        return size
+
+    @classmethod
+    def forget_size(cls, path=None) -> None:
+        """Drop a cached size. Called after a download or a delete, where the
+        directory's own mtime may not move — a file rewritten inside an
+        existing tree leaves the parent untouched on some filesystems."""
+        if path is None:
+            cls._SIZE_CACHE.clear()
+            return
+        prefix = str(path)
+        for key in [k for k in cls._SIZE_CACHE if k.startswith(prefix)]:
+            del cls._SIZE_CACHE[key]
 
     #: Pipeline tags this engine can serve. A vision-language model is a text
     #: generator that also takes pictures, and vLLM treats it as one — but the
