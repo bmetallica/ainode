@@ -654,14 +654,21 @@ interval), with *Test connection*, *Publish now* and a payload preview. The
 password is kept in the secrets store, not in `config.json`.
 
 ```
-<prefix>/<node-id>/system    CPU, load, memory, disk, per-interface Mbit/s and % of link, temperatures
-<prefix>/<node-id>/gpu       utilization, memory, temperature
-<prefix>/<node-id>/models    what is loaded, requests, errors, per-model average speed
-<prefix>/cluster             head only: nodes, status, aggregate VRAM
+<prefix>/<node-id>/system           CPU, load, memory, disk, per-interface Mbit/s and % of link, temperatures
+<prefix>/<node-id>/gpu              utilization, memory, temperature
+<prefix>/<node-id>/models           what is loaded, requests, errors, per-model average speed
+<prefix>/cluster                    head only: nodes, status, aggregate VRAM
+<prefix>/<node-id>/logs/ainode      the orchestrator's own log (opt-in)
+<prefix>/<node-id>/logs/vllm/<model> each engine instance's log (opt-in)
 ```
 
 Per-model speed is tokens divided by the time spent generating them, not by
 uptime — a model that served one request an hour ago is idle, not slow.
+
+Log forwarding is off by default and sends only what is new since the last
+publish, with progress bars dropped and a cap per message — a vLLM log is a
+firehose. Every topic and every field is documented in
+[docs/mqtt-schema.md](docs/mqtt-schema.md).
 
 ### Metrics — `/metrics` (Prometheus) and `/api/metrics` (JSON)
 
