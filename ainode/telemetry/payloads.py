@@ -15,6 +15,8 @@ different rates:
              cannot see: RDMA bypasses the kernel stack, so a saturated ring
              reads as zero bytes there.
 ``safety``   what the host memory guard sees, and what it has had to do.
+``transfers`` downloads and mirror runs in flight — hours of work that was
+             visible only to whoever had the browser open.
 
 Plus ``cluster`` from the head only: the fleet view, which no member can
 assemble because only the head sees every node's announcements.
@@ -131,6 +133,42 @@ def _safety(app) -> Optional[Dict[str, Any]]:
     return payload
 
 
+def _transfers(app) -> Optional[Dict[str, Any]]:
+    """Downloads and mirror runs in flight.
+
+    These take hours on a 200 GB checkpoint and were visible only to whoever
+    had the browser open. A transfer that stalls at 40% overnight is exactly
+    the thing telemetry is for.
+    """
+    out: Dict[str, Any] = {}
+
+    downloads = []
+    for job in (app.get("download_jobs") or {}).values():
+        if not isinstance(job, dict):
+            continue
+        if job.get("status") not in ("downloading", "starting", "queued"):
+            continue
+        entry = {"model": job.get("hf_repo") or job.get("model") or "",
+                 "status": job.get("status"),
+                 "percent": round(float(job.get("progress") or 0), 1)}
+        for field in ("downloaded_bytes", "total_bytes"):
+            if job.get(field):
+                entry[field] = int(job[field])
+        downloads.append(entry)
+    if downloads:
+        out["downloads"] = downloads
+
+    mirror = app.get("mirror_jobs") or {}
+    if mirror.get("running"):
+        out["mirror"] = {
+            "running": True,
+            "model": mirror.get("current") or mirror.get("model") or "",
+            "done": int(mirror.get("done") or 0),
+            "total": int(mirror.get("total") or 0),
+        }
+    return out or None
+
+
 def _cluster(app) -> Optional[Dict[str, Any]]:
     """The fleet view — head only.
 
@@ -181,6 +219,9 @@ def _cluster(app) -> Optional[Dict[str, Any]]:
         utilization = getattr(node, "gpu_utilization", None)
         if isinstance(utilization, (int, float)):
             entry["gpu_utilization_percent"] = round(float(utilization), 1)
+        version = str(getattr(node, "version", "") or "")
+        if version:
+            entry["version"] = version
         # A node on another build can send anything here; iterating a value
         # that is not a list would drop the whole cluster payload.
         raw_instances = getattr(node, "instances", None)
@@ -194,12 +235,23 @@ def _cluster(app) -> Optional[Dict[str, Any]]:
             entry["instances"] = instances
         nodes.append(entry)
 
-    return {
+    payload = {
         "nodes_total": len(nodes),
         "nodes_online": online,
         "vram_total_gb": round(total_vram, 1),
         "nodes": nodes,
     }
+    # A fleet that does not agree with itself about the build it is running
+    # is a distributed launch waiting to fail: the launcher compares engine
+    # images across nodes and aborts when they differ, minutes in. One
+    # boolean makes that an alert instead of a failed start.
+    versions = sorted({n["version"] for n in nodes if n.get("version")})
+    if len(versions) > 1:
+        payload["versions_agree"] = False
+        payload["versions"] = versions
+    elif versions:
+        payload["versions_agree"] = True
+    return payload
 
 
 def build_payloads(app, sampler) -> Dict[str, Dict[str, Any]]:
@@ -237,11 +289,24 @@ def build_payloads(app, sampler) -> Dict[str, Dict[str, Any]]:
             stats = collector.get_snapshot()
             models["requests_total"] = stats.get("requests", {}).get("total", 0)
             models["errors_total"] = stats.get("requests", {}).get("errors", 0)
+            # The collector has computed these all along and nothing carried
+            # them out. An average latency hides the tail, and the tail is
+            # what a user notices.
+            latency = stats.get("requests", {}).get("latency_ms")
+            if isinstance(latency, dict) and latency:
+                models["latency_ms"] = latency
             models["uptime_seconds"] = stats.get("uptime_seconds", 0)
             models["per_model"] = collector.model_stats()
         payloads["models"] = models
     except Exception:
         logger.exception("model metrics failed")
+
+    try:
+        transfers = _transfers(app)
+        if transfers is not None:
+            payloads["transfers"] = {**identity, **transfers}
+    except Exception:
+        logger.exception("transfer metrics failed")
 
     try:
         safety = _safety(app)

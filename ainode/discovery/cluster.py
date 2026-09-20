@@ -42,6 +42,7 @@ class ClusterNode:
     ib_ips: list = field(default_factory=list)  # RoCE link addresses, bulk transfer only
     instances: list = field(default_factory=list)  # Phase 2: distributed instances this node heads
     embedding_models: list = field(default_factory=list)  # in-process, not vLLM instances
+    version: str = ""  # the build this node runs; empty from an older peer
 
     @classmethod
     def from_discovered(cls, discovered: DiscoveredNode) -> "ClusterNode":
@@ -72,6 +73,7 @@ class ClusterNode:
             ib_ips=list(getattr(a, "ib_ips", []) or []),
             instances=list(getattr(a, "instances", []) or []),
             embedding_models=list(getattr(a, "embedding_models", []) or []),
+            version=str(getattr(a, "version", "") or ""),
         )
 
     @classmethod
@@ -101,6 +103,7 @@ class ClusterNode:
             ib_ips=list(getattr(announcement, "ib_ips", []) or []),
             instances=list(getattr(announcement, "instances", []) or []),
             embedding_models=list(getattr(announcement, "embedding_models", []) or []),
+            version=str(getattr(announcement, "version", "") or ""),
         )
 
 

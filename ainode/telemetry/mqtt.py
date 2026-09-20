@@ -212,6 +212,35 @@ def publish_event(app, suffix: str) -> bool:
         return False
 
 
+def publish_launch(app, model: str, outcome: str, **extra) -> bool:
+    """Announce that a launch finished, the moment it does.
+
+    A load takes minutes and ends in one of two ways. Waiting for the next
+    interval to say which loses the timing that makes the message useful —
+    and a failed launch often takes the node's attention with it, so "at some
+    point in the next thirty seconds" can mean "not at all".
+
+    The phase breakdown rides along, so how long it took and where the time
+    went are answerable from the dashboard rather than only from the card.
+    """
+    publisher = app.get("mqtt_publisher")
+    client = getattr(publisher, "_client", None)
+    if client is None:
+        return False
+    config = app.get("config")
+    try:
+        from ainode.telemetry.payloads import node_identity
+
+        payload = {**node_identity(config), "model": model, "outcome": outcome}
+        payload.update({k: v for k, v in extra.items() if v not in (None, "", [])})
+        client.publish(_topic(config, "events/launch"), json.dumps(payload),
+                       qos=int(getattr(config, "mqtt_qos", 0) or 0), retain=False)
+        return True
+    except Exception:
+        logger.debug("could not publish the launch event", exc_info=True)
+        return False
+
+
 class MqttPublisher:
     """Background task publishing telemetry on a timer."""
 
@@ -340,6 +369,9 @@ class MqttPublisher:
 
         log_publisher = LogPublisher(self._app)
         self._app["_log_publisher"] = log_publisher
+        from ainode.telemetry.events import LaunchWatcher
+
+        launches = LaunchWatcher(self._app)
         loop = asyncio.get_event_loop()
         reported_error = ""
 
@@ -375,6 +407,13 @@ class MqttPublisher:
                             **identity, "instance": name, **metrics}
                 except Exception:
                     logger.debug("engine metrics failed", exc_info=True)
+                # Events, not state: published once, when they happen.
+                try:
+                    for event in launches.poll():
+                        publish_launch(self._app, event.pop("model"),
+                                       event.pop("outcome"), **event)
+                except Exception:
+                    logger.debug("launch events failed", exc_info=True)
                 for suffix, payload in payloads.items():
                     self._client.publish(
                         _topic(config, suffix), json.dumps(payload),
