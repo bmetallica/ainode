@@ -432,3 +432,37 @@ class TestTheForm:
         # select.
         assert "if (d.dataset.head) { d.classList.add('active'); return; }" \
             not in APP_JS.split("_selectNodeIds")[1][:600]
+
+
+class TestTheConcurrencyItRecommends:
+    """--max-num-seqs is a launch-time cost, not only a serving limit.
+
+    vLLM derives its CUDA graph capture list from it. Measured on this
+    cluster, from the engine's own log: 56 capture sizes took 93 seconds, at
+    every launch, and the same model launched with --max-num-seqs 24 captured
+    6 sizes. A cache that can back ten concurrent requests has no use for
+    fifty captured sizes — it pays for them every time it starts.
+    """
+
+    def test_it_matches_what_the_cache_can_actually_back(self):
+        facts = facts_from_config(MINIMAX, "org/m", int(130e9))
+        plan = plan_for(facts, _three_sparks(), kv_cache_dtype="fp8",
+                        max_model_len=65536)
+        assert plan.max_num_seqs == plan.concurrent_requests == 10
+
+    def test_it_is_never_zero_when_the_model_fits(self):
+        facts = facts_from_config(DENSE_70B, "org/m", int(40e9))
+        plan = plan_for(facts, _three_sparks(), kv_cache_dtype="fp8",
+                        max_model_len=32768)
+        assert plan.max_num_seqs >= 1
+
+    def test_the_note_says_why_it_matters(self):
+        facts = facts_from_config(MINIMAX, "org/m", int(130e9))
+        notes = " ".join(plan_for(facts, _three_sparks(), kv_cache_dtype="fp8",
+                                  max_model_len=65536).notes)
+        assert "--max-num-seqs" in notes and "CUDA graph" in notes
+
+    def test_the_form_fills_it_in(self):
+        applier = APP_JS.split("  applyPlan() {")[1][:1400]
+        assert "launch-max-seqs" in applier
+        assert "plan.max_num_seqs" in applier
