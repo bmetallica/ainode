@@ -447,6 +447,11 @@ class EugrBackend(EngineBackend):
                 with urllib.request.urlopen(url, timeout=5) as resp:
                     if 200 <= resp.status < 300:
                         self._ready = True
+                        # Stops the clock on the phase still running: this
+                        # poll routinely beats the log line that says the same
+                        # thing, and the timeline is only worth reading if its
+                        # last entry ends when the model actually answered.
+                        self._phase.mark_ready()
                         if self.on_ready:
                             try:
                                 self.on_ready()
@@ -1453,6 +1458,20 @@ vllm serve {shlex.quote(serve_target or self.config.model)} \\
                 sink.write(f"[ainode] {detail}\n")
         except OSError:
             logger.exception("could not write progress to %s", log_file)
+
+    @property
+    def load_timeline(self) -> list:
+        """Where this launch's time went, phase by phase.
+
+        A load here takes minutes. "Minutes" answers neither "is it stuck?"
+        nor "why is this slower than the same model elsewhere?" — both need
+        to know which minutes, and the phases were already being detected.
+        """
+        return self._phase.timeline()
+
+    @property
+    def load_seconds(self) -> float:
+        return self._phase.elapsed
 
     @property
     def load_error(self) -> str:

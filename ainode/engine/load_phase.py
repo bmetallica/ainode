@@ -14,6 +14,7 @@ on an unexpected line is not.
 from __future__ import annotations
 
 import re
+import time
 
 __all__ = ["LOAD_PHASE_MARKERS", "LOAD_PHASE_ORDER", "PHASE_FAILED",
            "LoadPhaseTracker"]
@@ -377,6 +378,15 @@ class LoadPhaseTracker:
     """
 
     def __init__(self) -> None:
+        #: Wall clock for the phase timings. A launch on this hardware takes
+        #: minutes, and "minutes" is not an answer to "is it stuck?" or to
+        #: "why is this slower than my laptop?" — both need to know WHICH
+        #: minutes. The phases were already being detected; only the clock
+        #: was missing.
+        self.started = time.monotonic()
+        self._phase_started = self.started
+        #: (phase, seconds) in the order they were left.
+        self.timings: list = []
         self.phase = "idle"
         self.ready = False
         self.error = ""
@@ -417,6 +427,9 @@ class LoadPhaseTracker:
 
     def reset(self) -> None:
         """A fresh log stream means a fresh launch — start the clock over."""
+        self.started = time.monotonic()
+        self._phase_started = self.started
+        self.timings = []
         self.phase = "starting"
         self.ready = False
         self.error = ""
@@ -446,14 +459,40 @@ class LoadPhaseTracker:
 
         Moving on clears the detail: it described the phase being left, and a
         stale "copying weights to spark-2" under "loading weights" is worse
-        than no detail at all.
+        than no detail at all. It also stops that phase's clock.
         """
         try:
             if LOAD_PHASE_ORDER.index(phase) > LOAD_PHASE_ORDER.index(self.phase):
+                self._close_phase()
                 self.phase = phase
                 self.detail = ""
         except ValueError:
             pass
+
+    def _close_phase(self) -> None:
+        now = time.monotonic()
+        seconds = now - self._phase_started
+        self._phase_started = now
+        # "idle" is the state before a launch, not a step of one.
+        if self.phase != "idle":
+            self.timings.append((self.phase, round(seconds, 1)))
+
+    @property
+    def elapsed(self) -> float:
+        """Seconds since this launch began."""
+        return round(time.monotonic() - self.started, 1)
+
+    def timeline(self) -> list:
+        """Where the time went, as ``[{"phase", "seconds"}]``.
+
+        Includes the phase still running, so the answer is useful DURING a
+        slow load and not only after it — which is when it is asked.
+        """
+        out = [{"phase": name, "seconds": seconds} for name, seconds in self.timings]
+        if not self.ready and self.phase not in ("idle", PHASE_FAILED):
+            out.append({"phase": self.phase,
+                        "seconds": round(time.monotonic() - self._phase_started, 1)})
+        return out
 
     def observe(self, line: str) -> bool:
         """Feed one log line. Returns True the first time readiness is seen."""
@@ -500,10 +539,24 @@ class LoadPhaseTracker:
                 break
                 break
         if any(m in low for m in READY_MARKERS):
+            self._close_phase()
             self.ready = True
             self.phase = "ready"
             return True
         return False
+
+    def mark_ready(self) -> None:
+        """Readiness seen somewhere other than the log.
+
+        ``wait_ready()`` polls the API and can win the race against the log
+        stream. Without this the clock on the last phase would keep running
+        after the model was already answering.
+        """
+        if self.ready:
+            return
+        self._close_phase()
+        self.ready = True
+        self.phase = "ready"
 
     def current(self, ready_latch: bool = False) -> str:
         """The phase to report. ``ready_latch`` is the backend's own flag."""
