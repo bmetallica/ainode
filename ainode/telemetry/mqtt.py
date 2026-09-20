@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import socket
+import time
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,35 @@ def _client(config, password: str, *, client_id: str = ""):
     if getattr(config, "mqtt_tls", False):
         client.tls_set()
     return client
+
+
+def availability_payload(config, online: bool) -> str:
+    """The retained message on <prefix>/<node>/status."""
+    return json.dumps({
+        "node_id": getattr(config, "node_id", "") or "",
+        "node_name": getattr(config, "node_name", "") or "",
+        "status": "online" if online else "offline",
+        "timestamp": round(time.time(), 3),
+    })
+
+
+def set_last_will(client, config) -> None:
+    """Have the BROKER announce this node's death.
+
+    Until now "is that node alive" could only be answered by noticing that
+    messages had stopped — which needs a timeout in every dashboard, and which
+    retained messages defeat entirely: the last reading of a node that died an
+    hour ago looks exactly as fresh as a live one.
+
+    A last will is the protocol's own answer. The broker holds the message and
+    publishes it the moment the connection drops, however it drops — a killed
+    process, a pulled cable, a node that locked up. Nothing on this side has
+    to still be running for it to be sent, which is the entire point.
+    """
+    client.will_set(_topic(config, "status"),
+                    availability_payload(config, online=False),
+                    qos=int(getattr(config, "mqtt_qos", 0) or 0),
+                    retain=True)
 
 
 def _topic(config, suffix: str) -> str:
@@ -147,6 +177,39 @@ def publish_once(config, password: str, payloads: Dict[str, Dict[str, Any]]) -> 
         except Exception:
             pass
     return sent
+
+
+def publish_event(app, suffix: str) -> bool:
+    """Publish one payload NOW, outside the interval. Returns whether it went.
+
+    For the handful of things whose value is in their timing. The guard
+    samples host memory every two seconds and the telemetry loop publishes
+    every thirty; an engine killed to save the node would otherwise be news
+    up to half a minute later — or never, if the node goes down in between.
+
+    Best effort by design: no client, no broker, no publish, no exception. An
+    event that cannot be sent must not become a second fault.
+    """
+    publisher = app.get("mqtt_publisher")
+    client = getattr(publisher, "_client", None)
+    if client is None:
+        return False
+    config = app.get("config")
+    try:
+        from ainode.metrics.system import SystemSampler
+        from ainode.telemetry.payloads import build_payloads
+
+        sampler = app.get("_telemetry_sampler") or SystemSampler()
+        payload = build_payloads(app, sampler).get(suffix)
+        if payload is None:
+            return False
+        client.publish(_topic(config, suffix), json.dumps(payload),
+                       qos=int(getattr(config, "mqtt_qos", 0) or 0),
+                       retain=bool(getattr(config, "mqtt_retain", False)))
+        return True
+    except Exception:
+        logger.debug("could not publish %s as an event", suffix, exc_info=True)
+        return False
 
 
 class MqttPublisher:
@@ -226,10 +289,16 @@ class MqttPublisher:
     def _connect(self, config) -> None:
         host, port = _broker(config)
         client = _client(config, self._password())
+        set_last_will(client, config)
         client.connect(host, port, keepalive=60)
         # paho's own loop thread handles reconnects, so a broker that is down
         # at boot or restarts overnight needs nothing from us.
         client.loop_start()
+        # Retained, so a dashboard that subscribes later still learns the node
+        # is up rather than waiting for the next interval.
+        client.publish(_topic(config, "status"),
+                       availability_payload(config, online=True),
+                       qos=int(getattr(config, "mqtt_qos", 0) or 0), retain=True)
         self._client = client
         logger.info("MQTT telemetry connected to %s:%s", host, port)
 
@@ -237,6 +306,17 @@ class MqttPublisher:
         client, self._client = self._client, None
         if client is None:
             return
+        # A deliberate shutdown says so, rather than leaving the last will to
+        # report it as a failure. Both are "offline"; only one of them is a
+        # reason to get out of bed.
+        try:
+            config = self._app.get("config")
+            client.publish(_topic(config, "status"),
+                           availability_payload(config, online=False),
+                           qos=int(getattr(config, "mqtt_qos", 0) or 0),
+                           retain=True)
+        except Exception:
+            logger.debug("could not publish the offline state", exc_info=True)
         try:
             client.loop_stop()
             client.disconnect()

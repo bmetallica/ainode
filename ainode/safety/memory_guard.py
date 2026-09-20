@@ -125,8 +125,18 @@ class MemoryGuard:
     def __init__(self, app, *, warn_gb: float = 8.0, critical_gb: float = 4.0,
                  enabled: bool = True, poll_seconds: float = POLL_SECONDS,
                  meminfo: Path = MEMINFO,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic,
+                 on_action: Optional[Callable[[dict], None]] = None):
         self._app = app
+        #: Called right after an engine is stopped, with the action record.
+        #: The guard samples every two seconds and telemetry publishes every
+        #: thirty, so without this the one event worth knowing about arrives
+        #: up to half a minute late — or not at all, if the node goes down in
+        #: between.
+        self.on_action = on_action
+        #: Every stop since this process started. reading.actions keeps only
+        #: the last few, so it cannot answer "has this happened before".
+        self.stops = 0
         self.warn_mb = max(0.0, float(warn_gb) * 1024)
         self.critical_mb = max(0.0, float(critical_gb) * 1024)
         self.enabled = bool(enabled)
@@ -288,11 +298,20 @@ class MemoryGuard:
                 record.status = "failed"
             except Exception:
                 logger.debug("could not mark the record", exc_info=True)
-        self._actions.append({
+        action = {
             "at": time.time(), "model": model, "reason": reason,
             "available_mb": round(reading.available_mb),
-        })
+            "critical_mb": round(reading.critical_mb),
+        }
+        self._actions.append(action)
         del self._actions[:-20]
+        self.stops += 1
+        if self.on_action is not None:
+            try:
+                self.on_action(action)
+            except Exception:
+                logger.debug("the memory guard's action callback failed",
+                             exc_info=True)
         return model or None
 
     def _newest_instance(self):

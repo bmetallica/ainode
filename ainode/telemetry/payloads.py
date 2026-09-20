@@ -14,6 +14,7 @@ different rates:
 ``fabric``   what the RDMA links are carrying, which ``system.network``
              cannot see: RDMA bypasses the kernel stack, so a saturated ring
              reads as zero bytes there.
+``safety``   what the host memory guard sees, and what it has had to do.
 
 Plus ``cluster`` from the head only: the fleet view, which no member can
 assemble because only the head sees every node's announcements.
@@ -92,6 +93,42 @@ def _embeddings(app) -> List[str]:
     except Exception:
         logger.debug("embedding list unavailable", exc_info=True)
         return []
+
+
+def _safety(app) -> Optional[Dict[str, Any]]:
+    """What the host memory guard sees, and what it has had to do.
+
+    Published because the guard can kill a running engine, and until now the
+    only trace of that was a line in a log file. A dashboard that shows
+    memory but not the thing acting on it explains half of what happened.
+    """
+    guard = app.get("memory_guard")
+    if guard is None:
+        return None
+    try:
+        reading = guard.read()
+    except Exception:
+        logger.debug("memory guard unreadable", exc_info=True)
+        return None
+    payload: Dict[str, Any] = {
+        "memory_guard_enabled": bool(getattr(guard, "enabled", False)),
+        "host_available_mb": round(reading.available_mb),
+        "host_total_mb": round(reading.total_mb),
+        # The ENFORCED lines, not the configured ones: the reserve is capped
+        # against the size of the machine, and an alert built on a number the
+        # guard is not actually using would fire at the wrong moment.
+        "warn_mb": round(reading.warn_mb),
+        "critical_mb": round(reading.critical_mb),
+        "blocking_launches": bool(reading.blocking),
+        "below_critical": bool(reading.critical),
+    }
+    if not reading.readable:
+        payload["host_memory_readable"] = False
+    payload["stops_total"] = int(getattr(guard, "stops", 0) or 0)
+    actions = list(reading.actions or [])
+    if actions:
+        payload["last_stop"] = actions[-1]
+    return payload
 
 
 def _cluster(app) -> Optional[Dict[str, Any]]:
@@ -205,6 +242,13 @@ def build_payloads(app, sampler) -> Dict[str, Dict[str, Any]]:
         payloads["models"] = models
     except Exception:
         logger.exception("model metrics failed")
+
+    try:
+        safety = _safety(app)
+        if safety is not None:
+            payloads["safety"] = {**identity, **safety}
+    except Exception:
+        logger.exception("safety metrics failed")
 
     try:
         fabric = app.get("_fabric_sampler")

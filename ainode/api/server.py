@@ -422,6 +422,12 @@ async def _on_startup(app: web.Application) -> None:
             getattr(app["config"], "host_memory_critical_gb", 4.0) or 4.0),
         enabled=bool(getattr(app["config"], "host_memory_guard", True)),
     )
+    def _announce_stop(action: dict) -> None:
+        from ainode.telemetry.mqtt import publish_event
+
+        publish_event(app, "safety")
+
+    guard.on_action = _announce_stop
     app["memory_guard"] = guard
     try:
         guard.start()
