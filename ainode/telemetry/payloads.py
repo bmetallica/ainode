@@ -11,6 +11,9 @@ different rates:
 ``system``   is this node healthy — CPU, memory, disk, network, temperature.
 ``gpu``      is the accelerator busy, and how hot.
 ``models``   what is loaded here, how much it is used, how fast it answers.
+``fabric``   what the RDMA links are carrying, which ``system.network``
+             cannot see: RDMA bypasses the kernel stack, so a saturated ring
+             reads as zero bytes there.
 
 Plus ``cluster`` from the head only: the fleet view, which no member can
 assemble because only the head sees every node's announcements.
@@ -202,6 +205,19 @@ def build_payloads(app, sampler) -> Dict[str, Dict[str, Any]]:
         payloads["models"] = models
     except Exception:
         logger.exception("model metrics failed")
+
+    try:
+        fabric = app.get("_fabric_sampler")
+        if fabric is None:
+            from ainode.metrics.fabric import FabricSampler
+
+            fabric = FabricSampler()
+            app["_fabric_sampler"] = fabric
+        ports = fabric.sample()
+        if ports:
+            payloads["fabric"] = {**identity, "ports": ports}
+    except Exception:
+        logger.exception("fabric metrics failed")
 
     try:
         cluster = _cluster(app)
