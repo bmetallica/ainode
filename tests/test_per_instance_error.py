@@ -64,13 +64,17 @@ class TestTheCardUsesItsOwn:
         assert "error: inst.load_error" in APP_JS
 
     def test_the_renderer_prefers_the_instance_over_the_node(self):
-        assert "var instError" in APP_JS
-        assert "var instPhase" in APP_JS
+        # Resolved once per instance now, and read by both the card's status
+        # word and the details dialog — but the rule is unchanged: a card that
+        # carries the fields uses ONLY its own.
+        assert "inst.instError = hasOwnState ? (inst.error || '') : loadError;" in APP_JS
+        assert "inst.instPhase = hasOwnState" in APP_JS
         # The old form painted one node value on every card.
         assert "(phase === 'failed' && loadError)" not in APP_JS
 
     def test_the_progress_bar_follows_the_instance_too(self):
-        assert "PHASE_INFO[instPhase]" in APP_JS
+        assert "self.instanceState(inst, inst.instPhase)" in APP_JS
+        assert "INSTANCE_PHASE_INFO[phase]" in APP_JS
 
 
 class TestTheFieldsSurviveTheWire:
@@ -124,4 +128,4 @@ class TestTheCardDoesNotBorrowTheNodesPhase:
         assert "inst.status === 'READY' ? 'ready' : 'starting'" in APP_JS
 
     def test_the_detail_line_is_per_card_too(self):
-        assert "instDetail = hasOwnState" in APP_JS
+        assert "inst.instDetail = hasOwnState" in APP_JS

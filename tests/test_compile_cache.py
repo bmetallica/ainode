@@ -111,17 +111,22 @@ APP_JS = (WEB / "static" / "js" / "app.js").read_text()
 
 
 class TestTheButton:
-    def test_a_failed_card_offers_it(self):
-        assert "data-clear-cache" in APP_JS
+    def test_a_failed_instance_offers_it(self):
+        # It moved from the card into the details dialog, which is where the
+        # error it repairs is now shown — but it is still one click from a
+        # failure, and it is still the node-targeted endpoint.
+        assert "instance-cache-clear" in APP_JS
         assert "/api/cluster/compile-cache" in APP_JS
 
     def test_the_note_still_singles_out_kernel_faults(self):
         # A model that died on a bad flag does not need its cache cleared, so
-        # the failure note keeps its trigger. The wording widened: see
-        # tests/test_compile_cache_without_a_crash.py — "illegal memory
-        # access" is a different CUDA error from "illegal instruction" and was
-        # not matched, on the one fault this cluster actually produced.
+        # the failure note keeps its trigger — now as a sentence pointing at
+        # the button rather than a second button of its own. The wording
+        # widened: see tests/test_compile_cache_without_a_crash.py — "illegal
+        # memory access" is a different CUDA error from "illegal instruction"
+        # and was not matched, on the one fault this cluster produced.
         assert "illegal (instruction|memory access|address)|compiled kernel" in APP_JS
+        assert "first thing to try" in APP_JS
 
     def test_it_says_what_it_costs(self):
         assert "recompiles" in APP_JS

@@ -158,5 +158,8 @@ class TestTheCardStopsClaimingProgress:
         from pathlib import Path
 
         source = Path("ainode/web/static/js/app.js").read_text()
-        assert "if (instPhase === 'ready') {" in source
-        assert "STOPPED ANSWERING" in source
+        # The check moved into instanceState(), which decides the card's one
+        # coloured word. The rule is the same: 'ready' as a PHASE on an
+        # instance that is not answering means it stopped, not that it is at
+        # 100%.
+        assert "if (phase === 'ready') return { label: 'STOPPED ANSWERING'" in source

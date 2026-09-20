@@ -1,5 +1,18 @@
 /* AINode Command Center — Single Page Application */
 
+// Coarse phase → [label, percent]. Module level because two things read it:
+// the instance card's one-word status and the details dialog. Keep in step
+// with LOAD_PHASE_ORDER in ainode/engine/load_phase.py; a phase missing here
+// renders as the `idle` fallback, a flat 8% that reads as a hang.
+const INSTANCE_PHASE_INFO = {
+  idle: ['starting', 8], starting: ['starting', 12],
+  distributing: ['copying weights to peers', 26],
+  loading_weights: ['loading weights', 40],
+  distributed_init: ['connecting nodes', 62],
+  profiling: ['profiling', 84], ready: ['ready', 100],
+  failed: ['failed', 100],
+};
+
 const AINode = {
   state: {
     status: null,
@@ -1068,14 +1081,6 @@ const AINode = {
     // Any phase missing here renders as the `idle` fallback — a flat 8% that
     // reads as a hang. Keep in step with LOAD_PHASE_ORDER in
     // ainode/engine/load_phase.py.
-    var PHASE_INFO = {
-      idle: ['starting', 8], starting: ['starting', 12],
-      distributing: ['copying weights to peers', 26],
-      loading_weights: ['loading weights', 40],
-      distributed_init: ['connecting nodes', 62],
-      profiling: ['profiling', 84], ready: ['ready', 100],
-      failed: ['failed', 100],
-    };
     var instances = [];
 
     // Distributed instance (authoritative from /api/cluster/resources) —
@@ -1238,140 +1243,210 @@ const AINode = {
       return i.status === 'READY' && i.model;
     }).map(function (i) { return i.model; });
 
-    container.innerHTML = instances.map(function (inst, idx) {
-      var nodeList = inst.nodes.map(function (n) { return self.esc(n); }).join(', ');
-      var badgeClass = inst.degraded ? 'degraded'
-        : (inst.strategy === 'distributed' ? 'distributed' : 'single');
-      // A degraded instance is still running on the head but has lost the ranks
-      // Ray placed on the node that went away — it cannot serve. Say which node
-      // is gone and offer the one action that helps.
-      // This card's own phase and error. A card that carries the fields at
-      // all — every remote and stacked one — uses ONLY its own, even when they
-      // are empty: falling back to the node's painted a model that was still
-      // loading on another machine as "READY · 100%", because the head's own
-      // engine happened to be ready. The node-level values are for the head's
-      // own primary card, which carries none.
+
+    // The card says four things: what it is, how it is doing, and two
+    // buttons. Everything else — the load timing, the full error text, the
+    // assistant, the kernel cache, the relaunch, the launch parameters — is
+    // one click away in Details. It had all accumulated on the card, because
+    // every new piece of information needed somewhere to go, and the panel
+    // that is looked at most often had become the least readable one.
+    // Each card's own phase, error and detail — never the node's. A card
+    // that carries the fields at all (every remote and stacked one) uses
+    // ONLY its own, even when they are empty: falling back to the node's
+    // painted a model still loading on another machine as READY, because the
+    // head's own engine happened to be ready, and painted one node-level
+    // error message on every card in the panel.
+    instances.forEach(function (inst) {
       var hasOwnState = inst.phase !== undefined;
-      var instPhase = hasOwnState
+      inst.instPhase = hasOwnState
         ? (inst.phase || (inst.status === 'READY' ? 'ready' : 'starting'))
         : phase;
-      var instError = hasOwnState ? (inst.error || '') : loadError;
-      var instDetail = hasOwnState ? (inst.detail || '') : loadDetail;
-      var failNote = (instPhase === 'failed' && instError)
-        ? '<div class="instance-failed-note">' + self.esc(instError) +
-          // The raw error above is never replaced or rewritten. What a model
-          // says about it goes underneath, attributed, and only when another
-          // model is actually there to ask.
-          self.assistBlock(inst, instError, readyModels) +
-          // The one repair the message asks for, as a button. Telling someone
-          // to run a docker command is the opposite of what this panel is for.
-          // "illegal memory access" was missing, and that is the one this
-          // cluster actually produced: a cudaErrorIllegalAddress inside a
-          // worker, after which the CUDA context is poisoned and the model
-          // emits "!!!!!" forever. The operator went looking for a button
-          // that the regex had decided not to draw.
-          (/compile cache|illegal (instruction|memory access|address)|compiled kernel|cudaError/i.test(instError)
-            ? '<div style="margin-top:8px"><button class="btn-ghost server-btn-sm" ' +
-              'data-clear-cache="' + self.esc((inst.nodes && inst.nodes[0]) || '') +
-              '">Clear compile cache</button></div>'
-            : '') +
-          '</div>'
-        : '';
-      var degradedNote = inst.degraded
-        ? '<div class="instance-degraded">Lost ' +
-            self.esc((inst.missingPeers || []).join(', ')) +
-            ' — this instance cannot serve until it is relaunched on the ' +
-            ((inst.survivingNodeIds || []).length || 1) + ' node(s) still online.' +
-          '</div>'
-        : '';
+      inst.instError = hasOwnState ? (inst.error || '') : loadError;
+      inst.instDetail = hasOwnState ? (inst.detail || '') : loadDetail;
+      inst.readyModels = readyModels;
+    });
+
+    container.innerHTML = instances.map(function (inst, idx) {
+      var state = self.instanceState(inst, inst.instPhase);
       return '<div class="instance-card" data-idx="' + idx + '">' +
-        '<div class="instance-model">' + self.esc(inst.model) + '</div>' +
-        '<div class="instance-meta">' +
-        '<span class="instance-strategy ' + badgeClass + '">' + self.esc(inst.badge || inst.strategy) + '</span>' +
-        '<span class="instance-nodes">' + nodeList + '</span>' +
-        '</div>' + self.loadTimelineBlock(inst) + failNote + degradedNote +
-        '<div class="instance-footer">' +
-        (inst.status === 'READY'
-          ? '<span class="instance-status ready">READY</span>'
-          : (function () {
-              // A launch that died is terminal — show it as such instead of a
-              // bar that will never move again.
-              if (instPhase === 'failed') {
-                return '<span class="instance-status failed">FAILED</span>';
-              }
-              // Reached ready, but the engine is not answering any more: it
-              // stopped after it had served. Drawing the phase here painted a
-              // full green bar labelled with whatever the load was last doing
-              // — "SIZING THE KV CACHE · 100%" on a model that had died — which
-              // reads as progress instead of as loss.
-              if (instPhase === 'ready') {
-                return '<span class="instance-status failed">STOPPED ANSWERING</span>';
-              }
-              var pi = PHASE_INFO[instPhase] || ['starting', 10];
-              var label = instDetail || pi[0];
-              return '<span class="instance-status starting" title="' + self.esc(loadDetail || '') + '">' + self.esc(label.toUpperCase()) + ' · ' + pi[1] + '%</span>' +
-                '<span style="display:inline-block;width:90px;height:5px;background:#1f2a1f;border-radius:3px;margin:0 8px;vertical-align:middle;overflow:hidden">' +
-                '<span style="display:block;height:100%;width:' + pi[1] + '%;background:#76c043;transition:width .4s"></span></span>';
-            })()) +
-        (inst.degraded
-          ? '<button class="instance-relaunch" data-model="' + self.esc(inst.model) + '">RELAUNCH</button>'
-          : '') +
-        // Not only in a failure note. Clearing the compiled-kernel cache is
-        // ordinary maintenance — it is the first thing to try after any
-        // wrong-output or CUDA-fault report — and it was reachable only from
-        // an error message whose wording had to match a regex. Every node the
-        // instance runs on, because the kernels are compiled per node.
-        '<button class="instance-cache-clear btn-ghost server-btn-sm" data-nodes="' +
-          self.esc((inst.nodes || []).join(',')) + '">CLEAR KERNEL CACHE</button>' +
-        '<button class="instance-delete" data-model="' + self.esc(inst.model) + '">UNLOAD</button>' +
+        '<div class="instance-head">' +
+        '<span class="instance-model" title="' + self.esc(inst.model) + '">' +
+          self.esc(inst.model) + '</span>' +
+        '<span class="instance-state ' + state.cls + '">' + self.esc(state.label) +
+          '</span>' +
         '</div>' +
-        '</div>';
+        '<div class="instance-footer">' +
+        '<button class="btn-ghost server-btn-sm" data-details="' +
+          self.esc(inst.model) + '">DETAILS</button>' +
+        '<button class="instance-delete" data-model="' + self.esc(inst.model) +
+          '">UNLOAD</button>' +
+        '</div></div>';
     }).join('');
 
-    container.querySelectorAll('[data-assist]').forEach(function (btn) {
+    container.querySelectorAll('[data-details]').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        self.openInstanceDetails(btn.getAttribute('data-details'));
+      });
+    });
+    container.querySelectorAll('.instance-delete').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        self.deleteInstance(btn.dataset.model);
+      });
+    });
+
+    // Keep an open dialog current: a load's phases move, the assistant
+    // answers late, and a dialog frozen at the moment it was opened would be
+    // the one place in the UI that lies.
+    this._instanceCache = {};
+    instances.forEach(function (inst) { self._instanceCache[inst.model] = inst; });
+    if (this._detailsFor && this._instanceCache[this._detailsFor]) {
+      this.renderInstanceDetails(this._instanceCache[this._detailsFor]);
+    }
+  },
+
+  // One word and one colour. The phase bar belongs to a load in progress;
+  // everything else is a steady state.
+  instanceState(inst, phase) {
+    if (inst.degraded) return { label: 'DEGRADED', cls: 'degraded' };
+    if (phase === 'failed') return { label: 'FAILED', cls: 'failed' };
+    if (inst.status === 'READY') return { label: 'READY', cls: 'ready' };
+    // Reached ready, but not answering any more: it stopped after it had
+    // served. Drawing the phase here painted a full green bar labelled with
+    // whatever the load was last doing — "SIZING THE KV CACHE · 100%" on a
+    // model that had died — which reads as progress instead of as loss.
+    if (phase === 'ready') return { label: 'STOPPED ANSWERING', cls: 'stopped' };
+    var info = (INSTANCE_PHASE_INFO[phase] || ['starting', 10]);
+    return { label: 'LOADING · ' + info[1] + '%', cls: 'loading' };
+  },
+
+  openInstanceDetails(model) {
+    this._detailsFor = model;
+    var inst = (this._instanceCache || {})[model];
+    if (inst) this.renderInstanceDetails(inst);
+  },
+
+  closeInstanceDetails() {
+    this._detailsFor = null;
+    var modal = document.getElementById('instance-detail-modal');
+    if (modal) modal.remove();
+  },
+
+  renderInstanceDetails(inst) {
+    var self = this;
+    var phase = inst.instPhase || '';
+    var error = inst.instError || '';
+    var state = this.instanceState(inst, phase);
+    var nodes = (inst.nodes || []).map(function (n) { return self.esc(n); })
+      .join(', ') || 'this node';
+
+    var rows = [
+      ['Status', state.label + (inst.instDetail ? ' — ' + inst.instDetail : '')],
+      ['Nodes', nodes],
+      ['Split', inst.badge || inst.strategy || 'single'],
+    ];
+    if (inst.api_port) rows.push(['Port', String(inst.api_port)]);
+
+    var body = '<table class="instance-detail-table">' + rows.map(function (row) {
+      return '<tr><th>' + self.esc(row[0]) + '</th><td>' + self.esc(row[1]) +
+        '</td></tr>';
+    }).join('') + '</table>';
+
+    body += this.loadTimelineBlock(inst);
+
+    if (phase === 'failed' && error) {
+      // The raw error, verbatim and first. The trigger that used to draw a
+      // second clear-cache button is kept as a sentence instead: the dialog
+      // offers the clear below in every case, so what was missing is not the
+      // button but the hint that THIS error is the kind it fixes.
+      var kernelFault =
+        /compile cache|illegal (instruction|memory access|address)|compiled kernel|cudaError/i.test(error);
+      body += '<div class="instance-detail-section"><h4>Error</h4>' +
+        '<div class="instance-failed-note">' + this.esc(error) +
+        (kernelFault
+          ? '<div class="assist-hint warn" style="margin-top:8px">This is the ' +
+            'kind of fault a stale compiled kernel produces — Clear kernel ' +
+            'cache below is the first thing to try.</div>'
+          : '') +
+        this.assistBlock(inst, error, inst.readyModels || []) + '</div></div>';
+    }
+    if (inst.degraded) {
+      body += '<div class="instance-degraded">Lost ' +
+        this.esc((inst.missingPeers || []).join(', ')) +
+        ' — this instance cannot serve until it is relaunched on the ' +
+        ((inst.survivingNodeIds || []).length || 1) + ' node(s) still online.' +
+        '</div>';
+    }
+
+    var actions = '<div class="assist-row">';
+    if (inst.degraded) {
+      actions += '<button class="instance-relaunch btn-ghost server-btn-sm" ' +
+        'data-model="' + this.esc(inst.model) + '">RELAUNCH</button>';
+    }
+    actions += '<button class="instance-cache-clear btn-ghost server-btn-sm" ' +
+      'data-nodes="' + this.esc((inst.nodes || []).join(',')) +
+      '">CLEAR KERNEL CACHE</button>' +
+      '<button class="instance-delete btn-ghost server-btn-sm" data-model="' +
+      this.esc(inst.model) + '">UNLOAD</button></div>';
+    body += '<div class="instance-detail-section">' + actions + '</div>';
+
+    var modal = document.getElementById('instance-detail-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'instance-detail-modal';
+      modal.className = 'model-detail-modal-overlay';
+      document.body.appendChild(modal);
+      modal.addEventListener('click', function (e) {
+        if (e.target === modal) self.closeInstanceDetails();
+      });
+    }
+    modal.innerHTML = '<div class="model-detail-modal">' +
+      '<div class="md-header"><div class="md-header-left">' +
+      '<div class="md-title">' + this.esc(inst.model) + '</div></div>' +
+      '<button class="md-close">×</button></div>' +
+      '<div class="md-description">' + body + '</div></div>';
+    modal.querySelector('.md-close').addEventListener('click', function () {
+      self.closeInstanceDetails();
+    });
+    this.bindInstanceActions(modal);
+  },
+
+  // The actions that used to sit on the card. Bound against whatever root
+  // they are drawn in, so the dialog and any future home for them agree.
+  bindInstanceActions(root) {
+    var self = this;
+    root.querySelectorAll('[data-assist]').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
         self.askAssistant(btn.getAttribute('data-assist'));
       });
     });
-
-    container.querySelectorAll('[data-assist-dismiss]').forEach(function (btn) {
+    root.querySelectorAll('[data-assist-dismiss]').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
         delete (self.state.assist || {})[btn.getAttribute('data-assist-dismiss')];
         self.renderInstances();
       });
     });
-
-    container.querySelectorAll('[data-clear-cache]').forEach(function (btn) {
-      btn.addEventListener('click', async function (e) {
+    root.querySelectorAll('.instance-delete').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
         e.stopPropagation();
-        if (!confirm('Clear the compiled-kernel cache?\n\nThe next launch of ' +
-                     'each model recompiles, which takes a few minutes once.')) return;
-        var label = btn.textContent;
-        btn.textContent = 'Clearing…';
-        btn.disabled = true;
-        // Node-targeted: the cache that matters is on the node that failed.
-        var nodeId = self._nodeIdForLabel(btn.getAttribute('data-clear-cache'));
-        var resp = await fetch('/api/cluster/compile-cache', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(nodeId ? { node_id: nodeId } : {}),
-        });
-        var data = await resp.json().catch(function () { return {}; });
-        btn.textContent = label;
-        btn.disabled = false;
-        if (!resp.ok || data.error) {
-          self.toast(data.error || 'Could not clear the cache', 'error');
-          return;
-        }
-        self.toast('Cleared ' + (data.freed_mb || 0) + ' MB — relaunch the model',
-                   'success');
+        self.closeInstanceDetails();
+        self.deleteInstance(btn.dataset.model);
       });
     });
-
-    container.querySelectorAll('.instance-cache-clear').forEach(function (btn) {
+    root.querySelectorAll('.instance-relaunch').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        self.relaunchInstance(btn.dataset.model, btn);
+      });
+    });
+    root.querySelectorAll('.instance-cache-clear').forEach(function (btn) {
       btn.addEventListener('click', async function (e) {
         e.stopPropagation();
+        // Every node the instance runs on: the kernels are compiled per node,
+        // and a label can carry a port the node id does not have.
         var labels = (btn.getAttribute('data-nodes') || '').split(',')
           .map(function (l) { return l.split(':')[0].trim(); })
           .filter(Boolean);
@@ -1402,21 +1477,6 @@ const AINode = {
         }
         self.toast('Cleared ' + freed + ' MB on ' + (labels.length || 1) +
                    ' node(s) — relaunch the model', 'success');
-      });
-    });
-
-    container.querySelectorAll('.instance-delete').forEach(function (btn) {
-      btn.addEventListener('click', function (e) {
-        e.stopPropagation();
-        var model = btn.dataset.model;
-        self.deleteInstance(model);
-      });
-    });
-
-    container.querySelectorAll('.instance-relaunch').forEach(function (btn) {
-      btn.addEventListener('click', function (e) {
-        e.stopPropagation();
-        self.relaunchInstance(btn.dataset.model, btn);
       });
     });
   },

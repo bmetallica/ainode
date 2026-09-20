@@ -424,8 +424,10 @@ APP_JS = (WEB / "static" / "js" / "app.js").read_text()
 class TestTheCard:
     def test_the_raw_error_is_still_rendered(self):
         # The assistant is additive. If this ever stops being true, the
-        # operator loses the only authoritative text on the card.
-        assert "'<div class=\"instance-failed-note\">' + self.esc(instError)" in APP_JS
+        # operator loses the only authoritative text about the failure. It
+        # moved to the details dialog with the rest of the detail, and it is
+        # still the first thing in that section.
+        assert "'<div class=\"instance-failed-note\">' + this.esc(error)" in APP_JS
 
     def test_no_button_without_a_loaded_model(self):
         assert "if (!helpers.length) return '';" in APP_JS
