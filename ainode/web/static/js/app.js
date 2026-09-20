@@ -924,6 +924,94 @@ const AINode = {
   //  RIGHT PANEL — INSTANCES
   // ========================================================================
 
+  // ========================================================================
+  //  ERROR ASSISTANT
+  // ========================================================================
+  // The raw error keeps its place on the card. This adds, underneath it, what
+  // a model that is ALREADY RUNNING makes of it — with the launch settings,
+  // the cluster state and a filtered engine log as context, because no public
+  // model has heard of AINode or of this hardware. Nothing is downloaded and
+  // no helper model is bundled: if nothing is serving, there is no button.
+
+  assistBlock(inst, errorText, readyModels) {
+    var model = inst.model || '';
+    this._assistErrors = this._assistErrors || {};
+    this._assistErrors[model] = errorText;
+    this._assistNodes = this._assistNodes || {};
+    this._assistNodes[model] = (inst.nodes && inst.nodes[0]) || '';
+
+    var entry = (this.state.assist || {})[model];
+    var helpers = (readyModels || []).filter(function (m) { return m !== model; });
+
+    if (!entry) {
+      if (!helpers.length) return '';
+      return '<div class="assist-row">' +
+        '<button class="btn-ghost server-btn-sm" data-assist="' + this.esc(model) +
+        '" title="Sends this error plus the launch settings, the cluster state ' +
+        'and the filtered engine log to a model that is already running.">' +
+        'EXPLAIN THIS ERROR</button>' +
+        '<span class="assist-hint">asks ' + this.esc(helpers[0]) + '</span></div>';
+    }
+    if (entry.status === 'loading') {
+      return '<div class="assist-row"><span class="assist-hint">Asking ' +
+        this.esc(entry.helper || 'a loaded model') + '…</span></div>';
+    }
+    if (entry.status === 'error') {
+      return '<div class="assist-row"><span class="assist-hint warn">' +
+        this.esc(entry.error) + '</span>' +
+        '<button class="btn-ghost server-btn-sm" data-assist="' + this.esc(model) +
+        '">TRY AGAIN</button></div>';
+    }
+    return '<div class="assist-answer">' +
+      '<div class="assist-caption">Suggested by ' + this.esc(entry.helper) +
+      ' — it was given this error, the launch settings, the state of every ' +
+      'node and ' + (entry.logLines || 0) + ' lines of engine log. ' +
+      'It can be wrong; the error above is the record.</div>' +
+      '<div class="assist-text">' + this.esc(entry.answer) + '</div>' +
+      '<div class="assist-row">' +
+      '<button class="btn-ghost server-btn-sm" data-assist="' + this.esc(model) +
+      '">ASK AGAIN</button>' +
+      '<button class="btn-ghost server-btn-sm" data-assist-dismiss="' +
+      this.esc(model) + '">DISMISS</button></div></div>';
+  },
+
+  async askAssistant(model) {
+    if (!model) return;
+    this.state.assist = this.state.assist || {};
+    this.state.assist[model] = { status: 'loading' };
+    this.renderInstances();
+    var nodeLabel = (this._assistNodes || {})[model] || '';
+    var body = {
+      model: model,
+      node_id: this._nodeIdForLabel(nodeLabel),
+      error: (this._assistErrors || {})[model] || '',
+    };
+    try {
+      var resp = await fetch('/api/assist/diagnose', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      var data = await resp.json().catch(function () { return {}; });
+      if (!resp.ok || data.error) {
+        this.state.assist[model] = {
+          status: 'error',
+          error: data.error || ('the assistant answered ' + resp.status),
+        };
+      } else {
+        this.state.assist[model] = {
+          status: 'done',
+          answer: data.answer || '',
+          helper: data.helper_model || '',
+          logLines: (data.context_sent || {}).log_lines || 0,
+        };
+      }
+    } catch (err) {
+      this.state.assist[model] = { status: 'error', error: err.message };
+    }
+    this.renderInstances();
+  },
+
   renderInstances() {
     var container = document.getElementById('instances-list');
     if (!container) return;
@@ -1097,6 +1185,14 @@ const AINode = {
       return;
     }
 
+    // Who could explain a failure: any OTHER model that is answering right
+    // now. No model loaded means no assistant and no button — AINode ships no
+    // helper model of its own, and a cluster whose models all failed to start
+    // is exactly the case where a bundled one would have failed too.
+    var readyModels = instances.filter(function (i) {
+      return i.status === 'READY' && i.model;
+    }).map(function (i) { return i.model; });
+
     container.innerHTML = instances.map(function (inst, idx) {
       var nodeList = inst.nodes.map(function (n) { return self.esc(n); }).join(', ');
       var badgeClass = inst.degraded ? 'degraded'
@@ -1118,6 +1214,10 @@ const AINode = {
       var instDetail = hasOwnState ? (inst.detail || '') : loadDetail;
       var failNote = (instPhase === 'failed' && instError)
         ? '<div class="instance-failed-note">' + self.esc(instError) +
+          // The raw error above is never replaced or rewritten. What a model
+          // says about it goes underneath, attributed, and only when another
+          // model is actually there to ask.
+          self.assistBlock(inst, instError, readyModels) +
           // The one repair the message asks for, as a button. Telling someone
           // to run a docker command is the opposite of what this panel is for.
           // "illegal memory access" was missing, and that is the one this
@@ -1182,6 +1282,21 @@ const AINode = {
         '</div>' +
         '</div>';
     }).join('');
+
+    container.querySelectorAll('[data-assist]').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        self.askAssistant(btn.getAttribute('data-assist'));
+      });
+    });
+
+    container.querySelectorAll('[data-assist-dismiss]').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        delete (self.state.assist || {})[btn.getAttribute('data-assist-dismiss')];
+        self.renderInstances();
+      });
+    });
 
     container.querySelectorAll('[data-clear-cache]').forEach(function (btn) {
       btn.addEventListener('click', async function (e) {
