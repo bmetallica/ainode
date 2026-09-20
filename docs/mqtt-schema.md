@@ -15,13 +15,24 @@ voll ist.
 ## 1. Aufbau der Topics
 
 ```
-<prefix>/<node_id>/system
-<prefix>/<node_id>/gpu
-<prefix>/<node_id>/models
-<prefix>/cluster
-<prefix>/<node_id>/logs/ainode
-<prefix>/<node_id>/logs/vllm/<modell>
+<prefix>/<node_id>/status              online / offline  (retained, Last Will)
+<prefix>/<node_id>/system              CPU, Speicher, Platte, Netz, Temperaturen
+<prefix>/<node_id>/gpu                 Auslastung, Speicher, Temperatur
+<prefix>/<node_id>/fabric              RoCE-Links: Durchsatz und Fehler
+<prefix>/<node_id>/models              was geladen ist, und wie es benutzt wird
+<prefix>/<node_id>/engine/<modell>     was die Engine selbst meldet
+<prefix>/<node_id>/safety              der Host-Speicherwächter
+<prefix>/<node_id>/transfers           laufende Downloads und Spiegelungen
+<prefix>/cluster                       die Flottensicht (nur Head)
+<prefix>/<node_id>/logs/ainode         das Log des Orchestrators
+<prefix>/<node_id>/logs/vllm/<modell>  das Log jeder Engine-Instanz
+<prefix>/<node_id>/events/launch       ein Ladevorgang ist fertig (Ereignis)
 ```
+
+Manche Topics erscheinen nur, wenn es etwas zu sagen gibt: `gpu` fehlt ohne
+NVIDIA-Treiber, `fabric` ohne RDMA-Karte, `safety` ohne Speicherwächter,
+`transfers` wenn gerade nichts überträgt, und `engine/<modell>` erst, sobald
+die Instanz antwortet. Ein leeres Topic im Takt wäre Rauschen.
 
 `<prefix>` ist frei wählbar (Settings → Monitoring, Vorgabe `ainode`).
 `<node_id>` ist die Knoten-ID aus `config.json`, nicht der Hostname.
@@ -44,10 +55,13 @@ Alle Nutzlasten sind **ein JSON-Objekt pro Nachricht**, UTF-8.
 ### Abonnieren
 
 ```bash
-mosquitto_sub -h <broker> -t 'ainode/#' -v          # alles
-mosquitto_sub -h <broker> -t 'ainode/+/gpu' -v      # GPU aller Knoten
-mosquitto_sub -h <broker> -t 'ainode/+/logs/#' -v   # alle Logs
-mosquitto_sub -h <broker> -t 'ainode/cluster' -v    # nur die Flottensicht
+mosquitto_sub -h <broker> -t 'ainode/#' -v            # alles
+mosquitto_sub -h <broker> -t 'ainode/+/status' -v     # wer lebt
+mosquitto_sub -h <broker> -t 'ainode/+/gpu' -v        # GPU aller Knoten
+mosquitto_sub -h <broker> -t 'ainode/+/engine/#' -v   # alle Engines
+mosquitto_sub -h <broker> -t 'ainode/+/logs/#' -v     # alle Logs
+mosquitto_sub -h <broker> -t 'ainode/+/events/#' -v   # nur Ereignisse
+mosquitto_sub -h <broker> -t 'ainode/cluster' -v      # nur die Flottensicht
 ```
 
 ### Takt, QoS, Retain
@@ -79,7 +93,36 @@ auswertbar ist:
 
 ---
 
-## 3. `<prefix>/<node_id>/system`
+## 3. `<prefix>/<node_id>/status` — lebt dieser Knoten?
+
+```json
+{ "node_id": "spark-1", "node_name": "SPARK1",
+  "status": "online", "timestamp": 1789935612.233 }
+```
+
+Zwei Nachrichten, beide **retained**:
+
+* beim Verbinden `online`;
+* `offline`, sobald die Verbindung abreißt — und zwar veröffentlicht vom
+  **Broker**, nicht vom Knoten. Das ist ein *Last Will*: der Broker hält die
+  Nachricht seit dem Verbindungsaufbau bereit und sendet sie, wenn die
+  Verbindung wegfällt, egal wie — abgeschossener Prozess, gezogenes Kabel,
+  eingefrorener Knoten. Auf dieser Seite muss dafür nichts mehr laufen, und
+  genau darin liegt der Sinn.
+
+Ein geplantes Herunterfahren sendet sein `offline` selbst, bevor es die
+Verbindung schließt. Beides heißt „offline"; nur eines davon ist ein Grund,
+nachts aufzustehen — wer das unterscheiden will, achtet darauf, ob kurz
+danach wieder ein `online` kommt.
+
+> **Das ist die richtige Grundlage für „Knoten weg"**, nicht das Ausbleiben
+> von `system`-Nachrichten. Mit `retain` sieht die letzte Messung eines vor
+> einer Stunde gestorbenen Knotens nämlich genauso frisch aus wie die eines
+> lebenden.
+
+---
+
+## 4. `<prefix>/<node_id>/system`
 
 Gesundheit des Knotens. Gemessen mit psutil; alles, was diese Plattform nicht
 liefert, fehlt.
@@ -121,7 +164,84 @@ liefert, fehlt.
 
 ---
 
-## 4. `<prefix>/<node_id>/gpu`
+## 5. `<prefix>/<node_id>/fabric` — die RoCE-Links
+
+Das Topic, das es gibt, weil `system.network` für RDMA **null** meldet: RDMA
+schreibt direkt aus einer HCA in den Speicher der anderen, der Kernel-Stack
+sieht kein einziges Paket, und `/proc/net/dev` zählt nur, was der Stack
+behandelt hat. Auf einem Knoten, der nichts als RDMA macht, ist das nichts.
+
+Ein Eintrag pro Port, Schlüssel ist `<hca>:<port>`:
+
+```json
+{
+  "node_id": "spark-1", "node_name": "SPARK1",
+  "version": "0.6.0", "timestamp": 1789935612.233,
+  "ports": {
+    "rocep1s0:1": {
+      "hca": "rocep1s0", "port": "1",
+      "state": "ACTIVE", "phys_state": "LinkUp",
+      "rate": "400 Gb/sec (4X NDR)", "link_gbit": 400.0,
+      "tx_bytes": 8130947072, "rx_bytes": 7714402304,
+      "tx_packets": 19203441, "rx_packets": 18855012,
+      "tx_mbit_s": 18422.1, "rx_mbit_s": 17801.4,
+      "tx_percent": 4.6, "rx_percent": 4.5,
+      "errors": { "link_downed": 0, "port_rcv_errors": 0, "symbol_error": 0 },
+      "errors_total": 0, "errors_new": 0
+    }
+  }
+}
+```
+
+| Feld | Bedeutung |
+|---|---|
+| `tx_bytes` / `rx_bytes` | **Bereits in Bytes.** Der Kernel zählt in `port_xmit_data` 32-Bit-**Wörter**; AINode multipliziert einmal mit 4, damit es flussabwärts niemand vergessen kann. Wer selbst nachrechnet, muss daran denken |
+| `tx_mbit_s` / `rx_mbit_s` | Rate zwischen zwei Messungen. Fehlt bei der **ersten** Messung — eine Rate braucht zwei Werte, und eine aus einem einzigen erfundene wäre eine Schätzung im Gewand einer Messung |
+| `tx_percent` / `rx_percent` | Anteil am Link, **pro Richtung**. Nicht addiert: ein Link kann in eine Richtung gesättigt und in die andere leer sein, und eine Summe versteckt genau das |
+| `state`, `phys_state` | `ACTIVE`/`LinkUp` im Normalfall. Alles andere heißt: das Kabel ansehen |
+| `errors` | die einzelnen Fehlerzähler, soweit die Firmware sie führt |
+| `errors_total` | ihre Summe — **eine** Zahl zum Alarmieren, damit kein Dashboard wissen muss, welche sechs Zähler es auf welcher Firmware gibt |
+| `errors_new` | der Zuwachs seit der letzten Messung. **Das ist der Wert, auf den du alarmierst:** ein Zähler, der seit dem Aufbau der Maschine auf 3 steht, ist kein Fehler, der gerade passiert |
+
+> **Auf einem switchlosen Ring sind die Fehlerzähler wichtiger als der
+> Durchsatz.** Jeder Link ist ein einzelnes Kabel zu einem Nachbarn, es gibt
+> keine Redundanz, hinter der sich ein sterbendes Kabel verstecken könnte. Es
+> zeigt sich hier, lange bevor NCCL mitten in einem Lauf aufgibt.
+
+---
+
+## 6. `<prefix>/<node_id>/safety` — der Speicherwächter
+
+```json
+{
+  "node_id": "spark-1", "node_name": "SPARK1",
+  "version": "0.6.0", "timestamp": 1789935612.233,
+  "memory_guard_enabled": true,
+  "host_available_mb": 58121, "host_total_mb": 124928,
+  "warn_mb": 8192, "critical_mb": 4096,
+  "blocking_launches": false, "below_critical": false,
+  "stops_total": 0
+}
+```
+
+| Feld | Bedeutung |
+|---|---|
+| `host_available_mb` | `MemAvailable` des **Hosts**, direkt aus `/proc/meminfo` |
+| `warn_mb` / `critical_mb` | die **durchgesetzten** Grenzen, nicht die eingestellten. Die Reserve wird gegen die Größe der Maschine gedeckelt (15 % des Gesamtspeichers), und ein Alarm auf einer Zahl, die der Wächter gar nicht benutzt, geht zum falschen Zeitpunkt los |
+| `blocking_launches` | unter der Warngrenze: neue Modelle werden abgelehnt |
+| `below_critical` | unter der kritischen Grenze: beim **zweiten** Mal in Folge wird die zuletzt gestartete Engine abgeschossen |
+| `stops_total` | wie viele Engines dieser Prozess bisher beenden musste |
+| `last_stop` | die letzte davon: `at`, `model`, `reason`, `available_mb`, `critical_mb`. Fehlt, wenn es keine gab |
+| `host_memory_readable` | nur vorhanden und dann `false`, wenn `/proc/meminfo` nicht lesbar war. Der Wächter greift dann **nicht** ein — er ist ein Netz, kein Tor, das bei Unkenntnis schließt |
+
+**Dieses Topic wird außer der Reihe gesendet, wenn der Wächter zuschlägt.**
+Er misst alle zwei Sekunden, die Telemetrie sendet alle dreißig — das eine
+Ereignis, auf das es ankommt, wäre sonst eine halbe Minute zu spät, oder gar
+nicht, wenn der Knoten dazwischen untergeht.
+
+---
+
+## 7. `<prefix>/<node_id>/gpu`
 
 ```json
 {
@@ -145,7 +265,7 @@ GPU) — statt eine Nachricht mit einem `error`-Feld zu senden.
 
 ---
 
-## 5. `<prefix>/<node_id>/models`
+## 8. `<prefix>/<node_id>/models`
 
 Was dieser Knoten bedient und wie er benutzt wird.
 
@@ -162,6 +282,7 @@ Was dieser Knoten bedient und wie er benutzt wird.
   "embeddings": ["nomic-ai/nomic-embed-text-v1.5"],
   "requests_total": 1842,
   "errors_total": 3,
+  "latency_ms": { "p50": 1180.0, "p95": 4320.5, "p99": 9800.2 },
   "uptime_seconds": 84021.4,
   "per_model": {
     "demon-zombie/MiniMax-M2.7-AWQ-4bit": {
@@ -198,12 +319,86 @@ eigenen Port und erscheinen deshalb nicht in `loaded`.
 | `tokens_generated` | fehlt, wenn die Route keine Tokenzahl meldet |
 | `avg_tokens_per_second` | Tokens geteilt durch die Zeit, die **tatsächlich mit Generieren** verbracht wurde — nicht durch die Laufzeit. Ein Modell, das in einer Stunde zehn Anfragen bedient hat, ist nicht langsam, sondern unbeschäftigt; durch die Laufzeit geteilt behauptet die Zahl das Gegenteil |
 
+`latency_ms` sind die Perzentile über alle Anfragen dieses Knotens. Fehlt,
+solange nichts gemessen wurde. Ein Mittelwert würde den Schwanz verstecken,
+und der Schwanz ist das, was ein Nutzer merkt.
+
 `uptime_seconds` ist hier die Laufzeit des AINode-Prozesses, im Unterschied zu
 `system.uptime_seconds` (Systemlaufzeit).
 
 ---
 
-## 6. `<prefix>/cluster` — nur vom Head
+## 9. `<prefix>/<node_id>/engine/<modell>` — was die Engine selbst meldet
+
+Alles in `models` ist **am Proxy** gemessen: was durch AINode ging. Das
+beschreibt den Verkehr, nicht die Engine. Die Fragen, die man in einer
+geschäftigen Stunde wirklich hat, beantwortet vLLM selbst — auf seinem eigenen
+Prometheus-Endpunkt, je Instanz. AINode liest den aus und destilliert ihn.
+
+```json
+{
+  "node_id": "spark-1", "node_name": "SPARK1",
+  "version": "0.6.0", "timestamp": 1789935612.233,
+  "instance": "demon-zombie_MiniMax-M2.7-AWQ-4bit",
+  "kv_cache_percent": 81.37,
+  "requests_running": 7, "requests_waiting": 3, "requests_swapped": 0,
+  "requests_total_in_flight": 10,
+  "preemptions_total": 42,
+  "prompt_tokens_total": 1000000, "generation_tokens_total": 412093,
+  "time_to_first_token_s": 0.3, "time_per_output_token_s": 0.0102,
+  "e2e_latency_s": 2.1, "queue_time_s": 0.04,
+  "spec_accepted_tokens_total": 300, "spec_draft_tokens_total": 400,
+  "spec_acceptance_rate": 0.75
+}
+```
+
+| Feld | Warum es zählt |
+|---|---|
+| `kv_cache_percent` | Wie voll der KV-Cache ist. Die Zahl, die entscheidet, wie viele Leute das Modell gleichzeitig benutzen können — und die bei GLM hier vollgelaufen ist |
+| `preemptions_total` | Anfragen, die aus dem Cache verdrängt und später neu gerechnet wurden. **Ein steigender Zähler ist die Frühwarnung, bevor „das Modell ist plötzlich langsam"** |
+| `requests_running` / `_waiting` | Warteschlangentiefe — ob `--max-num-seqs` auch nur ungefähr passt |
+| `requests_swapped` | Anfragen, die auf den Host ausgelagert wurden. Fehlt bei Builds, die nicht auslagern |
+| `requests_total_in_flight` | die Summe, als eine Zahl für „gerade über der Kapazität" |
+| `time_to_first_token_s` | Prefill-Kosten, getrennt vom Decode. Eine prefill- und eine decodegebundene Last sehen in Tokens pro Sekunde gleich aus und brauchen entgegengesetzte Maßnahmen |
+| `time_per_output_token_s` | der Kehrwert der Decode-Geschwindigkeit, wie die Engine sie misst |
+| `e2e_latency_s`, `queue_time_s` | Gesamtdauer und Wartezeit, jeweils als Mittelwert |
+| `spec_acceptance_rate` | ob sich ein spekulativer Drafter lohnt. Unter etwa 0,5 kostet er mehr, als er spart |
+
+Die Zeitfelder sind **Mittelwerte** (`sum/count` des Histogramms), keine
+Perzentile: ein vollständiger Bucket-Satz sind Dutzende Zeilen pro Histogramm
+und ohne ein Prometheus dahinter unbenutzbar.
+
+Feldnamen wandern zwischen vLLM-Versionen; AINode kennt je Feld mehrere
+Schreibweisen und lässt weg, was diese Version nicht meldet. Eine Instanz, die
+noch lädt oder gestorben ist, hat keinen `/metrics`-Endpunkt und bekommt
+deshalb kein Topic — beides steht ohnehin in `models` und im Log.
+
+---
+
+## 10. `<prefix>/<node_id>/transfers` — was gerade kopiert wird
+
+```json
+{
+  "node_id": "spark-1", "node_name": "SPARK1",
+  "version": "0.6.0", "timestamp": 1789935612.233,
+  "downloads": [
+    { "model": "sparkarena/Minimax-M3-v0-NVFP4-REAP50",
+      "status": "downloading", "percent": 41.5,
+      "downloaded_bytes": 53500000000, "total_bytes": 128900000000 }
+  ],
+  "mirror": { "running": true, "model": "org/big", "done": 1, "total": 3 }
+}
+```
+
+Nur vorhanden, solange etwas läuft. `downloads` listet Jobs im Status
+`downloading`, `starting` oder `queued`; `mirror` erscheint während eines
+Spiegellaufs zu den Peers. Ein 200-GB-Checkpoint braucht Stunden, und ein bei
+40 % über Nacht stehengebliebener Transfer ist genau das, wofür es Telemetrie
+gibt.
+
+---
+
+## 11. `<prefix>/cluster` — nur vom Head
 
 ```json
 {
@@ -212,11 +407,13 @@ eigenen Port und erscheinen deshalb nicht in `loaded`.
   "nodes_total": 3,
   "nodes_online": 3,
   "vram_total_gb": 366.0,
+  "versions_agree": true,
   "nodes": [
     { "node_id": "spark-1", "node_name": "SPARK1", "status": "serving",
       "model": "demon-zombie/MiniMax-M2.7-AWQ-4bit", "gpu_memory_gb": 122.0,
       "gpu_memory_used_mb": 64110, "gpu_memory_total_mb": 124928,
       "gpu_memory_used_percent": 51.3, "gpu_utilization_percent": 87.0,
+      "version": "0.6.0",
       "instances": [ { "model": "…", "api_port": 8000, "status": "serving" } ] }
   ]
 }
@@ -231,6 +428,9 @@ eigenen Port und erscheinen deshalb nicht in `loaded`.
 | `nodes[].model` | das primäre Modell des Knotens; `""` wenn keines |
 | `nodes[].gpu_memory_*` | fehlen, wenn der Knoten keine Gesamtgröße meldet |
 | `nodes[].instances[]` | gestapelte Instanzen; fehlt, wenn der Knoten nur sein primäres Modell hat |
+| `nodes[].version` | der Build dieses Knotens; fehlt bei einem Peer, der zu alt ist, um ihn mitzuschicken |
+| `versions_agree` | ob die Flotte sich über ihren Build einig ist. **`false` ist ein Alarm:** eugrs Launcher vergleicht die Engine-Images der Knoten und bricht einen verteilten Start ab, wenn sie abweichen — Minuten nach dem Start. Ein Peer, der gar keine Version meldet, zählt **nicht** als Uneinigkeit; er sagt nur nichts, und daraus einen Konflikt zu erfinden hieße, wegen eines längst erledigten Updates zu alarmieren |
+| `versions` | nur wenn sie sich uneinig sind: die gefundenen Versionen |
 
 Diese Werte stammen aus den UDP-Ankündigungen der Knoten, nicht aus einer
 Abfrage — ein Knoten, der gerade nicht sendet, trägt hier seinen letzten
@@ -238,7 +438,45 @@ Stand. `status` sagt, wie alt der ist.
 
 ---
 
-## 7. Logs
+## 12. `<prefix>/<node_id>/events/launch` — ein Ladevorgang ist fertig
+
+Das einzige Topic, das ein **Ereignis** trägt statt eines Zustands. Nicht
+retained: eine behaltene Nachricht würde bei jeder Wiederverbindung eines
+Dashboards erneut ausgeliefert und einen Ladevorgang von letzter Woche als
+Neuigkeit melden.
+
+```json
+{
+  "node_id": "spark-1", "node_name": "SPARK1",
+  "version": "0.6.0", "timestamp": 1789935612.233,
+  "model": "Qwen/Qwen3.8",
+  "outcome": "ready",
+  "seconds": 292.0,
+  "timeline": [
+    { "phase": "starting", "seconds": 38.0 },
+    { "phase": "loading_weights", "seconds": 71.0 },
+    { "phase": "profiling", "seconds": 183.0 }
+  ]
+}
+```
+
+| Feld | Bedeutung |
+|---|---|
+| `outcome` | `ready` oder `failed` |
+| `seconds` | Gesamtdauer. Eigenes Feld, damit ein Dashboard für die eine Zahl, nach der alle fragen, keine Liste summieren muss |
+| `timeline` | wohin die Zeit ging, Phase für Phase — `starting` ist Container starten und torch importieren, `profiling` ist Kernel kompilieren und den KV-Cache bemessen |
+| `error` | nur bei `failed`: der Grund, auf 1000 Zeichen gekürzt. Ein Ereignis ist kein Log; den Rest trägt das Log-Topic |
+
+Das Ereignis wird beim nächsten Sendetakt veröffentlicht, nicht in der
+Sekunde des Abschlusses. Bei einem Ladevorgang von Minuten ist das ein
+Rundungsfehler — und der Preis dafür, dass es **jeden** Start erfasst: über
+die API, über ein angewandtes Profil und über das Wiederherstellen nach einem
+Neustart. Der Speicherwächter ist der umgekehrte Fall; dort *ist* die
+Zeitnähe die Nachricht, deshalb sendet er außer der Reihe.
+
+---
+
+## 13. Logs
 
 Standardmäßig **aus**. Einschalten in Settings → Monitoring → *forward log
 lines*. Dort stehen auch das Zeilenlimit pro Nachricht und der Mindest-Level
@@ -307,39 +545,79 @@ nicht.
 
 ---
 
-## 8. Rezepte
+## 14. Rezepte
 
 ### Ein Knoten ist voll, bevor es kracht
 
-Auf GB10 teilen sich GPU und Betriebssystem einen Speicher, also reicht ein
-Alarm:
-
 ```
-ainode/+/system  →  memory.available_mb < 8192    Warnung
-                    memory.available_mb < 4096    der Wächter greift jetzt ein
+ainode/+/safety  →  blocking_launches == true     der Wächter lehnt Starts ab
+                    below_critical == true        er ist im Begriff einzugreifen
+                    stops_total steigt            er hat eine Engine beendet
 ```
 
-Dieselben Grenzen setzt der Host-Speicherwächter durch (Settings → Memory
-Guard). Ein Alarm darauf sagt dir dasselbe wie das Log — nur früher.
+Besser als ein eigener Schwellwert auf `system.memory`, weil hier die Grenzen
+stehen, die der Wächter **wirklich** durchsetzt — du müsstest sonst deine
+Alarmschwelle jedes Mal nachziehen, wenn du die Reserve verstellst. Und
+`stops_total` kommt außer der Reihe, also in Sekunden statt beim nächsten
+Takt.
+
+### Ein Kabel im Ring wird schlecht
+
+```
+ainode/+/fabric  →  ports.*.errors_new > 0        ein Kabel ansehen
+                    ports.*.state != "ACTIVE"     der Link ist unten
+```
+
+`errors_new`, nicht `errors_total`: ein Zähler, der seit dem Aufbau der
+Maschine auf 3 steht, ist kein Fehler, der gerade passiert.
+
+### Ein Modell lädt nicht durch
 
 ### Ein Modell lädt nicht durch
 
 ```
-ainode/+/models  →  loaded[].load_phase bleibt > 10 min ungleich "ready"
-                    loaded[].status == "failed"
+ainode/+/events/launch  →  outcome == "failed"
+ainode/+/models         →  loaded[].load_phase bleibt > 10 min ungleich "ready"
 ```
 
-Der zugehörige Grund steht auf `ainode/<node>/logs/vllm/<modell>`.
+Das Ereignis bringt den Grund gleich mit (`error`) und die Aufschlüsselung,
+wohin die Zeit ging (`timeline`). Der vollständige Text steht auf
+`ainode/<node>/logs/vllm/<modell>`.
+
+### Ein Modell wird langsam, und du willst wissen warum
+
+```
+ainode/+/engine/#  →  kv_cache_percent > 90        der Cache ist die Grenze
+                      preemptions_total steigt     Anfragen werden verdrängt
+                      requests_waiting > 0         die Warteschlange staut
+                      time_to_first_token_s steigt  es ist der Prefill, nicht das Decode
+```
+
+Diese vier unterscheiden die Fälle, die in „Tokens pro Sekunde" identisch
+aussehen und entgegengesetzte Maßnahmen brauchen: mehr Cache (weniger
+Kontext, `--kv-cache-dtype fp8`, ein Knoten mehr) gegen weniger Parallelität
+(`--max-num-seqs`).
 
 ### Ein Knoten ist weg
 
 ```
-ainode/cluster   →  nodes_online < nodes_total
+ainode/+/status  →  status == "offline"
 ```
 
-Zuverlässiger als das Ausbleiben von `ainode/<node>/system`, weil ein
-verschwundener Knoten ja gerade nichts mehr sendet — und mit `retain` sähe
-seine letzte Nachricht auf ewig frisch aus.
+Die richtige Quelle: das kommt vom **Broker** per Last Will, nicht vom toten
+Knoten. Ohne Timeout in deinem Dashboard, und ohne die Retain-Falle — die
+letzte Messung eines vor einer Stunde gestorbenen Knotens sähe sonst genauso
+frisch aus wie die eines lebenden. `ainode/cluster` mit
+`nodes_online < nodes_total` ist die Gegenprobe aus Sicht des Heads.
+
+### Die Flotte ist uneinig über ihren Build
+
+```
+ainode/cluster   →  versions_agree == false
+```
+
+Ein verteilter Start bricht daran ab, Minuten nachdem er angefangen hat. Hier
+siehst du es vorher.
 
 ### Durchsatz je Modell
 
@@ -352,17 +630,24 @@ Nicht mit `nodes` multiplizieren: der Wert ist bereits der der Instanz, egal
 
 ---
 
-## 9. Wo das im Code steht
+## 15. Wo das im Code steht
 
 | Thema | Datei |
 |---|---|
-| Topics, Verbindung, Sendeschleife | `ainode/telemetry/mqtt.py` |
-| Nutzlasten `system`/`gpu`/`models`/`cluster` | `ainode/telemetry/payloads.py` |
+| Topics, Verbindung, Sendeschleife, Last Will, Ereignisse | `ainode/telemetry/mqtt.py` |
+| Nutzlasten `system`/`gpu`/`models`/`cluster`/`safety`/`fabric`/`transfers` | `ainode/telemetry/payloads.py` |
+| Engine-Metriken: Prometheus lesen und destillieren | `ainode/telemetry/engine_metrics.py` |
 | Logs: Puffer, Tail, Nutzlasten | `ainode/telemetry/logs.py` |
+| Launch-Ereignisse | `ainode/telemetry/events.py` |
 | Einstellungen und API | `ainode/telemetry/api_routes.py` |
 | Systemmessung | `ainode/metrics/system.py` |
+| RoCE-Zähler | `ainode/metrics/fabric.py` |
 | GPU- und Anfragemessung | `ainode/metrics/collector.py` |
+| Der Speicherwächter selbst | `ainode/safety/memory_guard.py` |
 
-Tests, die das Schema festhalten: `tests/test_telemetry.py` und
-`tests/test_mqtt_logs.py`. Ändert sich ein Feld, ändert sich dort ein Test —
-und dann gehört diese Datei mit angepasst.
+Tests, die das Schema festhalten: `tests/test_telemetry.py`,
+`tests/test_mqtt_logs.py`, `tests/test_fabric_metrics.py`,
+`tests/test_engine_metrics.py`, `tests/test_mqtt_availability.py`,
+`tests/test_mqtt_events_and_extras.py` — und `tests/test_mqtt_schema_doc.py`,
+das **dieses Dokument** gegen die Payload-Bauer prüft. Ändert sich ein Feld,
+fällt dort ein Test, und dann gehört diese Datei mit angepasst.
