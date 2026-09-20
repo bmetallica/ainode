@@ -654,11 +654,17 @@ interval), with *Test connection*, *Publish now* and a payload preview. The
 password is kept in the secrets store, not in `config.json`.
 
 ```
-<prefix>/<node-id>/system           CPU, load, memory, disk, per-interface Mbit/s and % of link, temperatures
-<prefix>/<node-id>/gpu              utilization, memory, temperature
-<prefix>/<node-id>/models           what is loaded, requests, errors, per-model average speed
-<prefix>/cluster                    head only: nodes, status, aggregate VRAM
-<prefix>/<node-id>/logs/ainode      the orchestrator's own log (opt-in)
+<prefix>/<node-id>/status            online / offline — retained, set by the broker's last will
+<prefix>/<node-id>/system            CPU, load, memory, disk, per-interface Mbit/s and % of link, temperatures
+<prefix>/<node-id>/gpu               utilization, memory, temperature
+<prefix>/<node-id>/fabric            RoCE links: throughput and error counters, which /proc/net/dev cannot see
+<prefix>/<node-id>/models            what is loaded, requests, errors, latency percentiles, per-model speed
+<prefix>/<node-id>/engine/<model>    from vLLM itself: KV cache, preemptions, queue depth, TTFT
+<prefix>/<node-id>/safety            the host memory guard — and an out-of-band message when it stops an engine
+<prefix>/<node-id>/transfers         downloads and mirror runs in flight
+<prefix>/cluster                     head only: nodes, status, aggregate VRAM, version agreement
+<prefix>/<node-id>/events/launch     a load finished: outcome, total, phase breakdown
+<prefix>/<node-id>/logs/ainode       the orchestrator's own log (opt-in)
 <prefix>/<node-id>/logs/vllm/<model> each engine instance's log (opt-in)
 ```
 

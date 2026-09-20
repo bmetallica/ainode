@@ -16,8 +16,13 @@ DOC = (Path(__file__).resolve().parent.parent / "docs" / "mqtt-schema.md").read_
 
 class TestEveryTopicIsDocumented:
     def test_the_metric_topics(self):
-        for suffix in ("system", "gpu", "models"):
-            assert f"<prefix>/<node_id>/{suffix}" in DOC
+        for suffix in ("system", "gpu", "models", "fabric", "safety",
+                       "transfers", "status"):
+            assert f"<prefix>/<node_id>/{suffix}" in DOC, suffix
+
+    def test_the_per_instance_topics(self):
+        assert "<prefix>/<node_id>/engine/<modell>" in DOC
+        assert "<prefix>/<node_id>/events/launch" in DOC
 
     def test_the_cluster_topic_and_why_it_has_no_node(self):
         assert "<prefix>/cluster" in DOC
@@ -83,6 +88,49 @@ class TestEveryFieldIsDocumented:
             assert phase in DOC, phase
 
 
+class TestTheNewerPayloadsAreDocumented:
+    def test_the_fabric_fields(self):
+        for field in ("tx_bytes", "rx_bytes", "tx_mbit_s", "tx_percent",
+                      "errors_total", "errors_new", "phys_state", "link_gbit"):
+            assert field in DOC, field
+
+    def test_the_word_trap_is_spelled_out(self):
+        # port_xmit_data counts 32-bit words. A figure a quarter of the truth
+        # looks plausible enough to build a dashboard on.
+        assert "port_xmit_data" in DOC
+        assert "32-Bit" in DOC or "32-bit" in DOC
+
+    def test_the_safety_fields(self):
+        for field in ("memory_guard_enabled", "host_available_mb", "warn_mb",
+                      "critical_mb", "blocking_launches", "below_critical",
+                      "stops_total", "last_stop"):
+            assert field in DOC, field
+
+    def test_the_engine_fields(self):
+        from ainode.telemetry.engine_metrics import WANTED
+
+        for field, _names, _scale in WANTED:
+            assert field in DOC, field
+        for derived in ("requests_total_in_flight", "spec_acceptance_rate",
+                        "time_to_first_token_s", "e2e_latency_s"):
+            assert derived in DOC, derived
+
+    def test_the_launch_event_fields(self):
+        for field in ("outcome", "seconds", "timeline", "error"):
+            assert field in DOC, field
+
+    def test_the_transfer_fields(self):
+        for field in ("downloads", "mirror", "percent", "total_bytes"):
+            assert field in DOC, field
+
+    def test_the_version_drift_fields(self):
+        for field in ("versions_agree", "versions"):
+            assert field in DOC, field
+
+    def test_the_latency_percentiles(self):
+        assert "latency_ms" in DOC and "p95" in DOC
+
+
 class TestTheLimitsAreStated:
     def test_the_interval_bounds(self):
         from ainode.telemetry.mqtt import MAX_INTERVAL, MIN_INTERVAL
@@ -108,6 +156,17 @@ class TestTheHardwareCaveats:
         assert "GB10" in DOC
         assert "kein getrenntes VRAM" in DOC or "denselben Speicher" in DOC \
             or "derselbe" in DOC
+
+    def test_it_explains_the_last_will(self):
+        # The one mechanism that answers "is this node alive" without a
+        # timeout in every dashboard.
+        assert "Last Will" in DOC
+        assert "Broker" in DOC
+
+    def test_it_says_which_thresholds_are_enforced(self):
+        # The reserve is capped against the size of the machine; an alert on
+        # the configured number fires at the wrong moment.
+        assert "durchgesetzten" in DOC
 
     def test_it_warns_about_retain(self):
         # A retained message from a node that has gone away looks alive.
