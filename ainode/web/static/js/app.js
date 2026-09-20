@@ -6652,18 +6652,27 @@ const AINode = {
     if (!mount) return;
     var self = this;
 
-    // Fetch status + endpoints in parallel (endpoints cached)
-    var status = await this.fetchJSON('/api/server/status');
+    // Three requests that do not depend on each other, so they go at once.
+    // They used to run one after another — status (which itself probed every
+    // local instance serially), then the endpoint catalog, then the model
+    // catalog — and the page drew nothing until the last one landed.
+    var needCatalog = !this._serverState.modelsCatalog;
+    var results = await Promise.all([
+      this.fetchJSON('/api/server/status'),
+      needCatalog ? this.fetchJSON('/api/models') : Promise.resolve(null),
+    ]);
+    var status = results[0];
     this._serverState.lastStatus = status;
-    if (!this._serverState.endpoints) {
-      this._serverState.endpoints = await this.fetchJSON('/api/server/endpoints');
-    }
+    // The endpoint catalog is a constant and now travels with the status it
+    // belongs to; the separate request remains for older nodes.
+    this._serverState.endpoints = (status && status.endpoints)
+      || this._serverState.endpoints
+      || await this.fetchJSON('/api/server/endpoints');
     // Raw catalog (size_gb / local_size_gb / architecture) for MODEL INFO — the
     // loaded-model object lacks size, and this.state.catalog (live-catalog view)
     // isn't loaded here and remaps the fields.
-    if (!this._serverState.modelsCatalog) {
-      var _md = await this.fetchJSON('/api/models');
-      this._serverState.modelsCatalog = (_md && _md.models) || [];
+    if (needCatalog) {
+      this._serverState.modelsCatalog = (results[1] && results[1].models) || [];
     }
 
     var s = status || { status: 'stopped', reachable_at: [], loaded_models: [] };
