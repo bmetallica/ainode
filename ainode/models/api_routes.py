@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import aiohttp
 import json
 import logging
@@ -15,7 +16,7 @@ from typing import Optional
 
 from aiohttp import web
 
-from ainode.api.params import str_field
+from ainode.api.params import str_field, str_list_field
 from ainode.core.gpu import detect_gpu
 from ainode.models.registry import ModelManager
 
@@ -526,6 +527,13 @@ def _fetch_weights_from_a_peer(app, backend, model: str, config) -> Optional[str
         return refuse(f"could not get {model} from the head ({exc})")
 
 
+def _int_or_zero(value) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def append_solo_instance(app, model: str, gmu=None, *, overrides=None, persist: bool = True) -> dict:
     """APPEND a solo instance through the InstanceManager — the shared core of the
     /api/models/load solo path AND the startup replay. Returns a plain dict (no
@@ -947,6 +955,23 @@ async def handle_model_load(request: web.Request) -> web.Response:
     if err is not None:
         return err
 
+    # One gate, for both launch paths. Before this there were two: a ratio
+    # check that applied only to a stacked load and knew nothing about the
+    # host, and — on the distributed path — nothing at all. The distributed
+    # path is the one that took two nodes down.
+    from ainode.safety.admission import check_admission
+
+    refusal = check_admission(
+        request.app, model,
+        node_ids=str_list_field(body, "node_ids") or None,
+        strategy=strategy_str,
+        max_model_len=_int_or_zero(body.get("max_model_len")),
+        gpu_memory_utilization=gmu,
+        force=bool(body.get("force")))
+    if refusal:
+        return web.json_response({"error": refusal, "refused_by": "admission"},
+                                 status=507)
+
     overrides, gmu = apply_catalog_recipe(model, overrides, gmu)
     overrides = apply_tool_calling(model, overrides, str_field(body, "tool_calling"))
 
@@ -1008,7 +1033,9 @@ async def handle_model_load(request: web.Request) -> web.Response:
         except Exception:
             pass
         try:
-            success = engine.launch_distributed(sharding_config)
+            loop = asyncio.get_event_loop()
+            success = await loop.run_in_executor(
+                None, engine.launch_distributed, sharding_config)
         except Exception as exc:
             _clear_model_claim()
             return web.json_response({"error": f"Launch failed: {exc}"}, status=500)
@@ -1027,7 +1054,17 @@ async def handle_model_load(request: web.Request) -> web.Response:
     if config is None:
         return web.json_response({"error": "Engine not initialized"}, status=503)
 
-    result = append_solo_instance(request.app, model, gmu, overrides=overrides)
+    # In a worker thread, not here. append_solo_instance stops a container,
+    # rsyncs the weights from a peer and starts the launcher — minutes of
+    # synchronous work, and this event loop also carries the UDP announcement
+    # this node sends. Running it inline made the node stop announcing itself:
+    # the head marked it offline and it vanished from the cluster view until
+    # the load was done. Its own UI and API were unreachable for the same
+    # reason.
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None, functools.partial(append_solo_instance, request.app, model, gmu,
+                                overrides=overrides))
     if not result.get("ok"):
         return web.json_response({"error": result.get("error")},
                                  status=result.get("status", 500))
@@ -1073,7 +1110,10 @@ async def handle_model_unload(request: web.Request) -> web.Response:
         inst = manager.by_model(model)
         if inst is not None:
             try:
-                inst.backend.stop()
+                # Also off the loop: a distributed teardown is a docker stop on
+                # every peer over SSH, up to a minute each.
+                await asyncio.get_event_loop().run_in_executor(
+                    None, inst.backend.stop)
             except Exception as exc:
                 errors.append(f"instance.stop(): {exc}")
             manager.remove(inst.record.instance_id)

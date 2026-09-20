@@ -191,6 +191,21 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     cluster: ClusterState = request.app["cluster_state"]
     config: NodeConfig = request.app["config"]
 
+    # The same gate the solo path uses. This path had none at all, and it is
+    # the one that took two nodes down: it launches on machines the head
+    # cannot see the memory of, so nothing discovered the overcommit until the
+    # engines had loaded their weights and started sizing their caches.
+    from ainode.safety.admission import check_admission
+
+    refusal = check_admission(
+        request.app, model, node_ids=node_ids,
+        strategy=str(strategy_str or "auto"),
+        max_model_len=int_field(body, "max_model_len", minimum=0) or 0,
+        force=bool(body.get("force")))
+    if refusal:
+        return web.json_response({"error": refusal, "refused_by": "admission"},
+                                 status=507)
+
     if min_nodes <= 1:
         # Delegate to the single-node load path so behaviour stays
         # consistent with what the UI called before.
@@ -421,7 +436,12 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
                           api_port=port, **overrides)
     backend = get_backend(inst_config, instance_id=name_token)
     try:
-        started = backend.start_distributed()
+        # In a worker thread: start_distributed SSHes to every peer, compares
+        # engine images, mirrors the weights and forms the Ray cluster — all
+        # synchronous, all minutes. Run inline it froze the head's own event
+        # loop, which is where the UDP announcement and the whole API live.
+        started = await asyncio.get_event_loop().run_in_executor(
+            None, backend.start_distributed)
     except Exception as exc:
         logger.exception("start_distributed raised")
         return web.json_response({"error": f"Distributed launch failed: {exc}"}, status=500)

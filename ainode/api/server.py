@@ -46,6 +46,7 @@ from ainode.embeddings.api_routes import register_embedding_routes
 from ainode.placement.api_routes import register_placement_routes
 from ainode.assist.api_routes import register_assist_routes
 from ainode.planner.api_routes import register_planner_routes
+from ainode.safety.api_routes import register_safety_routes
 from ainode.profiles.api_routes import register_profile_routes
 from ainode.profiles.store import ProfileStore
 from ainode.telemetry.api_routes import register_telemetry_routes
@@ -238,6 +239,9 @@ def create_app(
     # the launch form fills itself in from it.
     register_planner_routes(app)
 
+    # The host memory guard. Registered everywhere: the nodes are what crashed.
+    register_safety_routes(app)
+
     # --- Telemetry routes ----------------------------------------------------
     register_telemetry_routes(app)
 
@@ -400,6 +404,24 @@ def _build_announcement(config: NodeConfig, engine=None) -> NodeAnnouncement:
 
 async def _on_startup(app: web.Application) -> None:
     app["client_session"] = aiohttp.ClientSession()
+
+    # Before anything else can be launched. Its own thread, deliberately: the
+    # launch path blocks this event loop for minutes, and a guard living in
+    # the loop would be deaf during exactly the window it exists to cover.
+    from ainode.safety.memory_guard import MemoryGuard
+
+    guard = MemoryGuard(
+        app,
+        warn_gb=float(getattr(app["config"], "host_memory_warn_gb", 8.0) or 8.0),
+        critical_gb=float(
+            getattr(app["config"], "host_memory_critical_gb", 4.0) or 4.0),
+        enabled=bool(getattr(app["config"], "host_memory_guard", True)),
+    )
+    app["memory_guard"] = guard
+    try:
+        guard.start()
+    except Exception:
+        logger.exception("could not start the host memory guard")
 
     # Telemetry, if it is configured. Started before the engine work below so
     # a node that fails to bring a model up still reports why it is unhappy.
@@ -724,6 +746,13 @@ async def _cluster_sync_loop(app: web.Application) -> None:
 
 
 async def _on_cleanup(app: web.Application) -> None:
+    guard = app.get("memory_guard")
+    if guard is not None:
+        try:
+            guard.stop()
+        except Exception:
+            logger.debug("could not stop the memory guard", exc_info=True)
+
     publisher = app.get("mqtt_publisher")
     if publisher is not None:
         try:
