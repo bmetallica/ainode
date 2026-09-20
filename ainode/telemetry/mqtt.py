@@ -361,6 +361,20 @@ class MqttPublisher:
                         payloads.update(log_publisher.payloads())
                     except Exception:
                         logger.debug("log payloads failed", exc_info=True)
+                # What the ENGINE reports, as opposed to what our proxy
+                # measured. Async, so it cannot go in build_payloads — and it
+                # should not: "publish now" and the settings preview would
+                # then each scrape every instance.
+                try:
+                    from ainode.telemetry.engine_metrics import collect
+                    from ainode.telemetry.payloads import node_identity
+
+                    identity = node_identity(config)
+                    for name, metrics in (await collect(self._app)).items():
+                        payloads[f"engine/{name}"] = {
+                            **identity, "instance": name, **metrics}
+                except Exception:
+                    logger.debug("engine metrics failed", exc_info=True)
                 for suffix, payload in payloads.items():
                     self._client.publish(
                         _topic(config, suffix), json.dumps(payload),
