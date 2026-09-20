@@ -10,6 +10,7 @@ Provides:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import socket
 import time
@@ -152,7 +153,10 @@ async def _probe_loaded_models(
         return []
     try:
         url = f"http://localhost:{api_port}/v1/models"
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=2)) as resp:
+        # One second: this is localhost, and an engine that needs longer than
+        # that to answer /v1/models is not answering. Waiting longer only
+        # delays the page that exists to say so.
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=1)) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 return [m.get("id", "") for m in data.get("data", []) if m.get("id")]
@@ -200,7 +204,32 @@ async def handle_server_status(request: web.Request) -> web.Response:
 
     # Collect loaded models (local primary + local stacked + cluster members).
     primary_port = getattr(config, "api_port", 8000)
-    local_models = await _probe_loaded_models(session, primary_port)
+    # Every probe at once. They were serial, each with a two-second timeout,
+    # so four local instances of which two did not answer cost four seconds
+    # before the page drew anything — and the page is the one an operator
+    # opens to find out WHY something is not answering.
+    manager = request.app.get("instances")
+    stacked_records = []
+    if manager is not None:
+        try:
+            stacked_records = [
+                inst.record for inst in manager.instances()
+                if inst.record.model and inst.record.api_port != primary_port
+            ]
+        except Exception:
+            logger.exception("failed to list local stacked instances")
+
+    probes = await asyncio.gather(
+        _probe_loaded_models(session, primary_port),
+        *[_probe_loaded_models(session, rec.api_port) for rec in stacked_records],
+        return_exceptions=True,
+    )
+
+    def _probe_result(index):
+        value = probes[index] if index < len(probes) else []
+        return [] if isinstance(value, BaseException) else value
+
+    local_models = _probe_result(0)
     loaded_models: list[dict] = []
     for mid in local_models:
         loaded_models.append({
@@ -223,40 +252,32 @@ async def handle_server_status(request: web.Request) -> web.Response:
     # InstanceManager, not on the primary vLLM port the probe above hits — so
     # they were invisible in the Server view (F2). Add a row per stacked
     # instance. These are local, so the eject endpoint can target them.
-    manager = request.app.get("instances")
-    if manager is not None:
-        try:
-            for inst in manager.instances():
-                rec = inst.record
-                if not rec.model or rec.api_port == primary_port:
-                    continue  # primary already covered by the probe above
-                # Truthful readiness: probe the stacked instance's own OpenAI
-                # port live rather than trusting rec.status. rec.status is a
-                # latch stamped `serving` when the engine first answered; a
-                # stacked engine that later crashes or is killed out-of-band
-                # keeps reading `serving` (so it would show a green READY badge
-                # and be chat-targetable indefinitely). The /v1/models probe is
-                # the same liveness signal the primary uses two blocks up, so
-                # views and routing agree. The row stays ejectable either way so
-                # a dead instance can still be cleaned up from the UI.
-                stacked_live = await _probe_loaded_models(session, rec.api_port)
-                loaded_models.append({
-                    "id": rec.model,
-                    "node_hostname": config.node_name or "local",
-                    "node_id": config.node_id or "local",
-                    "port": rec.api_port,
-                    "ready": bool(stacked_live),
-                    "ejectable": True,
-                    "type": "llm",
-                    "format": "SafeTensors",
-                    "quantization": None,
-                    "size_bytes": 0,
-                    "parallel": 1,
-                    "capabilities": ["chat", "completions"],
-                    "loaded_at": start_time,
-                })
-        except Exception:
-            logger.exception("failed to list local stacked instances")
+    for offset, rec in enumerate(stacked_records, start=1):
+        # Truthful readiness: probe the stacked instance's own OpenAI
+        # port live rather than trusting rec.status. rec.status is a
+        # latch stamped `serving` when the engine first answered; a
+        # stacked engine that later crashes or is killed out-of-band
+        # keeps reading `serving` (so it would show a green READY badge
+        # and be chat-targetable indefinitely). The /v1/models probe is
+        # the same liveness signal the primary uses two blocks up, so
+        # views and routing agree. The row stays ejectable either way so
+        # a dead instance can still be cleaned up from the UI.
+        stacked_live = _probe_result(offset)
+        loaded_models.append({
+            "id": rec.model,
+            "node_hostname": config.node_name or "local",
+            "node_id": config.node_id or "local",
+            "port": rec.api_port,
+            "ready": bool(stacked_live),
+            "ejectable": True,
+            "type": "llm",
+            "format": "SafeTensors",
+            "quantization": None,
+            "size_bytes": 0,
+            "parallel": 1,
+            "capabilities": ["chat", "completions"],
+            "loaded_at": start_time,
+        })
 
     # Include loaded embedding models (in-process, via EmbeddingManager)
     embedding_manager = request.app.get("embedding_manager")
@@ -382,6 +403,9 @@ async def handle_server_status(request: web.Request) -> web.Response:
         "status": "running",
         "host": host,
         "port": web_port,
+        # A constant, sent with the thing it belongs to. The view fetched it
+        # as a second round trip that could not start until this one finished.
+        "endpoints": ENDPOINT_CATALOG,
         "reachable_at": _reachable_urls(host, web_port),
         "uptime_seconds": uptime,
         "loaded_models": loaded_models,
