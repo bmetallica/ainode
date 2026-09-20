@@ -60,7 +60,7 @@ class TestTheButtonIsAlwaysThere:
 class TestTheFailureNoteRecognisesThisFault:
     def test_illegal_memory_access_now_matches(self):
         source = APP_JS.read_text()
-        pattern = re.search(r"\(/(compile cache[^/]*)/i\.test\(instError\)", source)
+        pattern = re.search(r"/(compile cache[^/]*)/i\.test\(error\)", source)
         assert pattern, "the failure-note trigger moved"
         regex = re.compile(pattern.group(1), re.I)
         assert regex.search("CUDA error: an illegal memory access was encountered")
@@ -69,7 +69,7 @@ class TestTheFailureNoteRecognisesThisFault:
     def test_the_old_faults_still_match(self):
         source = APP_JS.read_text()
         regex = re.compile(
-            re.search(r"\(/(compile cache[^/]*)/i\.test\(instError\)", source).group(1),
+            re.search(r"/(compile cache[^/]*)/i\.test\(error\)", source).group(1),
             re.I)
         assert regex.search("an illegal instruction was encountered")
         assert regex.search("stale compile cache")

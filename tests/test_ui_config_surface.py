@@ -382,7 +382,8 @@ class TestADeadLaunchIsReportedAsDead:
 
     def test_the_ui_renders_failed_terminally(self):
         assert "failed: ['failed', 100]" in APP_JS
-        assert "instance-status failed" in APP_JS
+        # One coloured word on the card now, not a bar that will never move.
+        assert "{ label: 'FAILED', cls: 'failed' }" in APP_JS
         assert "instance-failed-note" in APP_JS
         assert ".instance-failed-note" in STYLE
 

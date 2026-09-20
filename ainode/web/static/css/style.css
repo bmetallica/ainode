@@ -1110,6 +1110,90 @@ h4.chat-h { font-size: 14px; color: var(--nvidia-green); }
   margin-bottom: 8px;
 }
 
+.instance-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.instance-head .instance-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.instance-state {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+
+.instance-state.ready {
+  color: var(--nvidia-green);
+  border-color: rgba(118, 185, 0, 0.4);
+  background: rgba(118, 185, 0, 0.08);
+}
+
+.instance-state.loading {
+  color: #ffb84d;
+  border-color: rgba(255, 184, 77, 0.4);
+  background: rgba(255, 184, 77, 0.08);
+}
+
+.instance-state.failed,
+.instance-state.degraded {
+  color: #ff5c5c;
+  border-color: rgba(255, 92, 92, 0.45);
+  background: rgba(255, 92, 92, 0.08);
+}
+
+.instance-state.stopped {
+  color: var(--text-muted);
+  border-color: var(--border-hover);
+}
+
+.instance-detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.instance-detail-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 4px 12px 4px 0;
+  white-space: nowrap;
+  vertical-align: top;
+  width: 1%;
+}
+
+.instance-detail-table td {
+  padding: 4px 0;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.instance-detail-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.instance-detail-section h4 {
+  margin: 0 0 8px 0;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
 .load-timeline {
   margin-top: 6px;
   font-size: 10px;
