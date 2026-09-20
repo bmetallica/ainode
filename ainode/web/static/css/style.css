@@ -1110,6 +1110,19 @@ h4.chat-h { font-size: 14px; color: var(--nvidia-green); }
   margin-bottom: 8px;
 }
 
+.load-timeline {
+  margin-top: 6px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  letter-spacing: 0.2px;
+}
+
+.load-timeline strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
 .plan-notes {
   margin-top: 8px;
   padding-top: 8px;

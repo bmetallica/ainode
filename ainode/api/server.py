@@ -557,6 +557,12 @@ def _stamp_load_state(inst) -> None:
             setattr(record, field, str(getattr(backend, field, "") or ""))
         except Exception:
             logger.debug("could not stamp %s", field, exc_info=True)
+    # Not a string: a list of phases and their durations.
+    try:
+        record.load_timeline = list(getattr(backend, "load_timeline", None) or [])
+        record.load_seconds = float(getattr(backend, "load_seconds", 0.0) or 0.0)
+    except Exception:
+        logger.debug("could not stamp the load timeline", exc_info=True)
 
 
 def _instance_is_starting(inst) -> bool:
@@ -876,6 +882,12 @@ async def handle_status(request: web.Request) -> web.Response:
         # log marker and stay False on a model that is actually serving. Report
         # 'ready' when the probe says serving; else the engine's coarse phase.
         "load_phase": ("ready" if engine_ready else (getattr(engine, "load_phase", "idle") if engine is not None else "idle")),
+        # Kept after readiness too: "why did that take five minutes" is asked
+        # once the model is up, not while waiting.
+        "load_timeline": (list(getattr(engine, "load_timeline", None) or [])
+                          if engine is not None else []),
+        "load_seconds": (float(getattr(engine, "load_seconds", 0.0) or 0.0)
+                         if engine is not None else 0.0),
         # Why a launch died, quoting the engine's own last lines. Empty unless
         # the phase is "failed" — without it the UI can say a launch failed but
         # not why, and the operator is sent to hunt through a log file.
@@ -970,7 +982,9 @@ async def handle_nodes(request: web.Request) -> web.Response:
                      "status": inst.get("status"),
                      "load_phase": inst.get("load_phase") or "",
                      "load_detail": inst.get("load_detail") or "",
-                     "load_error": inst.get("load_error") or ""}
+                     "load_error": inst.get("load_error") or "",
+                     "load_timeline": inst.get("load_timeline") or [],
+                     "load_seconds": inst.get("load_seconds") or 0}
                     for inst in (getattr(n, "instances", []) or [])
                     if isinstance(inst, dict) and inst.get("model")
                 ],
@@ -1656,6 +1670,8 @@ async def handle_cluster_resources(request: web.Request) -> web.Response:
             "load_phase": inst.get("load_phase") or "",
             "load_detail": inst.get("load_detail") or "",
             "load_error": inst.get("load_error") or "",
+            "load_timeline": inst.get("load_timeline") or [],
+            "load_seconds": inst.get("load_seconds") or 0,
         }
 
     distributed_instances = []
