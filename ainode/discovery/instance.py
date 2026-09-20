@@ -40,6 +40,12 @@ class InstanceRecord:
     load_error: str = ""
     load_phase: str = ""
     load_detail: str = ""
+    #: Where this launch's time went: [{"phase", "seconds"}], the running
+    #: phase included. Carried on the record for the same reason the phase is
+    #: — the head cannot see a peer's engine, and "it has been five minutes"
+    #: is a different question from "five minutes doing what".
+    load_timeline: List[dict] = field(default_factory=list)
+    load_seconds: float = 0.0
 
     @property
     def world_size(self) -> int:

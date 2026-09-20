@@ -933,6 +933,45 @@ const AINode = {
   // model has heard of AINode or of this hardware. Nothing is downloaded and
   // no helper model is bundled: if nothing is serving, there is no button.
 
+  // Where a load's minutes went. The phases were always detected; what was
+  // missing was a clock on them — so "it takes five minutes" could never be
+  // answered with anything but "yes". Shown while loading (the running phase
+  // counts up) and kept afterwards, because the question is usually asked
+  // once the model is already up.
+  loadTimelineBlock(inst) {
+    var timeline = inst.timeline || [];
+    if (!timeline.length) return '';
+    var parts = timeline.map(function (entry) {
+      return this.esc(this.phaseLabel(entry.phase)) + ' ' +
+             this.formatSeconds(entry.seconds);
+    }, this).join(' · ');
+    var total = inst.loadSeconds || timeline.reduce(function (sum, e) {
+      return sum + (e.seconds || 0);
+    }, 0);
+    var lead = inst.status === 'READY'
+      ? 'loaded in ' + this.formatSeconds(total)
+      : this.formatSeconds(total) + ' so far';
+    return '<div class="load-timeline"><strong>' + this.esc(lead) + '</strong> · ' +
+           parts + '</div>';
+  },
+
+  phaseLabel(phase) {
+    return ({
+      starting: 'container + engine start',
+      distributing: 'copying weights out',
+      loading_weights: 'reading weights',
+      distributed_init: 'forming the cluster',
+      profiling: 'compiling + sizing the cache',
+      ready: 'serving',
+    })[phase] || phase;
+  },
+
+  formatSeconds(seconds) {
+    seconds = Math.round(seconds || 0);
+    if (seconds < 60) return seconds + 's';
+    return Math.floor(seconds / 60) + 'm' + (seconds % 60 ? (seconds % 60) + 's' : '');
+  },
+
   assistBlock(inst, errorText, readyModels) {
     var model = inst.model || '';
     this._assistErrors = this._assistErrors || {};
@@ -1142,6 +1181,8 @@ const AINode = {
           phase: inst.status === 'failed' ? 'failed' : (inst.load_phase || ''),
           error: inst.load_error || '',
           detail: inst.load_detail || '',
+          timeline: inst.load_timeline || [],
+          loadSeconds: inst.load_seconds || 0,
         });
       });
     });
@@ -1177,6 +1218,10 @@ const AINode = {
         nodes: [s.node_id || 'local'],
         status: 'STARTING',
         badge: 'LAUNCHING',
+        // This card has no instance record yet, so its timing comes from the
+        // node's own status — which is the same engine.
+        timeline: s.load_timeline || [],
+        loadSeconds: s.load_seconds || 0,
       });
     }
 
@@ -1244,7 +1289,7 @@ const AINode = {
         '<div class="instance-meta">' +
         '<span class="instance-strategy ' + badgeClass + '">' + self.esc(inst.badge || inst.strategy) + '</span>' +
         '<span class="instance-nodes">' + nodeList + '</span>' +
-        '</div>' + failNote + degradedNote +
+        '</div>' + self.loadTimelineBlock(inst) + failNote + degradedNote +
         '<div class="instance-footer">' +
         (inst.status === 'READY'
           ? '<span class="instance-status ready">READY</span>'
