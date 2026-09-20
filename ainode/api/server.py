@@ -43,6 +43,7 @@ from ainode.secrets.api_routes import register_secrets_routes
 from ainode.embeddings.manager import EmbeddingManager
 from ainode.bench.api_routes import register_bench_routes
 from ainode.embeddings.api_routes import register_embedding_routes
+from ainode.placement.api_routes import register_placement_routes
 from ainode.profiles.api_routes import register_profile_routes
 from ainode.profiles.store import ProfileStore
 from ainode.telemetry.api_routes import register_telemetry_routes
@@ -224,6 +225,8 @@ def create_app(
 
     # --- Profile routes ------------------------------------------------------
     register_profile_routes(app)
+
+    register_placement_routes(app)
 
     # --- Telemetry routes ----------------------------------------------------
     register_telemetry_routes(app)
@@ -986,6 +989,23 @@ async def handle_nodes(request: web.Request) -> web.Response:
         }]
     return web.json_response({"nodes": nodes_list})
 
+def _placed_node(app, model: str) -> str:
+    """The single node this model is pinned to, or "". Never raises: a pin is
+    a convenience, and a broken placement file must not stop a load."""
+    if not model:
+        return ""
+    try:
+        from ainode.placement.api_routes import get_placement_store
+
+        placement = get_placement_store(app).get(model)
+    except Exception:
+        logger.debug("could not read the placement for %s", model, exc_info=True)
+        return ""
+    if placement is not None and len(placement.node_ids) == 1:
+        return placement.node_ids[0]
+    return ""
+
+
 async def _cluster_dispatch(request: web.Request, path: str):
     """F2: forward a load/unload to a node's local /api/models endpoint.
 
@@ -1000,6 +1020,16 @@ async def _cluster_dispatch(request: web.Request, path: str):
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
     node_id = str_field(body, "node_id")
+    if not node_id and path.endswith("/load"):
+        # No node named: fall back to where this model was pinned. Only a
+        # single-node placement applies here — this route loads one model on
+        # one node, and honouring a two-node pin by taking its first node
+        # would load a sharded model whole and OOM the node. Multi-node pins
+        # are read by /api/sharding/launch instead.
+        placed = _placed_node(request.app, str_field(body, "model"))
+        if placed:
+            node_id = placed
+            body = {**body, "node_id": placed}
     if not node_id or node_id == config.node_id:
         # Local: hand the body to the local model handler unchanged.
         from ainode.models.api_routes import handle_model_load, handle_model_unload
