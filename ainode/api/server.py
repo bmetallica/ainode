@@ -185,6 +185,7 @@ def create_app(
     app.router.add_post("/api/cluster/compile-cache", handle_cluster_compile_cache)
     app.router.add_get("/api/instances/launch-config", handle_launch_config)
     app.router.add_get("/api/cluster/models", handle_cluster_models)
+    app.router.add_post("/api/cluster/delete-repo", handle_cluster_delete_repo)
     app.router.add_get("/api/clients/opencode", handle_opencode_config)
     app.router.add_post("/api/cluster/mirror-models", handle_cluster_mirror_models)
     app.router.add_get("/api/cluster/mirror-status", handle_cluster_mirror_status)
@@ -1099,6 +1100,10 @@ async def _cluster_dispatch(request: web.Request, path: str):
             handler = _clear_compile_cache
         elif path.endswith("/load"):
             handler = handle_model_load
+        elif path.endswith("/delete-repo"):
+            from ainode.models.api_routes import handle_delete_repo
+
+            handler = handle_delete_repo
         else:
             handler = handle_model_unload
         return await handler(_Shim(request, body))
@@ -1246,6 +1251,16 @@ async def handle_launch_config(request: web.Request) -> web.Response:
         "node_id": getattr(request.app["config"], "node_id", "") or "",
         "instances": specs,
     })
+
+
+async def handle_cluster_delete_repo(request: web.Request) -> web.Response:
+    """POST /api/cluster/delete-repo {hf_repo, node_id?} — delete on any node.
+
+    The Models page now lists what the whole cluster holds, so its Delete
+    button has to be able to reach the disk the weights are actually on.
+    Without a node it deletes here, which is what it always did.
+    """
+    return await _cluster_dispatch(request, "/api/models/delete-repo")
 
 
 async def handle_cluster_models(request: web.Request) -> web.Response:

@@ -1820,6 +1820,7 @@ const AINode = {
 
   invalidate() {
     this._fetchedAt = {};
+    this._modelLists = null;
   },
 
   placementFor(model) {
@@ -2023,6 +2024,30 @@ const AINode = {
     this.schedulePlan(0);
   },
 
+  // The two model lists, fetched at most once a minute and shared by
+  // everything that needs them. invalidate() makes a download or a delete
+  // visible immediately.
+  ensureModelLists() {
+    var self = this;
+    if (!this._stale('modelLists') && this._modelLists) {
+      return Promise.resolve(this._modelLists);
+    }
+    return Promise.all([
+      this.fetchJSON('/api/models'),
+      this.fetchJSON('/api/cluster/models'),
+    ]).then(function (results) {
+      // Keep the last good answer: a poll that fails should not empty the
+      // launch form's model list.
+      self._modelLists = {
+        catalog: results[0] || (self._modelLists || {}).catalog,
+        disk: results[1] || (self._modelLists || {}).disk,
+      };
+      return self._modelLists;
+    }).catch(function () {
+      return self._modelLists || { catalog: null, disk: null };
+    });
+  },
+
   populateLaunchModels() {
     var select = document.getElementById('launch-model');
     if (!select) return;
@@ -2031,13 +2056,15 @@ const AINode = {
     var loaded = (s && s.models_loaded) || [];
     var onDisk = this.state.downloadedModels || {};
 
-    // Fetch both catalog and downloaded list, merge them
-    Promise.all([
-      this.fetchJSON('/api/models'),
-      this.fetchJSON('/api/models/downloaded'),
-    ]).then(function (results) {
-      var data = results[0];
-      var dlData = results[1];
+    // This runs on every poll — every five seconds, for as long as a browser
+    // tab is open. It used to fetch the catalog AND the downloaded list each
+    // time, and both of those walk model directories on the server: two full
+    // disk scans every five seconds per open tab, for a list that changes
+    // when someone downloads something. Fetched on a TTL now and rendered
+    // from what is already in hand the rest of the time.
+    this.ensureModelLists().then(function (lists) {
+      var data = lists.catalog;
+      var dlData = lists.disk;
       if (!data) return;
 
       // Build set of repos known to be on disk
@@ -2821,12 +2848,28 @@ const AINode = {
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
         var repo = btn.dataset.modelId;
-        self.confirmDeleteModel(repo);
+        var nodes = (btn.getAttribute('data-nodes') || '').split(',')
+          .filter(function (n) { return n; });
+        self.confirmDeleteModel(repo, nodes);
       });
     });
   },
 
-  confirmDeleteModel(hfRepo) {
+  // Which nodes hold this model's weights, from the cluster listing.
+  nodesHolding(model) {
+    var repo = model.hf_repo || model.id;
+    var row = (this.state.downloadedList || []).find(function (m) {
+      return (m.hf_repo || m.id) === repo;
+    });
+    return (row && row.nodes) || (model.nodes || []);
+  },
+
+  nodeLabel(nodeId) {
+    var names = this.state.modelNodeNames || {};
+    return (names[nodeId] || nodeId).replace(/-DGX|-GX10/i, '');
+  },
+
+  confirmDeleteModel(hfRepo, nodeIds) {
     var self = this;
     var existing = document.getElementById('confirm-delete-modal');
     if (existing) existing.remove();
@@ -2844,7 +2887,11 @@ const AINode = {
           '<button class="md-close">×</button>' +
         '</div>' +
         '<div class="md-description">' +
-          'Permanently remove <strong>' + self.esc(hfRepo) + '</strong> from disk?' +
+          'Permanently remove <strong>' + self.esc(hfRepo) + '</strong> from ' +
+          ((nodeIds || []).length
+            ? self.esc((nodeIds || []).map(function (n) { return self.nodeLabel(n); })
+                .join(' + '))
+            : 'disk') + '?' +
           '<br><span style="color:var(--text-muted);font-size:13px">This frees the disk space immediately. You can re-download anytime.</span>' +
         '</div>' +
         '<div class="md-footer">' +
@@ -2863,11 +2910,20 @@ const AINode = {
       var btn = modal.querySelector('#cd-confirm');
       btn.disabled = true;
       btn.textContent = 'Deleting...';
-      fetch('/api/models/delete-repo', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hf_repo: hfRepo }),
-      }).then(function (r) { return r.json(); }).then(function (data) {
+      // Every node that holds it, not only this one. The list is
+      // cluster-wide now, so a Delete that could only reach the head's disk
+      // would report "not downloaded" about a model plainly shown as present.
+      var targets = (nodeIds || []).length ? nodeIds : [null];
+      Promise.all(targets.map(function (nodeId) {
+        return fetch('/api/cluster/delete-repo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(nodeId ? { hf_repo: hfRepo, node_id: nodeId }
+                                      : { hf_repo: hfRepo }),
+        }).then(function (r) { return r.json(); });
+      })).then(function (all) {
+        var data = all.find(function (d) { return d && d.error; })
+          || all[0] || {};
         if (data.error) {
           self.toast('Delete failed: ' + data.error, 'error');
           btn.disabled = false;
@@ -3865,7 +3921,8 @@ const AINode = {
       var sz = m.size_gb || m.local_size_gb || 0;
       var entry = { id: repo, slug: m.id || repo, name: m.name || repo.split('/').pop(),
         size: '~' + Math.round(sz) + ' GB', sizeGb: sz, desc: m.description || 'Downloaded model',
-        quantization: m.quantization || null, minMem: m.min_memory_gb || sz, hf_repo: repo, downloaded: true };
+        quantization: m.quantization || null, minMem: m.min_memory_gb || sz, hf_repo: repo,
+        downloaded: true, nodes: m.nodes || [] };
       if (matchesQuery(entry)) installed.push(entry);
     });
     var bySize = function (a, b) { return (a.sizeGb || 0) - (b.sizeGb || 0); };
@@ -3887,8 +3944,20 @@ const AINode = {
       var paramsText = model.params ? model.params + ' params' : '';
       var descParts = [paramsText, model.size].filter(Boolean);
       var capabilityBadges = self.renderCapabilityBadges(model);
+      // Where the weights actually are. "On disk" used to mean this node's
+      // disk; the page now lists what the whole cluster holds, and a badge
+      // that does not say which node would be the same half-truth in the
+      // other direction.
+      var holders = self.nodesHolding(model);
+      var whereBadge = holders.length
+        ? '<span class="fit-badge">' + self.esc(holders.map(function (n) {
+            return self.nodeLabel(n);
+          }).join(' + ')) + '</span>'
+        : '';
       var actionBtn = onDisk
-        ? '<button class="btn-sm downloads-delete-btn" data-model-id="' + self.esc(model.hf_repo || model.id) + '">Delete</button>'
+        ? '<button class="btn-sm downloads-delete-btn" data-model-id="' +
+          self.esc(model.hf_repo || model.id) + '" data-nodes="' +
+          self.esc(holders.join(',')) + '">Delete</button>'
         : '<button class="btn-sm downloads-download-btn" data-model-id="' + self.esc(model.hf_repo || model.id) + '">Download</button>';
       var shardBtn = '';
       var needsCluster = !fits || (model.proven_tp || 1) > 1;
@@ -3901,7 +3970,7 @@ const AINode = {
         '<div class="download-card-info">' +
         '<div class="download-card-header">' +
         '<div class="download-card-name">' + self.esc(model.name || model.id) + '</div>' +
-        '<div class="download-card-badges">' + verBadge + quantBadge + capabilityBadges + fitBadge + statusBadge + '</div>' +
+        '<div class="download-card-badges">' + verBadge + quantBadge + capabilityBadges + fitBadge + statusBadge + whereBadge + '</div>' +
         '</div>' +
         '<div class="download-card-repo">' + self.esc(model.hf_repo || model.id) + '</div>' +
         '<div class="download-card-desc">' + descParts.join(' &middot; ') + (model.desc ? '<br><span class="download-card-tagline">' + self.esc(model.desc) + '</span>' : '') + '</div>' +
