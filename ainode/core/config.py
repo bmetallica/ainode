@@ -96,6 +96,15 @@ class NodeConfig:
     #   warn:     no new model may be launched below this
     #   critical: the newest engine is killed below this
     # The defaults are the DGX Spark preset; see ainode/safety/memory_guard.py.
+    # Log forwarding over MQTT. Off by default: a vLLM log is a firehose, and
+    # a broker that suddenly receives megabytes a minute from three nodes
+    # because someone ticked telemetry on is not a feature.
+    mqtt_logs: bool = False
+    #: Most lines in one message, per source. The rest are dropped and the
+    #: payload says how many.
+    mqtt_log_lines: int = 100
+    #: Minimum level for AINode's own lines. The engine's are not levelled.
+    mqtt_log_level: str = "INFO"
     host_memory_guard: bool = True
     host_memory_warn_gb: float = 8.0
     host_memory_critical_gb: float = 4.0

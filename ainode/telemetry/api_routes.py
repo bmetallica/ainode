@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["register_telemetry_routes"]
 
-_BOOL_FIELDS = ("mqtt_enabled", "mqtt_tls", "mqtt_retain")
+_BOOL_FIELDS = ("mqtt_enabled", "mqtt_tls", "mqtt_retain", "mqtt_logs")
 
 
 def register_telemetry_routes(app: web.Application) -> None:
@@ -36,6 +36,9 @@ def _settings(config) -> dict:
         "mqtt_interval": int(getattr(config, "mqtt_interval", 30) or 30),
         "mqtt_retain": bool(getattr(config, "mqtt_retain", False)),
         "mqtt_qos": int(getattr(config, "mqtt_qos", 0) or 0),
+        "mqtt_logs": bool(getattr(config, "mqtt_logs", False)),
+        "mqtt_log_lines": int(getattr(config, "mqtt_log_lines", 100) or 100),
+        "mqtt_log_level": str(getattr(config, "mqtt_log_level", "INFO") or "INFO"),
     }
 
 
@@ -60,7 +63,12 @@ async def handle_get_settings(request: web.Request) -> web.Response:
 def _topic_examples(config) -> list:
     from ainode.telemetry.mqtt import _topic
 
-    return [_topic(config, s) for s in ("system", "gpu", "models", "cluster")]
+    suffixes = ["system", "gpu", "models", "cluster"]
+    if getattr(config, "mqtt_logs", False):
+        # Shown as the wildcard, because the engine topics carry a model name
+        # and there is one per loaded instance.
+        suffixes += ["logs/ainode", "logs/vllm/+"]
+    return [_topic(config, s) for s in suffixes]
 
 
 async def handle_put_settings(request: web.Request) -> web.Response:
@@ -96,6 +104,16 @@ async def handle_put_settings(request: web.Request) -> web.Response:
     qos = int_field(body, "mqtt_qos", minimum=0, maximum=2)
     if qos is not None:
         config.mqtt_qos = qos
+    log_lines = int_field(body, "mqtt_log_lines", minimum=1, maximum=1000)
+    if log_lines is not None:
+        config.mqtt_log_lines = log_lines
+    if "mqtt_log_level" in body:
+        level = str_field(body, "mqtt_log_level", default="INFO").upper()
+        if level not in ("DEBUG", "INFO", "WARNING", "ERROR"):
+            return web.json_response(
+                {"error": f"unknown log level {level!r}",
+                 "known": ["DEBUG", "INFO", "WARNING", "ERROR"]}, status=400)
+        config.mqtt_log_level = level
 
     if config.mqtt_enabled and not (config.mqtt_host or "").strip():
         return web.json_response(

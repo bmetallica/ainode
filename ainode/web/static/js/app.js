@@ -6661,6 +6661,25 @@ const AINode = {
             '<label style="display:flex;align-items:center;gap:8px;margin-top:6px">' +
             '<input type="checkbox" id="cfg-mqtt-retain"' + (s.mqtt_retain ? ' checked' : '') + '> keep the last message on the broker</label>' +
             '<div class="config-field-hint">Handy after a broker restart; a retained message from a node that has gone away still looks alive.</div></div>';
+    html += '<div><label class="config-field-label">Logs</label>' +
+            '<label style="display:flex;align-items:center;gap:8px;margin-top:6px">' +
+            '<input type="checkbox" id="cfg-mqtt-logs"' + (s.mqtt_logs ? ' checked' : '') + '> ' +
+            'forward log lines</label>' +
+            '<div class="config-field-hint">This node\'s own log to ' +
+            '<code>logs/ainode</code>, and each engine instance to ' +
+            '<code>logs/vllm/&lt;model&gt;</code>. Only what is new since the ' +
+            'last publish, progress bars dropped. Off by default — a vLLM log ' +
+            'is a firehose.</div></div>';
+    html += this._field('Log lines per message', 'mqtt_log_lines', s.mqtt_log_lines,
+                        { type: 'number', hint: 'Older lines are dropped and the payload says how many. 1-1000.' });
+    html += '<div><label class="config-field-label">Log level (this node)</label>' +
+            '<select class="form-select" id="cfg-f-mqtt_log_level">' +
+            ['DEBUG', 'INFO', 'WARNING', 'ERROR'].map(function (lv) {
+              return '<option value="' + lv + '"' +
+                ((s.mqtt_log_level || 'INFO') === lv ? ' selected' : '') + '>' +
+                lv + '</option>';
+            }).join('') + '</select>' +
+            '<div class="config-field-hint">Applies to AINode\'s own lines. The engine does not level its output, so its log is forwarded as written.</div></div>';
     html += '</div>';
     html += '<div class="config-actions">' +
             '<button class="config-btn" id="cfg-mqtt-save">Save</button>' +
@@ -6711,6 +6730,9 @@ const AINode = {
         mqtt_topic_prefix: document.getElementById('cfg-f-mqtt_topic_prefix').value.trim(),
         mqtt_interval: parseInt(document.getElementById('cfg-f-mqtt_interval').value, 10),
         mqtt_password: document.getElementById('cfg-f-mqtt_password').value,
+        mqtt_logs: document.getElementById('cfg-mqtt-logs').checked,
+        mqtt_log_lines: parseInt(document.getElementById('cfg-f-mqtt_log_lines').value, 10),
+        mqtt_log_level: document.getElementById('cfg-f-mqtt_log_level').value,
       };
       var resp = await fetch('/api/telemetry/mqtt', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
