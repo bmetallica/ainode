@@ -1,9 +1,14 @@
 # images.md — Bildgenerierung in AINode
 
-Ziel: `Qwen/Qwen-Image-2.1` (oder ein vergleichbares Diffusionsmodell) läuft
-auf Node 3 neben qwen3.8 und dem Embedding-Modell, gestartet und überwacht wie
-jedes andere Modell — dieselbe Karte, derselbe Speicherwächter, dasselbe
-Profil, dieselbe Telemetrie. Kein Nebencontainer, den AINode nicht kennt.
+Ziel: `Qwen-Image-2.1` — vorzugsweise als Quantisat — läuft auf Node 3 neben
+qwen3.8 und dem Embedding-Modell, gestartet und überwacht wie jedes andere
+Modell: dieselbe Karte, derselbe Speicherwächter, dasselbe Profil, dieselbe
+Telemetrie. Kein Nebencontainer, den AINode nicht kennt.
+
+**Priorität: Nebenspur.** Das steht hinter allem anderen, und der Plan ist so
+geschnitten, dass es nichts blockiert und nichts Laufendes anfasst — siehe
+Abschnitt 7. Der einzige Teil, der sich sofort lohnt, ist Schritt 0: eine
+halbe Stunde, die abschließend klärt, ob der Rest überhaupt möglich ist.
 
 Aufgenommen am 2026-09-21 auf `main` @ 96041b0 (2371 Tests).
 
@@ -15,10 +20,27 @@ Nachgeprüft, nicht vermutet:
 
 ```
 Qwen/Qwen-Image-2.1     pipeline_tag = text-to-image   library_name = diffusers
-                        47,4 GB                        diffusers:QwenImage21Pipeline
-Verzeichnisse:          model_index.json, transformer/, text_encoder/, vae/,
-                        scheduler/, processor/
+                        diffusers:QwenImage21Pipeline
+Verzeichnisse und Größen:
+                        text_encoder/   17,5 GB
+                        transformer/    14,2 GB
+                        vae/             1,4 GB
+                        scheduler/, processor/, model_index.json
+                        ───────────────────────
+                        rund 33 GB auf der Platte
 ```
+
+> **Korrektur zur ersten Fassung dieses Plans.** Dort standen 47,4 GB. Das ist
+> der Wert, den der Hub als `usedStorage` meldet — er umfasst den LFS-Bestand
+> des Repos über alle Revisionen und kann deutlich über dem liegen, was ein
+> Checkout tatsächlich belegt. Für „passt es auf Node 3" zählt die Summe der
+> Dateien, und die sind rund **33 GB**. Unser eigener Planer rechnet richtig:
+> `weight_bytes_on_disk` summiert die Gewichtsdateien, nicht die Hub-Angabe.
+> Die Suche zeigt weiterhin die Hub-Zahl, was hier zu Lasten der Vorsicht irrt
+> — das ist die richtige Richtung, aber man muss es wissen.
+
+Bemerkenswert daran, und für die Quantisierung in Abschnitt 5 entscheidend:
+**der Text-Encoder ist der größte Brocken, nicht der Transformer.**
 
 Zwei getrennte Gründe, und nur einer davon ist ein Filter:
 
@@ -240,15 +262,16 @@ unverändert — „dieses Modell läuft auf Node 3" ist modalitätsblind.
 Die Rechnung, mit den Zahlen die feststehen:
 
 ```
-Gewichte Qwen-Image-2.1 (bf16)        47,4 GB
-Engine, CUDA-Kontext, Aktivierungen  ~ 4–6 GB
-Puffer für VAE-Dekodierung bei 1024²  ~ 2–4 GB   (wächst quadratisch mit der Kante)
-                                      ─────────
-                                      ~55–58 GB
+                                      bf16        FP8
+Gewichte auf der Platte              ~33 GB      18 GB
+Engine, CUDA-Kontext, Aktivierungen  ~4–6 GB     ~4–6 GB
+Puffer VAE-Dekodierung bei 1024²     ~2–4 GB     ~2–4 GB   (quadratisch mit der Kante)
+                                     ────────    ────────
+                                     ~39–43 GB   ~24–28 GB
 ```
 
 Dazu auf Node 3: qwen3.8, das Embedding-Modell, und **8 GB Host-Reserve**, die
-der Wächter freihält. Von 122 GB bleibt damit für das Bildmodell ungefähr
+der Wächter freihält. Von 122 GB bleibt für das Bildmodell ungefähr
 `122 − 8 − (qwen3.8 + nomic)`.
 
 Die eine Zahl, die mir fehlt, ist der tatsächliche Belegungsstand. Bevor
@@ -259,10 +282,16 @@ curl -sS localhost:3000/api/cluster/safety/memory | python3 -m json.tool
 curl -sS localhost:3000/api/nodes | python3 -m json.tool | grep -A6 '"node_id"'
 ```
 
-Wenn `host_available_mb` auf Node 3 unter etwa 60 GB liegt, passt es in bf16
-nicht, und die Frage lautet dann: ein Quantisat (die HF-Suche zeigt mehrere
-GGUF-Varianten, die den Bedarf ungefähr halbieren, zu Lasten der Qualität),
-oder qwen3.8 zieht auf einen anderen Knoten um.
+Grobe Orientierung, solange die Zahl fehlt: **unter etwa 45 GB frei** ist bf16
+vom Tisch und FP8 die Antwort; **unter etwa 30 GB frei** wird es auch mit FP8
+eng, und dann ist die Frage nicht das Format, sondern ob qwen3.8 auf einen
+anderen Knoten gehört.
+
+Der Speicherwächter macht diese Rechnung übrigens nicht überflüssig, aber
+erträglich: rechne ich mich hier um zehn Gigabyte, bekomme ich eine 507er
+Absage oder im schlimmsten Fall eine beendete Instanz — nicht einen Knoten,
+der neu gestartet werden muss. Das ist der Unterschied zu der Situation, in
+der MiniMax-M3 zwei Knoten mitgenommen hat.
 
 **Geschwindigkeit:** ein 20-B-MMDiT über 20–50 Entrauschungsschritte bei
 1024² ist bandbreitengebunden wie alles auf dieser Hardware. Ich schätze das
@@ -271,10 +300,164 @@ steht eine echte Zahl im Katalogeintrag statt einer erfundenen.
 
 ---
 
-## 5. Reihenfolge
+## 5. Quantisierung
 
-**Schritt 0 — der Versuch, bevor irgendetwas gebaut wird.** Eine halbe Stunde,
-von Hand auf Node 3:
+Ausdrücklich Teil des Plans und nicht ein späterer Gedanke: bf16 ist hier die
+teuerste Variante, und auf einem Knoten, der schon ein Coding-Modell und die
+Embeddings trägt, ist der Unterschied zwischen 33 GB und 18 GB der zwischen
+„geht" und „geht bequem".
+
+Was es gibt, mit echten Zahlen vom Hub:
+
+| Repo | Größe | Format | Layout | Einschätzung |
+|---|---|---|---|---|
+| `Qwen/Qwen-Image-2.1` | ~33 GB | bf16 | vollständige Pipeline | Referenz. Läuft, wenn überhaupt etwas läuft |
+| `Rin247/Qwen-Image-2.1-FP8` | 18,0 GB | fp8 | vollständige Pipeline | **der erste Kandidat** |
+| `Rin247/Qwen-Image-2.1-INT4` | 12,5 GB | int4 | vollständige Pipeline | zweiter Kandidat, offene Frage beim Backend |
+| `ModelsLab/Qwen-Image-2.1-W4A4-int4` | 4,7 GB | Nunchaku W4A4 | nur Transformer | auf dem Papier das schnellste, praktisch das riskanteste |
+| `leejet/Qwen-Image-2.1-GGUF` | 2,6–7,7 GB je Datei | GGUF Q2…Q8 | nur Transformer | täuscht — siehe unten |
+
+### Warum FP8 der erste Kandidat ist
+
+Drei Gründe, und alle drei zählen auf dieser Hardware:
+
+1. **Es ist eine vollständige Pipeline im diffusers-Layout.** Der Ladeweg aus
+   S3 ändert sich nicht um eine Zeile — `from_pretrained` auf ein Verzeichnis,
+   fertig. Alles andere in dieser Tabelle verlangt Sonderbehandlung.
+2. **fp8 ist auf Blackwell nativ.** Die Tensor-Kerne rechnen es direkt; es ist
+   kein Auspacken-und-in-bf16-rechnen wie bei den meisten 4-Bit-Formaten.
+   Dasselbe Argument, aus dem `--kv-cache-dtype fp8` bei den LLMs hier die
+   Vorgabe ist.
+3. **18 GB statt 33 GB** lässt Node 3 Luft, und Luft ist auf einem
+   Unified-Memory-Knoten gleichbedeutend mit Stabilität.
+
+### Warum GGUF täuscht
+
+Die GGUF-Dateien sehen mit 4,2 GB (Q4_K) verlockend aus, aber sie enthalten
+**nur den Transformer** — und der ist mit 14,2 GB gar nicht der größte Teil.
+Der Text-Encoder mit 17,5 GB bliebe unangetastet:
+
+```
+GGUF-Transformer Q4_K    4,2 GB
++ Text-Encoder bf16     17,5 GB
++ VAE                    1,4 GB
+                        ────────
+                       ~23 GB    — schlechter als FP8 mit 18 GB
+```
+
+Dazu kommt, dass diffusers GGUF nur über `from_single_file` mit einer
+`GGUFQuantizationConfig` lädt, also einen zweiten Ladeweg bräuchte, und dass
+der Rest der Pipeline trotzdem aus dem bf16-Repo kommen muss. Es gibt auch
+GGUF-Text-Encoder (`pottokao/…-Text-Encoder-Heretic-GGUF`), aber dann setzt
+man eine Pipeline aus zwei Fremdkonvertierungen zusammen und hat zwei
+Fehlerquellen statt keiner. **Für uns nicht der erste Weg.**
+
+### Warum Nunchaku das Risiko ist
+
+4,7 GB und W4A4 ist beeindruckend, und es ist eine Quantisierung, die auch
+rechnet statt nur zu speichern. Der Preis: Nunchaku bringt eigene CUDA-Kernel
+mit, und für aarch64 mit Blackwell gibt es dafür mit ziemlicher Sicherheit
+kein fertiges Rad. Das hieße selbst übersetzen — auf genau dem Stack, der uns
+auf diesem Cluster schon `Failed to find C compiler` und die
+DeepGEMM-Geschichte beschert hat. Ein eigener Tag Arbeit mit offenem Ausgang.
+
+**Nicht ausgeschlossen, aber zuletzt.** Wenn FP8 läuft und zu langsam ist,
+ist Nunchaku die nächste Frage; vorher nicht.
+
+### Was in Schritt 0 mitgemessen wird
+
+Der Versuch aus Abschnitt 7 läuft **zweimal**: einmal bf16, einmal FP8. Das
+kostet fast nichts zusätzlich und beantwortet die Frage, die sonst hinterher
+gestellt wird — ob das Quantisat auf dieser Hardware überhaupt lädt, wie viel
+Speicher es wirklich spart, und ob die Bilder taugen. Erst wenn FP8 sowohl
+lädt als auch überzeugt, wird es der Katalogeintrag; sonst bf16, und die
+Quantisierung wird eine eigene Runde.
+
+INT4 kommt in dieselbe Messreihe, sobald geklärt ist, welches
+Quantisierungs-Backend das Repo voraussetzt — `torchao` wäre gutartig (reines
+PyTorch, gute Chancen auf aarch64), `bitsandbytes` wäre die gleiche Wette wie
+Nunchaku. Das steht in der `model_index.json` bzw. in der
+`quantization_config` des Transformers und ist in zwei Minuten geklärt:
+
+```bash
+curl -sS https://huggingface.co/Rin247/Qwen-Image-2.1-INT4/raw/main/transformer/config.json \
+  | python3 -m json.tool | grep -A8 quantization
+```
+
+---
+
+## 6. Der Katalogeintrag
+
+Am Ende steht ein kuratierter Eintrag, wie bei jedem anderen bewährten Modell
+— mit dem, was die Messung ergeben hat, nicht mit dem, was plausibel klingt:
+
+```python
+"qwen-image-2.1-fp8": ModelInfo(
+    id="qwen-image-2.1-fp8",
+    name="Qwen-Image 2.1 (FP8)",
+    hf_repo="Rin247/Qwen-Image-2.1-FP8",
+    modality="image",
+    size_gb=18.0,
+    min_memory_gb=<aus Schritt 0>,
+    description="… Sekunden je Bild bei 1024² und 20 Schritten, gemessen auf "
+                "einem GB10-Knoten. Kein CPU-Offload: auf Unified Memory "
+                "verschiebt es nichts und kostet Kopien.",
+    engine_backend="diffusers",
+    verified=<erst nach dem Lauf auf der Hardware>,
+),
+```
+
+Das `verified`-Häkchen bekommt es erst, wenn es hier wirklich gelaufen ist —
+dieselbe Regel wie bei den LLMs.
+
+---
+
+## 7. Reihenfolge und Priorität
+
+### Priorität: eine Nebenspur
+
+Bildgenerierung steht **hinter** allem anderen. Was das konkret heißt, damit
+es nicht bei einer Absichtserklärung bleibt:
+
+* **Nichts in diesem Plan blockiert etwas anderes.** Keiner der Schritte
+  ändert den LLM-Ladepfad, den Planer für Textmodelle, das Routing von
+  `/v1/chat/completions` oder das Verhalten des Wächters. Die Berührungspunkte
+  sind additiv: ein zweiter `engine_backend`, eine zweite Route, ein zweites
+  `kind`. Wenn dieser Plan ein Jahr liegen bleibt, fehlt nichts.
+* **Node 3 bleibt ein Arbeitsknoten.** Das Bildmodell kommt dort **zuletzt**
+  dazu, nicht zuerst — und zwar nicht aus Höflichkeit, sondern weil der
+  Wächter die *zuletzt gestartete* Instanz abschießt. Wird es eng, stirbt
+  damit automatisch das Bildmodell und nicht das Coding-Modell, an dem jemand
+  gerade arbeitet. Diese Reihenfolge ist eine Eigenschaft, keine Konvention:
+  sie dokumentiert sich selbst, weil der Wächter sie durchsetzt.
+* **Nichts davon fasst laufende Modelle an.** Kein Schritt verlangt, qwen3.8
+  oder die Embeddings neu zu starten — außer dem Update selbst, das ohnehin
+  alle Dienste neu startet.
+* **Schritt 0 kostet eine halbe Stunde und ist jederzeit machbar**, auch
+  völlig unabhängig davon, ob der Rest je gebaut wird. Er beantwortet die
+  Frage „ginge das überhaupt?" abschließend und kostet nichts als Zeit am
+  Terminal und rund 33 GB Download.
+
+Vorschlag für die tatsächliche Abfolge: Schritt 0 bei Gelegenheit, dann liegt
+das Ergebnis vor. Der Rest wird gebaut, wenn nichts Dringenderes ansteht —
+oder gar nicht, wenn Schritt 0 unerfreulich ausgeht.
+
+### Schritt 0 — der Versuch, bevor irgendetwas gebaut wird
+
+Eine halbe Stunde, von Hand auf Node 3. **Zweimal**, einmal bf16 und einmal
+FP8, weil der zweite Lauf fast nichts zusätzlich kostet und die
+Quantisierungsfrage gleich miterledigt:
+
+Die Gewichte holt AINode schon heute — der Repo-Downloader lädt beliebige
+Repos unabhängig vom Pipeline-Tag, das Serven ist das Einzige, was fehlt:
+
+```bash
+curl -sS -X POST localhost:3000/api/models/download-repo \
+  -H 'Content-Type: application/json' \
+  -d '{"hf_repo":"Rin247/Qwen-Image-2.1-FP8"}'
+```
+
+Dann der Versuch selbst:
 
 ```bash
 docker run --rm --network host -v ~/.ainode/models:/models \
@@ -283,27 +466,33 @@ docker run --rm --network host -v ~/.ainode/models:/models \
     python - <<'PY'
 import torch, time
 from diffusers import DiffusionPipeline
-p = DiffusionPipeline.from_pretrained('/models/Qwen--Qwen-Image-2.1',
-                                      torch_dtype=torch.bfloat16).to('cuda')
+d = '/models/Rin247--Qwen-Image-2.1-FP8'      # bzw. Qwen--Qwen-Image-2.1
+p = DiffusionPipeline.from_pretrained(d, torch_dtype=torch.bfloat16).to('cuda')
 t = time.time()
 img = p('a red cube on a white table', num_inference_steps=20).images[0]
-print('seconds:', round(time.time()-t, 1))
+print('Sekunden:', round(time.time()-t, 1))
+print('Spitze GB:', round(torch.cuda.max_memory_allocated()/1e9, 1))
 img.save('/models/probe.png')
 PY"
 ```
 
-Das beantwortet die drei Fragen, an denen der ganze Plan hängt, und keine
-davon kann ich vom Schreibtisch aus beantworten:
+Das beantwortet die Fragen, an denen der ganze Plan hängt, und keine davon
+kann ich vom Schreibtisch aus beantworten:
 
 1. Läuft `QwenImage21Pipeline` überhaupt auf aarch64 mit Blackwell und dem
    torch dieses Images? (Der wahrscheinlichste Stolperstein: der
    Attention-Backend — flash-attn ist auf dieser Kombination schon einmal
    ausgefallen, SDPA ist der Rückfall.)
-2. Wie viel Speicher belegt sie wirklich?
-3. Wie lange dauert ein Bild?
+2. Lädt das **FP8-Quantisat** genauso, oder verlangt es ein
+   Quantisierungs-Backend, das hier fehlt?
+3. Wie viel Speicher belegen beide wirklich — inklusive der Spitze beim
+   VAE-Schritt, die `max_memory_allocated()` mitnimmt?
+4. Wie lange dauert ein Bild, und taugen die FP8-Bilder?
 
 **Scheitert Schritt 0, ist der Plan hinfällig** — und zwar bevor eine Zeile
-Code geschrieben ist. Das ist der Sinn dieser Reihenfolge.
+Code geschrieben ist. Das ist der Sinn dieser Reihenfolge. Scheitert nur der
+FP8-Teil, wird bf16 der Katalogeintrag und die Quantisierung eine eigene
+Runde.
 
 Danach, jeder Schritt ein PR:
 
@@ -320,15 +509,24 @@ Danach, jeder Schritt ein PR:
 
 ---
 
-## 6. Was ich nicht weiß
+## 8. Was ich nicht weiß
 
 1. **Ob diffusers auf dieser Hardware trägt.** Der größte Einzelposten, und
    Schritt 0 entscheidet ihn. Alles danach ist gewöhnliche Arbeit.
-2. **Ob 47 GB neben qwen3.8 auf Node 3 passen.** Braucht die aktuelle
-   Belegung, siehe Abschnitt 4.
-3. **Wie schnell es ist.** Wird gemessen, nicht geschätzt. Bei mehr als etwa
+2. **Ob es neben qwen3.8 auf Node 3 passt.** Braucht die aktuelle Belegung,
+   siehe Abschnitt 4. Die Antwort entscheidet zwischen bf16 und FP8, nicht
+   zwischen „geht" und „geht nicht".
+3. **Ob das FP8-Repo hier lädt.** `Rin247/Qwen-Image-2.1-FP8` ist eine
+   Fremdkonvertierung in vollständigem diffusers-Layout. Das Layout spricht
+   dafür, dass es ohne Sonderbehandlung lädt; belegt ist es nicht. Dasselbe
+   gilt für INT4, wo zusätzlich offen ist, welches Quantisierungs-Backend
+   vorausgesetzt wird — `torchao` wäre gutartig, `bitsandbytes` eine Wette.
+4. **Wie viel FP8 wirklich an Qualität kostet.** Bei einem Bildmodell ist das
+   keine Zahl, sondern ein Blick: derselbe Prompt mit demselben Seed, beide
+   Varianten nebeneinander. Gehört in Schritt 0.
+5. **Wie schnell es ist.** Wird gemessen, nicht geschätzt. Bei mehr als etwa
    einer Minute je Bild ist die Frage, ob es sich neben einem Coding-Modell
    auf demselben Knoten lohnt oder lieber allein läuft.
-4. **Ob ein Quantisat taugt.** Die GGUF-Varianten sind Fremdkonvertierungen;
-   ob diffusers sie ohne Weiteres lädt, ist offen und wäre ein eigener
-   Versuch.
+6. **Ob Nunchaku (4,7 GB, W4A4) auf aarch64 baubar ist.** Auf dem Papier das
+   attraktivste Format, praktisch eigene CUDA-Kernel ohne fertiges Rad für
+   diese Architektur. Erst relevant, wenn FP8 läuft und zu langsam ist.
