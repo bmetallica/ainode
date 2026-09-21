@@ -589,6 +589,9 @@ const AINode = {
       case 'training':
         this.renderTraining();
         break;
+      case 'images':
+        this.renderImages();
+        break;
       case 'config':
         // Rendered on entry and on a section switch, NOT on every poll.
         // Rebuilding the section's innerHTML every few seconds destroyed
@@ -1902,6 +1905,195 @@ const AINode = {
   },
 
   // ========================================================================
+  //  IMAGE GENERATION
+  // ========================================================================
+  // A second kind of model, served by a second engine, reached through the
+  // same proxy. Everything else about it — loading, placement, the memory
+  // guard, profiles — is the machinery that was already there.
+
+  // The launch form grows three fields when the selected model is an image
+  // one, and hides the KV-cache ones that mean nothing for it.
+  toggleImageFields(model) {
+    var select = document.getElementById('launch-model');
+    var option = select && select.selectedIndex >= 0
+      ? select.options[select.selectedIndex] : null;
+    var isImage = !!option &&
+      option.getAttribute('data-modality') === 'image';
+    var block = document.getElementById('launch-image-fields');
+    if (block) block.style.display = isImage ? '' : 'none';
+    // A diffusion run has no KV cache and no context length. Leaving those
+    // fields on screen would invite someone to set them and wonder why
+    // nothing changed.
+    ['launch-max-seqs', 'launch-max-len', 'launch-kv-dtype'].forEach(
+      function (id) {
+        var field = document.getElementById(id);
+        if (field && field.parentElement) {
+          var label = field.previousElementSibling;
+          field.style.display = isImage ? 'none' : '';
+          if (label && label.classList.contains('form-label')) {
+            label.style.display = isImage ? 'none' : '';
+          }
+        }
+      });
+    return isImage;
+  },
+
+  imageOverrides() {
+    var out = {};
+    var size = document.getElementById('launch-max-image');
+    if (size && size.value) out.max_image_size = parseInt(size.value, 10);
+    var steps = document.getElementById('launch-image-steps');
+    if (steps && steps.value) out.image_steps = parseInt(steps.value, 10);
+    var dims = document.getElementById('launch-image-size');
+    if (dims && dims.value.trim()) out.image_size = dims.value.trim();
+    return out;
+  },
+
+  // Which loaded models can make pictures. Read from the same instance list
+  // the cards use, so the two cannot disagree about what is running.
+  imageInstances() {
+    var out = [];
+    (this.state.nodes || []).forEach(function (node) {
+      (node.instances || []).forEach(function (inst) {
+        if (inst.kind === 'image' && inst.model) {
+          out.push({ model: inst.model, node: node.node_name || node.node_id,
+                     ready: inst.status === 'serving' });
+        }
+      });
+    });
+    return out;
+  },
+
+  async renderImages() {
+    var mount = document.getElementById('images-content');
+    if (!mount) return;
+    var self = this;
+    var models = this.imageInstances();
+
+    if (!models.length) {
+      mount.innerHTML = '<div class="config-empty">No image model is loaded. ' +
+        'Load one from the launch panel — the catalog has Qwen-Image 2.1 in ' +
+        'FP8 and full precision.</div>';
+      return;
+    }
+    if (this._imagesDrawnFor === models.map(function (m) { return m.model; }).join()) {
+      return;   // the 5s poll must not wipe a half-typed prompt
+    }
+    this._imagesDrawnFor = models.map(function (m) { return m.model; }).join();
+
+    var html = '<div class="config-card"><div class="config-form-grid single">';
+    html += '<div><label class="config-field-label">Model</label>' +
+      '<select class="form-select" id="image-model">' +
+      models.map(function (m) {
+        return '<option value="' + self.esc(m.model) + '">' +
+          self.esc(m.model) + ' · ' + self.esc(m.node) +
+          (m.ready ? '' : ' (still loading)') + '</option>';
+      }).join('') + '</select></div>';
+    html += '<div><label class="config-field-label">Prompt</label>' +
+      '<textarea class="form-input" id="image-prompt" rows="3" ' +
+      'placeholder="a red cube on a white table, studio lighting"></textarea></div>';
+    html += '</div><div class="config-form-grid">';
+    html += '<div><label class="config-field-label">Size</label>' +
+      '<input class="form-input" id="image-size" value="1024x1024"></div>';
+    html += '<div><label class="config-field-label">Steps</label>' +
+      '<input class="form-input" id="image-steps" type="number" min="1" ' +
+      'max="500" value="20"></div>';
+    html += '<div><label class="config-field-label">Seed ' +
+      '<span style="color:var(--text-muted);font-weight:400">(empty = random)</span></label>' +
+      '<input class="form-input" id="image-seed" type="number"></div>';
+    html += '<div><label class="config-field-label">Negative prompt</label>' +
+      '<input class="form-input" id="image-negative"></div>';
+    html += '</div><div class="config-actions">' +
+      '<button class="config-btn" id="image-go">Generate</button>' +
+      '<span class="config-field-hint" id="image-status"></span>' +
+      '</div></div>';
+    html += '<div id="image-gallery" class="image-gallery"></div>';
+    mount.innerHTML = html;
+
+    document.getElementById('image-go').addEventListener('click', function () {
+      self.generateImage();
+    });
+  },
+
+  async generateImage() {
+    var button = document.getElementById('image-go');
+    var status = document.getElementById('image-status');
+    var prompt = (document.getElementById('image-prompt') || {}).value || '';
+    if (!prompt.trim()) { this.toast('A prompt, first', 'warning'); return; }
+
+    var body = {
+      model: document.getElementById('image-model').value,
+      prompt: prompt.trim(),
+      size: (document.getElementById('image-size') || {}).value || '1024x1024',
+      steps: parseInt((document.getElementById('image-steps') || {}).value, 10) || 20,
+      response_format: 'b64_json',
+    };
+    var seed = (document.getElementById('image-seed') || {}).value;
+    if (seed) body.seed = parseInt(seed, 10);
+    var negative = (document.getElementById('image-negative') || {}).value;
+    if (negative && negative.trim()) body.negative_prompt = negative.trim();
+
+    button.disabled = true;
+    var started = Date.now();
+    // A picture takes tens of seconds and there is no progress to report from
+    // the engine, so the elapsed time is the honest thing to show.
+    var ticking = setInterval(function () {
+      if (status) {
+        status.textContent = 'generating… ' +
+          Math.round((Date.now() - started) / 1000) + 's';
+      }
+    }, 1000);
+    try {
+      var resp = await fetch('/v1/images/generations', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      var data = await resp.json().catch(function () { return {}; });
+      if (!resp.ok || data.error) {
+        var message = (data.error && (data.error.message || data.error)) ||
+          ('the engine answered ' + resp.status);
+        if (status) status.textContent = '';
+        this.toast(String(message), 'error');
+      } else {
+        this.showImages(data, body, Math.round((Date.now() - started) / 1000));
+        if (status) {
+          status.textContent = 'done in ' +
+            ((data.ainode && data.ainode.seconds) ||
+             Math.round((Date.now() - started) / 1000)) + 's';
+        }
+      }
+    } catch (err) {
+      if (status) status.textContent = '';
+      this.toast('Error: ' + err.message, 'error');
+    }
+    clearInterval(ticking);
+    button.disabled = false;
+  },
+
+  showImages(data, request, seconds) {
+    var gallery = document.getElementById('image-gallery');
+    if (!gallery) return;
+    var self = this;
+    var caption = this.esc(request.prompt) + ' · ' +
+      this.esc(request.size) + ' · ' + request.steps + ' steps' +
+      (request.seed !== undefined ? ' · seed ' + request.seed : '') +
+      ' · ' + seconds + 's';
+    var cards = (data.data || []).map(function (entry) {
+      // Data URI rather than a blob: the picture is already base64 in the
+      // response, and a blob would need revoking to avoid leaking it.
+      return '<figure class="image-card">' +
+        '<img src="data:image/png;base64,' + entry.b64_json + '" alt="">' +
+        '<figcaption>' + caption + '</figcaption></figure>';
+    }).join('');
+    gallery.insertAdjacentHTML('afterbegin', cards);
+    // Newest first, and bounded: a session of forty pictures at a megabyte
+    // each is a tab that runs out of memory.
+    var figures = gallery.querySelectorAll('.image-card');
+    for (var i = 12; i < figures.length; i++) figures[i].remove();
+    void self;
+  },
+
+  // ========================================================================
   //  LAUNCH PLANNER
   // ========================================================================
   // The server reads the checkpoint's own config.json, the nodes' free memory
@@ -2107,8 +2299,10 @@ const AINode = {
           var verifiedMark = m.verified ? ' ✓' : '';
           var pt = m.proven_tp || 0;
           return '<option value="' + self.esc(repo) + '" data-proven-tp="' + pt + '"'
-            + ' data-size-gb="' + (m.size_gb || 0) + '" data-min-mem="' + (m.min_memory_gb || 0) + '">'
-            + glyph + self.esc(label) + sizeNote + verifiedMark + '</option>';
+            + ' data-size-gb="' + (m.size_gb || 0) + '" data-min-mem="' + (m.min_memory_gb || 0) + '"'
+            + ' data-modality="' + self.esc(m.modality || 'text') + '">'
+            + (m.modality === 'image' ? '\u25a3 ' : glyph)
+            + self.esc(label) + sizeNote + verifiedMark + '</option>';
         }).join('');
       if (cv) select.value = cv;
       // Picking a model auto-recommends sharding + nodes from its size and the
@@ -2119,6 +2313,7 @@ const AINode = {
         // A pin is a decision already made about this model. It outranks the
         // free-memory recommendation, which would otherwise move a pinned
         // model onto whichever nodes happen to be idle right now.
+        self.toggleImageFields(opt.value);
         if (!self.applyPlacement(opt.value)) {
           self.recommendLaunch({
             proven_tp: parseInt(opt.getAttribute('data-proven-tp') || '0', 10),
@@ -2245,6 +2440,10 @@ const AINode = {
       });
       if (Object.keys(env).length) advanced.extra_env = env;
     }
+
+    // An image model takes different settings, and the fields for them are
+    // only on screen when one is selected.
+    Object.assign(advanced, this.imageOverrides ? this.imageOverrides() : {});
 
     var launchBtn = document.getElementById('launch-btn');
     if (launchBtn) { launchBtn.disabled = true; launchBtn.textContent = 'LAUNCHING...'; }

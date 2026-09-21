@@ -306,6 +306,7 @@ Was dieser Knoten bedient und wie er benutzt wird.
 | `gpu_memory_utilization` | der Wert, mit dem sie gestartet wurde; fehlt, wenn keiner gesetzt war |
 | `max_model_len` | Kontextfenster; fehlt, wenn nicht gesetzt |
 | `load_phase` | `starting`, `distributing`, `loading_weights`, `distributed_init`, `profiling`, `ready`, `failed`; fehlt, wenn der Backend keine meldet |
+| `kind` | `image` bei einem Bildmodell. **Fehlt** bei einem LLM — der Normalfall bleibt unbeschriftet, damit ein Dashboard von vor der Bildgenerierung unverändert liest |
 
 `embeddings` sind In-Process-Modelle, keine vLLM-Instanzen — sie haben keinen
 eigenen Port und erscheinen deshalb nicht in `loaded`.
@@ -363,6 +364,24 @@ Prometheus-Endpunkt, je Instanz. AINode liest den aus und destilliert ihn.
 | `time_per_output_token_s` | der Kehrwert der Decode-Geschwindigkeit, wie die Engine sie misst |
 | `e2e_latency_s`, `queue_time_s` | Gesamtdauer und Wartezeit, jeweils als Mittelwert |
 | `spec_acceptance_rate` | ob sich ein spekulativer Drafter lohnt. Unter etwa 0,5 kostet er mehr, als er spart |
+
+### Wenn die Instanz Bilder macht
+
+Dasselbe Topic, dieselbe Form, eigene Namen — ein Dashboard soll nicht wissen
+müssen, welche Engine hinter einem Modell steckt, um zu sehen wie beschäftigt
+es ist:
+
+| Feld | Bedeutung |
+|---|---|
+| `images_generated_total` | erzeugte Bilder seit dem Start der Instanz |
+| `image_seconds_total` | dafür aufgewendete Sekunden |
+| `seconds_per_image` | der Mittelwert daraus; fehlt, solange nichts erzeugt wurde |
+| `steps_per_second` | Entrauschungsschritte pro Sekunde — die eigentliche Geschwindigkeit, unabhängig davon wie viele Schritte eingestellt sind |
+| `requests_running` | läuft gerade eine Generierung? Immer 0 oder 1: die Engine serialisiert, weil zwei gleichzeitige Läufe auf dieser Hardware die Spitze verdoppeln statt die Wartezeit zu halbieren |
+
+Ein Bildmodell hat **keinen** KV-Cache, also fehlen `kv_cache_percent`,
+`preemptions_total` und die Token-Zähler. Das ist kein Ausfall, sondern die
+Abwesenheit von etwas, das es dort nicht gibt.
 
 Die Zeitfelder sind **Mittelwerte** (`sum/count` des Histogramms), keine
 Perzentile: ein vollständiger Bucket-Satz sind Dutzende Zeilen pro Histogramm

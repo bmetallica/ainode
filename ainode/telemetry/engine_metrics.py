@@ -17,6 +17,11 @@ operator actually has during a busy hour are inside vLLM and were invisible:
     a prefill-bound load and a decode-bound one look identical in tokens per
     second and need opposite fixes.
 
+The image engine publishes the same way, with its own names — how many
+pictures, how long each took, how many denoising steps a second. Same topic,
+same shape, so a dashboard does not have to know which engine is behind a
+model to read how busy it is.
+
 vLLM exposes all of it in Prometheus text format on each instance's own port.
 This reads that and republishes a distilled subset: a handful of named fields
 rather than several hundred bucket lines, because the point is a dashboard
@@ -40,9 +45,17 @@ _LINE_RE = re.compile(r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)"
 #: The gauges and counters worth a field of their own, and what to call them.
 #: Names change between vLLM builds, so each entry lists the spellings seen.
 WANTED = (
+    # The image engine's own counters. Same topic, same shape: a dashboard
+    # should not need to know which engine is behind a model to read how busy
+    # it is.
+    ("images_generated_total", ("ainode:images_generated_total",), 1.0),
+    ("image_seconds_total", ("ainode:image_seconds_total",), 1.0),
+    ("seconds_per_image", ("ainode:seconds_per_image",), 1.0),
+    ("steps_per_second", ("ainode:steps_per_second",), 1.0),
     ("kv_cache_percent", ("vllm:gpu_cache_usage_perc",
                           "vllm:kv_cache_usage_perc"), 100.0),
-    ("requests_running", ("vllm:num_requests_running",), 1.0),
+    ("requests_running", ("vllm:num_requests_running",
+                          "ainode:requests_running"), 1.0),
     ("requests_waiting", ("vllm:num_requests_waiting",), 1.0),
     ("requests_swapped", ("vllm:num_requests_swapped",), 1.0),
     ("preemptions_total", ("vllm:num_preemptions_total",
@@ -52,6 +65,11 @@ WANTED = (
     ("spec_accepted_tokens_total", ("vllm:spec_decode_num_accepted_tokens_total",), 1.0),
     ("spec_draft_tokens_total", ("vllm:spec_decode_num_draft_tokens_total",), 1.0),
 )
+
+#: Fields that are rates or averages rather than counts. Rounding one of
+#: these to a whole number turns 0.48 steps a second into 0, which reads as a
+#: stalled engine — and 41.3 seconds an image into 41, which is merely wrong.
+_FLOAT_FIELDS = frozenset({"seconds_per_image", "steps_per_second"})
 
 #: Histograms worth an average. A full bucket set is dozens of lines per
 #: histogram and nothing a dashboard can use without a Prometheus behind it;
@@ -106,8 +124,18 @@ def distil(text: str) -> Dict[str, Any]:
         value = _first(metrics, names)
         if value is None:
             continue
-        # Counters are integers; a gauge scaled to a percentage is not.
-        out[field] = round(value * scale, 2) if scale != 1.0 else round(value)
+        if field in ("seconds_per_image", "steps_per_second") and not value:
+            # The server only emits these once it has made something. A zero
+            # would read as "infinitely fast" on a gauge.
+            continue
+        # Counters are integers; a gauge scaled to a percentage is not, and
+        # neither is a rate.
+        if scale != 1.0:
+            out[field] = round(value * scale, 2)
+        elif field in _FLOAT_FIELDS:
+            out[field] = round(value, 3)
+        else:
+            out[field] = round(value)
 
     for field, base in _AVERAGES:
         total = metrics.get(f"{base}_sum")
