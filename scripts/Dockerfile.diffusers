@@ -1,0 +1,47 @@
+# syntax=docker/dockerfile:1.6
+#
+# AINode image-generation engine.
+#
+# FROM the vLLM engine image, deliberately. The hard part on this hardware is
+# not diffusers — it is torch with CUDA for aarch64 and Blackwell, and that
+# stack is already in vllm-node, already built, already proven on the cluster.
+# Starting from a generic python image would mean re-solving the one problem
+# that has cost this deployment real days (`Failed to find C compiler`, the
+# DeepGEMM build, the InstantTensor buffer ceiling).
+#
+# The cost is size: this image inherits all of vLLM. That is acceptable —
+# it shares every layer with an image the nodes already hold, so the marginal
+# transfer is the diffusers layer alone.
+#
+# Build:
+#   scripts/build-diffusers-image.sh
+# Distribute:
+#   scripts/update-cluster.sh --images --nodes Spark2,Spark3
+
+ARG ENGINE_BASE=vllm-node:latest
+FROM ${ENGINE_BASE}
+
+LABEL org.opencontainers.image.source="https://github.com/bmetallica/ainode"
+LABEL org.opencontainers.image.description="AINode image-generation engine — diffusers on the proven vLLM torch/CUDA stack."
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL ai.ainode.engine="diffusers"
+
+# --no-deps on torch's account: diffusers lists torch as a dependency, and a
+# plain install happily replaces the aarch64/Blackwell build underneath with
+# a generic wheel — which is exactly the failure this image exists to avoid.
+# The four below are the whole of what the server needs.
+RUN python -m pip install --no-cache-dir \
+        "diffusers>=0.36" \
+        "accelerate>=1.0" \
+        "safetensors>=0.4" \
+        "sentencepiece>=0.2" \
+ && python -c "import torch, diffusers; print('torch', torch.__version__, 'diffusers', diffusers.__version__)"
+
+# Read at startup by the server; overridden per instance by the backend.
+ENV AINODE_IMAGE_ENGINE=1 \
+    HF_HUB_OFFLINE=1
+
+# The server itself is not baked in: the backend writes it next to the launch
+# and mounts it, the same way the eugr path hands its launch script to the
+# engine container. One less image rebuild per change to the serving code.
+CMD ["python", "-c", "print('AINode diffusers engine image. The backend supplies the server script.')"]
