@@ -97,8 +97,14 @@ launch events and log forwarding. Every topic is documented in
 [`docs/mqtt-schema.md`](docs/mqtt-schema.md).
 
 **Image generation** — a second engine kind alongside vLLM, which cannot load
-a diffusers pipeline at all. Same card, same guard, same profiles. See
+a diffusers pipeline at all. Same card, same guard, same profiles. Any model
+from the Hub, in any quantisation that loads: the two catalog entries are
+suggestions, and the checkpoint itself decides which engine serves it. See
 [`images.md`](images.md).
+
+**Finding a model at all** — the Hub search knows what this deployment can
+serve and what it cannot. Filter by kind, and where something will not run,
+the card says why in a sentence rather than going grey.
 
 **Self-contained distribution** — its own images, installer and CI, so it does
 not depend on upstream's releases.
@@ -387,6 +393,10 @@ set the read token with `ainode config --hf-token hf_xxx`.
 | Image generation — diffusers engine alongside vLLM, OpenAI `/v1/images/generations`, same card and guard | ✅ |
 | Per-instance engine containers, launch scripts and log files | ✅ |
 | Client config generator (OpenCode) built from what is actually serving | ✅ |
+| Hugging Face search by kind — chat / vision / image generation / embeddings; the kind changes the query, not just the result list | ✅ |
+| Per-kind format verdict with its reason — "GGUF holds the transformer alone", "no aarch64 build of Nunchaku's kernels" — instead of a dimmed card | ✅ |
+| Embedding models findable in the Hub search (they were excluded, correctly for vLLM and wrongly for a node that serves them in-process) | ✅ |
+| Any quantisation that can be loaded: fp8, int4, AWQ, GPTQ, NVFP4, bf16 — the line is the layout, not the bit width | ✅ |
 
 ---
 

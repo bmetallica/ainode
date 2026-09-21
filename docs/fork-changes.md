@@ -61,6 +61,29 @@ Upstream's `ainode/bench/` was extended rather than replaced: selectable
 context size and padded prompts, so a throughput number says at what length it
 was measured.
 
+### The model search
+
+Worth its own note, because it decides what an operator can find at all.
+Upstream searches `text-generation` and judges a repo runnable by looking for
+`mlx`, `gguf` or `ggml` in its name. Here the search knows **kinds** — chat,
+vision, image generation, embeddings — and a kind is not a label: it decides
+which engine runs the model and therefore which formats can work. So:
+
+* the Hub is queried per kind, and the filter in the UI changes the *query*
+  rather than narrowing the results of the wrong one;
+* embedding models are findable (upstream's filter excluded them, correctly
+  for the vLLM engine and wrongly for a deployment that serves them
+  in-process);
+* the servability verdict is per kind, read from the Hub's tags and library
+  name rather than the repo title, and **carries its reason**. GGUF on a chat
+  model is llama.cpp's format; GGUF on an image model holds the transformer
+  alone while the text encoder is the larger half; Nunchaku is not
+  "unsupported" but has no aarch64 build of its kernels. That last distinction
+  is the one that tells someone whether to wait.
+
+Any quantisation that can actually be loaded is offered — fp8, int4, AWQ,
+GPTQ, NVFP4, bf16. The line is not the bit width but the layout.
+
 ---
 
 ## 3. What was changed in upstream's own files
@@ -72,7 +95,7 @@ The large ones, by how much:
 | `web/static/js/app.js` | +2500 | Everything above that has a screen: the launch planner's hint, the instance card and its details dialog, profiles, placement, the memory-guard settings, the image panel, the cluster graphic's node detail |
 | `api/server.py` | +970 | ~120 routes where upstream has ~29; the cluster projections, the proxy's image route, the sync loop's extra duties |
 | `engine/backends/eugr.py` | +930 | Per-instance containers, scripts and logs; the parallel axes; image and weight distribution; the phase tracker; `kill()` |
-| `models/registry.py` | +740 | Exact repo sizes, servable pipeline tags, the curated cluster catalog, modality, the size cache |
+| `models/registry.py` | +740 | Exact repo sizes, search by kind and its per-kind format verdict, the curated cluster catalog, modality, the size cache |
 | `models/api_routes.py` | +680 | Stacked instances, the admission gate, per-load overrides that reset rather than leak, engine detection from the checkpoint |
 | `engine/sharding_routes.py` | +465 | The real parallel plan, remembered placement, node-failure relaunch, the refusal messages |
 
@@ -80,7 +103,12 @@ The large ones, by how much:
 orchestrator image, the image-generation engine, the registry cache, the
 cluster updater and a diagnostic.
 
-Tests: **83 new files**, 13 upstream files extended, 2539 tests.
+Tests: **87 new files**, 13 upstream files extended, 2587 tests. Two of them
+hold the documentation to the code rather than to good intentions:
+`test_fork_documentation.py` checks that every module and link this file and
+the README name exists and that every feature row claiming an endpoint matches
+the live router, and `test_mqtt_schema_doc.py` checks that every published
+field appears in the schema. Change a published field and one of them fails.
 
 ---
 
