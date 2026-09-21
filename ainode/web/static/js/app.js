@@ -574,6 +574,7 @@ const AINode = {
     switch (this.state.currentView) {
       case 'dashboard':
         this.renderDashboard();
+        this.renderUpdateBanner();
         break;
       case 'downloads':
         // Don't rebuild the downloads view during periodic refresh — just update the queue
@@ -653,6 +654,13 @@ const AINode = {
     // Version check every 30 minutes
     this.checkVersion();
     this.state.versionInterval = setInterval(function () { self.checkVersion(); }, 30 * 60 * 1000);
+    // Are we behind our own fork's branch? Hourly, which is often enough for
+    // something that moves a few times a day and rare enough to stay well
+    // inside GitHub's unauthenticated rate limit with three nodes behind one
+    // address.
+    this.checkForSourceUpdate(false);
+    this.state.sourceUpdateInterval = setInterval(
+      function () { self.checkForSourceUpdate(false); }, 60 * 60 * 1000);
     // Initial fetch
     this.refresh();
   },
@@ -6175,6 +6183,7 @@ const AINode = {
       case 'node':        return this.renderConfigNode();
       case 'storage':     return this.renderConfigStorage();
       case 'memory':      return this.renderConfigMemory();
+      case 'updates':     return this.renderConfigUpdates();
       case 'training':    return this.renderConfigTrainingDefaults();
       case 'security':    return this.renderConfigSecurity();
       case 'network':     return this.renderConfigNetwork();
@@ -6857,6 +6866,235 @@ const AINode = {
       this.toast('Error: ' + err.message, 'error');
     }
     this.renderConfigMemory();
+  },
+
+  // ----- Updates ------------------------------------------------------------
+  // This deployment updates from source, not from a published image: git pull
+  // on the head, then scripts/update-cluster.sh, which builds, distributes
+  // and restarts. So the question is not "is there a newer tag" but "is our
+  // fork's branch ahead of the commit this image was built from".
+
+  async renderConfigUpdates() {
+    var mount = this._configMount();
+    if (!mount) return;
+    mount.innerHTML = '<div class="config-empty">Loading…</div>';
+    var self = this;
+    var data = await this.fetchJSON('/api/update/settings');
+    if (!data) {
+      mount.innerHTML = '<div class="config-empty">Unable to load.</div>';
+      return;
+    }
+    var s = data.settings || {};
+    var state = this.state.updateState || {};
+
+    var html = '';
+    html += '<h2 class="config-section-title">Updates</h2>';
+    html += '<p class="config-section-desc">This cluster builds on the head ' +
+      'rather than pulling a published image, so an update is a ' +
+      '<code>git pull</code> followed by <code>scripts/update-cluster.sh</code>: ' +
+      'build here, distribute to the peers, restart members first and the ' +
+      'head last. Checked hourly against the branch below.</p>';
+
+    html += '<div class="config-card">';
+    html += '<h3 class="config-card-title">Status</h3>';
+    html += '<p class="config-card-desc">' + this.updateStatusLine(state, data) +
+      '</p>';
+    if (state.commits && state.commits.length) {
+      html += '<div class="plan-notes">' + state.commits.map(function (c) {
+        return '<div><code>' + self.esc(c.sha) + '</code> ' +
+          self.esc(c.subject) + '</div>';
+      }).join('') + '</div>';
+    }
+    if (data.why_not) {
+      html += '<div class="plan-warn" style="white-space:pre-wrap">' +
+        this.esc(data.why_not) + '</div>';
+    }
+    html += '<div class="config-actions">' +
+      '<button class="config-btn" id="upd-check">Check for updates</button>' +
+      '<button class="config-btn" id="upd-run"' +
+      (data.can_run ? '' : ' disabled') + '>Update the cluster</button>' +
+      '<span class="config-field-hint" id="upd-hint"></span>' +
+      '</div></div>';
+
+    html += '<div class="config-card">';
+    html += '<h3 class="config-card-title">Where updates come from</h3>';
+    html += '<div class="config-form-grid">';
+    html += this._field('Repository', 'source_repo', s.source_repo,
+                        { hint: 'owner/name on GitHub — your fork, not upstream' });
+    html += this._field('Branch', 'source_branch', s.source_branch, {});
+    html += this._field('Checkout on the head', 'source_dir', s.source_dir,
+                        { hint: 'where git pull runs; mounted into the container as ' +
+                                (data.container_source_dir || '/ainode-src') });
+    html += '</div>';
+    html += '<label class="config-field-label" style="margin-top:12px">Peer nodes (SSH)</label>';
+    html += '<input class="form-input" id="upd-nodes" value="' +
+      this.esc((s.cluster_ssh_nodes || []).join(', ')) + '" ' +
+      'placeholder="Spark2, Spark3">';
+    html += '<div class="config-field-hint">Exactly as <code>ssh &lt;name&gt;</code> ' +
+      'would take them. Held here rather than taken from discovery: an SSH ' +
+      'name and a fabric address are different things, and only you know the ' +
+      'mapping. The head is not listed — it is this node.</div>';
+    html += '<div class="config-actions">' +
+      '<button class="config-btn" id="upd-save">Save</button></div>';
+    html += '</div>';
+
+    html += '<div class="config-card" id="upd-log-card" style="display:none">' +
+      '<h3 class="config-card-title">Output</h3>' +
+      '<pre class="update-log" id="upd-log"></pre></div>';
+
+    mount.innerHTML = html;
+
+    document.getElementById('upd-check').addEventListener('click', function () {
+      self.checkForSourceUpdate(true).then(function () {
+        self.renderConfigUpdates();
+      });
+    });
+    document.getElementById('upd-save').addEventListener('click', function () {
+      self.saveUpdateSettings();
+    });
+    var run = document.getElementById('upd-run');
+    if (run) run.addEventListener('click', function () { self.runSourceUpdate(); });
+    if (this._updateJobPolling) this.pollUpdateJob();
+  },
+
+  updateStatusLine(state, settings) {
+    var repo = (settings && settings.settings && settings.settings.source_repo)
+      || (state && state.repo) || '';
+    if (state && state.error) {
+      return 'Could not check ' + this.esc(repo) + ': ' + this.esc(state.error);
+    }
+    if (!state || !state.latest) {
+      return 'Not checked yet.';
+    }
+    if (!state.update_available) {
+      return 'Up to date with ' + this.esc(repo) + '@' +
+        this.esc(state.branch || 'main') + ' (' +
+        this.esc((state.current || '').slice(0, 8)) + ').';
+    }
+    return '<strong>' + state.behind + ' commit' +
+      (state.behind === 1 ? '' : 's') + ' behind</strong> ' + this.esc(repo) +
+      '@' + this.esc(state.branch || 'main') + ' — running ' +
+      this.esc((state.current || '').slice(0, 8)) + ', latest ' +
+      this.esc((state.latest || '').slice(0, 8)) + '.';
+  },
+
+  // Hourly, and on demand. A manual check passes force, because a "check now"
+  // that returns a cached answer is not a check.
+  async checkForSourceUpdate(force) {
+    var data = await this.fetchJSON('/api/update/check' + (force ? '?force=1' : ''));
+    if (data) {
+      this.state.updateState = data;
+      this.renderUpdateBanner();
+    }
+    return data;
+  },
+
+  renderUpdateBanner() {
+    var state = this.state.updateState;
+    var mount = document.getElementById('update-banner');
+    if (!mount) return;
+    if (!state || !state.update_available) {
+      mount.innerHTML = '';
+      mount.style.display = 'none';
+      return;
+    }
+    mount.style.display = '';
+    mount.innerHTML =
+      '<span>⬆ <strong>' + state.behind + ' commit' +
+      (state.behind === 1 ? '' : 's') + '</strong> behind ' +
+      this.esc(state.repo || '') + '@' + this.esc(state.branch || 'main') +
+      '</span><button class="btn-ghost server-btn-sm" id="update-banner-go">' +
+      'Updates</button>';
+    var self = this;
+    var go = document.getElementById('update-banner-go');
+    if (go) {
+      go.addEventListener('click', function () {
+        self.state.configSection = 'updates';
+        self.navigate('config');
+        self._configViewInitialized = true;
+        self.renderConfig();
+      });
+    }
+  },
+
+  async saveUpdateSettings() {
+    var nodes = (document.getElementById('upd-nodes') || {}).value || '';
+    var body = {
+      source_repo: (document.getElementById('cfg-f-source_repo') || {}).value || '',
+      source_branch: (document.getElementById('cfg-f-source_branch') || {}).value || '',
+      source_dir: (document.getElementById('cfg-f-source_dir') || {}).value || '',
+      cluster_ssh_nodes: nodes.split(/[,\s]+/).filter(function (n) { return n; }),
+    };
+    try {
+      var resp = await fetch('/api/update/settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      var data = await resp.json().catch(function () { return {}; });
+      if (!resp.ok || data.error) {
+        this.toast(data.error || 'Could not save', 'error');
+        return;
+      }
+      this.toast('Saved', 'success');
+      // The repo may have changed, so the last answer is about the old one.
+      this.state.updateState = null;
+      await this.checkForSourceUpdate(true);
+    } catch (err) {
+      this.toast('Error: ' + err.message, 'error');
+    }
+    this.renderConfigUpdates();
+  },
+
+  async runSourceUpdate() {
+    var nodes = ((document.getElementById('upd-nodes') || {}).value || '')
+      .split(/[,\s]+/).filter(function (n) { return n; });
+    if (!confirm('Update the cluster?\n\ngit pull, then build here and ' +
+                 'distribute to ' + (nodes.join(', ') || 'no peers') +
+                 '.\n\nEvery node restarts, so loaded models are unloaded — ' +
+                 'save a profile first if you want them back. This node ' +
+                 'restarts LAST and its web UI will drop for a moment when ' +
+                 'it does.')) return;
+    try {
+      var resp = await fetch('/api/update/run', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nodes: nodes }),
+      });
+      var data = await resp.json().catch(function () { return {}; });
+      if (!resp.ok || data.error) {
+        this.toast(data.error || 'Could not start', 'error');
+        return;
+      }
+      this._updateJobPolling = true;
+      this.pollUpdateJob();
+    } catch (err) {
+      this.toast('Error: ' + err.message, 'error');
+    }
+  },
+
+  async pollUpdateJob() {
+    var card = document.getElementById('upd-log-card');
+    var log = document.getElementById('upd-log');
+    var hint = document.getElementById('upd-hint');
+    if (card) card.style.display = '';
+    var job = await this.fetchJSON('/api/update/status');
+    if (job && log) {
+      log.textContent = (job.lines || []).join('\n');
+      log.scrollTop = log.scrollHeight;
+    }
+    if (hint && job) {
+      hint.textContent = job.running ? 'running…'
+        : (job.status === 'done' ? 'done' : (job.error || job.status || ''));
+    }
+    // The head restarts last, which from in here means this container stops
+    // itself — so the poll ending in a failed fetch is the expected way for a
+    // successful update to finish.
+    if (job && job.running) {
+      var self = this;
+      setTimeout(function () { self.pollUpdateJob(); }, 2000);
+    } else {
+      this._updateJobPolling = false;
+      if (job && job.status === 'done') this.checkForSourceUpdate(true);
+    }
   },
 
   // ----- Training Defaults --------------------------------------------------

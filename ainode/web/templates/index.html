@@ -63,6 +63,8 @@
     <main class="center-stage" id="center-stage">
       <!-- Dashboard view (default) -->
       <div id="view-dashboard" class="view">
+        <!-- Filled by app.js when this node is behind its fork's branch. -->
+        <div id="update-banner" class="update-banner" style="display:none"></div>
         <div id="cluster-hero-pill" class="cluster-hero-pill" style="display:none">
           <span class="hero-label">CLUSTER</span>
           <span id="hero-nodes">0 nodes</span>
@@ -134,6 +136,7 @@
               <button class="config-nav-item" data-section="node">🖥️ Node Identity</button>
               <button class="config-nav-item" data-section="storage">📦 Storage</button>
               <button class="config-nav-item" data-section="memory">🛡️ Memory Guard</button>
+              <button class="config-nav-item" data-section="updates">⬆️ Updates</button>
               <button class="config-nav-item" data-section="training">🎓 Training Defaults</button>
               <button class="config-nav-item" data-section="security">🔒 Security</button>
               <button class="config-nav-item" data-section="network">🌐 Network</button>

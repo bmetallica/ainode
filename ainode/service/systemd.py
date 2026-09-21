@@ -80,6 +80,13 @@ DOCKER_RUN_CMD = (
     # baked in here so the retired 97-p5-nvidia-backend.conf drop-in is no
     # longer needed to carry them.
     " -v {home}/.docker:/root/.docker:ro"
+    # The source checkout, so a source update can run from the UI: git pull
+    # plus scripts/update-cluster.sh, which is how this deployment updates —
+    # it builds on the head rather than pulling a published image. Writable,
+    # because git pull writes. Conditional: rendered only when a checkout is
+    # actually there, so a node installed from an image alone does not get a
+    # mount that fails its container start.
+    "{source_mount}"
     " -e AINODE_HOST_HOME={ainode_home}"
     # Marks the running container as launched by the swappable-image unit, so the
     # in-container update path knows a self-`docker stop` will image-swap (systemd
@@ -132,6 +139,26 @@ def _systemctl(args: list[str], user_mode: bool = False, capture: bool = False):
     subprocess.run(cmd, check=True, timeout=30)
 
 
+def _source_mount() -> str:
+    """``-v <checkout>:/ainode-src`` when there is a checkout, else "".
+
+    Looked up at render time rather than at container start: a node that was
+    installed from an image and has no repository should not be given a mount
+    that makes its unit fail. Re-run ``ainode service install`` after cloning
+    one and it appears.
+    """
+    from ainode.update.runner import CONTAINER_SOURCE_DIR, DEFAULT_SOURCE_DIR
+
+    candidates = [os.environ.get("AINODE_SOURCE_DIR") or "", DEFAULT_SOURCE_DIR]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if (path / ".git").exists() and (path / "scripts").is_dir():
+            return f" -v {path}:{CONTAINER_SOURCE_DIR}"
+    return ""
+
+
 def generate_unit_file(user_mode: bool = False) -> str:
     """Generate the systemd unit file content.
 
@@ -146,6 +173,7 @@ def generate_unit_file(user_mode: bool = False) -> str:
     exec_start = DOCKER_RUN_CMD.format(
         ainode_home=ainode_home,
         home=home,
+        source_mount=_source_mount(),
         image="${AINODE_IMAGE}",
     )
     return UNIT_FILE_TEMPLATE.format(

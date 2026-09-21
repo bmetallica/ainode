@@ -115,6 +115,22 @@ class NodeConfig:
     image_steps: int = 20
     image_size: str = "1024x1024"
     image_dtype: str = "bfloat16"
+    # --- updating from source -----------------------------------------------
+    # This cluster builds on the head rather than pulling a published image:
+    # a fork's own main, a git pull, scripts/update-cluster.sh. All three need
+    # to be settable, because a fork of a fork has a different repo and an
+    # operator's checkout is wherever they put it.
+    source_repo: str = "bmetallica/ainode"
+    source_branch: str = "main"
+    #: The checkout on the HOST. Empty means /opt/ainode, which is where the
+    #: installer puts it.
+    source_dir: str = ""
+    #: SSH targets for the peers, exactly as `ssh <name>` would take them —
+    #: "Spark2", "admin@10.0.0.3", whatever the operator's config resolves.
+    #: Held here rather than derived from discovery because an SSH name and a
+    #: fabric address are different things, and only the operator knows the
+    #: mapping.
+    cluster_ssh_nodes: list = field(default_factory=list)
     host_memory_guard: bool = True
     host_memory_warn_gb: float = 8.0
     host_memory_critical_gb: float = 4.0

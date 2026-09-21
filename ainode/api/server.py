@@ -48,6 +48,7 @@ from ainode.placement.api_routes import register_placement_routes
 from ainode.assist.api_routes import register_assist_routes
 from ainode.planner.api_routes import register_planner_routes
 from ainode.measure.api_routes import register_measurement_routes
+from ainode.update.api_routes import register_update_routes
 from ainode.safety.api_routes import register_safety_routes
 from ainode.profiles.api_routes import register_profile_routes
 from ainode.profiles.store import ProfileStore
@@ -254,6 +255,10 @@ def create_app(
     # What each model actually cost here, so the next plan can prefer a
     # measurement to an estimate.
     register_measurement_routes(app)
+
+    # Updating this node from its own fork's source, rather than from a
+    # published image.
+    register_update_routes(app)
 
     # The host memory guard. Registered everywhere: the nodes are what crashed.
     register_safety_routes(app)
