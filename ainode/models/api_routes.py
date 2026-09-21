@@ -149,7 +149,13 @@ def load_instance_manifest() -> list:
 _OVERRIDE_KEYS = ("served_model_name", "max_model_len", "kv_cache_dtype",
                   "kv_cache_dtype_explicit", "quantization", "trust_remote_code",
                   "extra_vllm_args", "engine_image", "engine_image_source",
-                  "engine_image_eugr", "extra_env")
+                  "engine_image_eugr", "extra_env",
+                  # Which engine serves this instance, and the knobs that only
+                  # an image model has. An LLM load resets them to the class
+                  # defaults like everything else here, so loading a text
+                  # model after an image one cannot inherit "diffusers".
+                  "engine_backend", "max_image_size", "image_steps",
+                  "image_size", "image_dtype")
 
 
 def drafter_base_model(model: str) -> str:
@@ -232,6 +238,8 @@ def apply_catalog_recipe(model: str, overrides: dict, gmu=None):
     recipe = catalog_recipe(model)
     if not recipe:
         return overrides, gmu
+    if "engine_backend" in recipe and "engine_backend" not in overrides:
+        overrides["engine_backend"] = recipe["engine_backend"]
     if "engine_image" in recipe and "engine_image" not in overrides:
         overrides["engine_image"] = recipe["engine_image"]
         overrides["engine_image_source"] = "catalog"
@@ -385,6 +393,11 @@ def catalog_recipe(model: str) -> dict:
                 recipe["extra_env"] = dict(info.extra_env)
             if getattr(info, "recommended_gmu", 0):
                 recipe["gpu_memory_utilization"] = info.recommended_gmu
+            # Which engine to use. For an image model this is not an
+            # optimisation but the difference between launching and failing:
+            # vLLM cannot load a diffusers pipeline at all.
+            if getattr(info, "engine_backend", ""):
+                recipe["engine_backend"] = info.engine_backend
             return recipe
     return {}
 
@@ -652,7 +665,11 @@ def append_solo_instance(app, model: str, gmu=None, *, overrides=None, persist: 
 
     manager.add(InstanceRecord(
         instance_id=instance_id, model=model, head_node_id=config.node_id or "head",
-        peer_ips=[], api_port=port, tensor_parallel_size=1, status="starting"), backend)
+        peer_ips=[], api_port=port, tensor_parallel_size=1, status="starting",
+        # So the card, the profile and the telemetry know what this is without
+        # having to ask the backend what class it happens to be.
+        kind=("image" if str(getattr(inst_config, "engine_backend", "")) ==
+              "diffusers" else "llm")), backend)
 
     if is_primary:
         # Back-compat: the proxy/status path reads app["config"] + app["engine"].
@@ -887,6 +904,34 @@ def parse_load_overrides(body: dict):
                                      status=400)
         overrides["engine_image"] = img
         overrides["engine_image_source"] = "caller"
+    if body.get("engine_backend") is not None:
+        backend = str(body["engine_backend"]).strip().lower()
+        if backend not in ("", "eugr", "nvidia", "diffusers"):
+            return None, web.json_response(
+                {"error": f"unknown engine_backend {backend!r}. "
+                          f"Valid: eugr, nvidia, diffusers"}, status=400)
+        overrides["engine_backend"] = backend
+    # Image-generation knobs. max_image_size is the one that matters: a
+    # diffusion run's peak is its activations and the VAE decode, both growing
+    # with the square of the edge, and it lands at the END of the run. It is
+    # the counterpart to --max-model-len, and the only thing standing between
+    # one oversized request and a node that needs a power cycle.
+    for field, low, high in (("max_image_size", 64, 8192),
+                             ("image_steps", 1, 500)):
+        if body.get(field) is not None:
+            try:
+                value = int(body[field])
+            except (TypeError, ValueError):
+                return None, web.json_response(
+                    {"error": f"{field} must be a whole number"}, status=400)
+            if not low <= value <= high:
+                return None, web.json_response(
+                    {"error": f"{field} must be between {low} and {high}"},
+                    status=400)
+            overrides[field] = value
+    for field in ("image_size", "image_dtype"):
+        if body.get(field) is not None:
+            overrides[field] = str(body[field]).strip()
     return overrides, None
 
 

@@ -139,6 +139,14 @@ class ModelInfo:
     description: str
     quantization: Optional[str] = None
     min_memory_gb: float = 0.0
+    #: What kind of model this is, and therefore which engine serves it.
+    #: "text" is every LLM and vision-language model — vLLM. "image" is a
+    #: diffusers pipeline, which vLLM cannot load at all. Defaulted rather
+    #: than required, so every existing catalog entry keeps its meaning.
+    modality: str = "text"
+    #: Which engine backend serves it, when it is not the node default. Set
+    #: for image models; empty means "whatever this node runs for LLMs".
+    engine_backend: str = ""
     family: str = ""
     params_b: float = 0.0
     context_length: int = 0
@@ -273,6 +281,55 @@ FALLBACK_CATALOG: dict[str, ModelInfo] = {
 # them. NVFP4 is native on Blackwell; these run distributed (TP=N) across nodes.
 
 CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
+    # --- Image generation ----------------------------------------------------
+    # Not vLLM: a diffusers pipeline, served by the engine in
+    # scripts/Dockerfile.diffusers. See images.md.
+    #
+    # FP8 rather than the bf16 original, for three reasons that all apply on
+    # this hardware: it is a complete diffusers pipeline so it loads by the
+    # same path, fp8 is native on Blackwell tensor cores rather than unpacked
+    # to bf16 to compute, and 18 GB instead of ~33 GB is the difference
+    # between fitting on a node that already serves a coding model and fitting
+    # comfortably.
+    #
+    # NOT verified: nothing here has been run on the fleet yet. The figures
+    # below are the repo's own size and a conservative headroom; step 0 in
+    # images.md replaces min_memory_gb and the description with measurements.
+    "qwen-image-2.1-fp8": ModelInfo(
+        id="qwen-image-2.1-fp8",
+        name="Qwen-Image 2.1 (FP8)",
+        hf_repo="Rin247/Qwen-Image-2.1-FP8",
+        size_gb=18.0,
+        modality="image",
+        engine_backend="diffusers",
+        min_memory_gb=28.0,
+        description=(
+            "Text-to-image, 20B MMDiT, FP8. Served by the diffusers engine, "
+            "not vLLM. No CPU offload on this hardware: the CPU and the GPU "
+            "share one physical pool, so offloading moves nothing and pays "
+            "for the copies. Speed and peak memory are not measured yet — "
+            "see images.md, step 0."
+        ),
+        quantization="FP8", family="qwen", license="Apache-2.0",
+        format="safetensors", capabilities=["image_generation"],
+        verified=False, recommended=False,
+    ),
+    "qwen-image-2.1": ModelInfo(
+        id="qwen-image-2.1",
+        name="Qwen-Image 2.1 (bf16)",
+        hf_repo="Qwen/Qwen-Image-2.1",
+        size_gb=33.0,
+        modality="image",
+        engine_backend="diffusers",
+        min_memory_gb=43.0,
+        description=(
+            "The full-precision original. Prefer the FP8 entry unless it "
+            "turns out not to load: 15 GB more for a quality difference that "
+            "has to be judged by eye, side by side."
+        ),
+        family="qwen", license="Apache-2.0", format="safetensors",
+        capabilities=["image_generation"], verified=False, recommended=False,
+    ),
     # --- Recipe-carrying models (need a newer engine + model-specific flags) ---
     # Both were validated end-to-end on the GB10 fleet 2026-08-13/15; the flag
     # sets below are the vendor/community recipes verbatim. They require vLLM
@@ -1770,7 +1827,30 @@ class ModelManager:
     #: One query per tag, merged: list_models takes a single pipeline_tag, and
     #: dropping the filter entirely would bury the results under embeddings
     #: and classifiers that this node cannot run at all.
-    SERVABLE_PIPELINE_TAGS = ("text-generation", "image-text-to-text")
+    SERVABLE_PIPELINE_TAGS = ("text-generation", "image-text-to-text",
+                              "text-to-image")
+
+    #: pipeline_tag → which engine serves it. The distinction is real and not
+    #: cosmetic: a text-to-image repo is a diffusers PIPELINE — model_index.json
+    #: with a transformer, a text encoder, a VAE and a scheduler beside it —
+    #: and vLLM cannot load it at all. Hiding those models was correct while
+    #: nothing could serve them; now that something can, they are shown and
+    #: labelled, because a search result that leads to a launch failure is
+    #: worse than no search result.
+    MODALITY_BY_TAG = {
+        "text-generation": "text",
+        "image-text-to-text": "text",
+        "text-to-image": "image",
+    }
+
+    @staticmethod
+    def modality_for(pipeline_tag: str) -> str:
+        return ModelManager.MODALITY_BY_TAG.get(
+            str(pipeline_tag or "").strip().lower(), "text")
+
+    @staticmethod
+    def backend_for_modality(modality: str) -> str:
+        return "diffusers" if str(modality) == "image" else ""
 
     @staticmethod
     def _search_every_servable_tag(api, *, query, limit, **kwargs):
@@ -1830,8 +1910,17 @@ class ModelManager:
                     if tag in repo_l:
                         quant = label
                         break
+                modality = ModelManager.modality_for(
+                    getattr(m, "pipeline_tag", ""))
+                # A GGUF or MLX repo is not servable by either engine here.
+                # For an image model the reason differs — diffusers loads GGUF
+                # only through a separate single-file path, and only for the
+                # transformer — but the verdict is the same, and a verdict
+                # that reads "this will not start" is the useful one.
                 vllm_ok = not ("mlx" in repo_l or "gguf" in repo_l or "ggml" in repo_l)
                 results.append({
+                    "modality": modality,
+                    "engine_backend": ModelManager.backend_for_modality(modality),
                     "id": slug,
                     "name": repo.split("/")[-1],
                     "hf_repo": repo,

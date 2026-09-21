@@ -206,6 +206,12 @@ def create_app(
     app.router.add_get("/v1/models", handle_v1_models)
     app.router.add_post("/v1/chat/completions", proxy_to_vllm)
     app.router.add_post("/v1/completions", proxy_to_vllm)
+    # Images, through the same proxy. It routes on the model name and forwards
+    # the path verbatim, so an image instance on node 3 is reachable from the
+    # head exactly like a chat model — no second routing table, no special
+    # case. The generation itself can take minutes; the proxy already leaves
+    # the total timeout uncapped for a slow cold start.
+    app.router.add_post("/v1/images/generations", proxy_to_vllm)
 
     register_model_routes(app)
 

@@ -73,6 +73,48 @@ def _recipe(app, model: str):
         return None
 
 
+def _is_image(recipe, facts, app, model: str) -> bool:
+    """Is this a diffusion pipeline rather than an LLM?
+
+    Three signals, in order of authority: the catalog says so, the engine
+    backend says so, or the checkpoint on disk has a model_index.json where a
+    config.json would be. The last one matters because a model an operator
+    downloaded themselves is in no catalog.
+    """
+    if recipe is not None and str(getattr(recipe, "modality", "")) == "image":
+        return True
+    if str(getattr(recipe, "engine_backend", "")) == "diffusers":
+        return True
+    manager = app.get("model_manager")
+    try:
+        for directory in (manager.model_dirs_for_repo(model)
+                          if manager is not None else []):
+            if (directory / "model_index.json").is_file():
+                return True
+            snapshots = directory / "snapshots"
+            if snapshots.is_dir() and any(
+                    (s / "model_index.json").is_file()
+                    for s in snapshots.iterdir() if s.is_dir()):
+                return True
+    except Exception:
+        logger.debug("could not inspect %s on disk", model, exc_info=True)
+    return False
+
+
+def _image_weights_gb(manager, model: str) -> float:
+    """Bytes on disk for a pipeline directory, which has no config.json and
+    so never reaches the LLM fact reader."""
+    from ainode.planner.facts import weight_bytes_on_disk
+
+    total = 0
+    try:
+        for directory in manager.model_dirs_for_repo(model):
+            total = max(total, weight_bytes_on_disk(directory))
+    except Exception:
+        logger.debug("could not size %s", model, exc_info=True)
+    return total / 1e9
+
+
 def _int(request, name, default=0):
     try:
         return int(request.query.get(name) or default)
@@ -95,6 +137,27 @@ async def handle_plan(request: web.Request) -> web.Response:
 
     facts = local_facts(manager, model)
     recipe = _recipe(request.app, model)
+
+    # An image model is a different calculation, not the same one with other
+    # constants: no KV cache, no context length, no parallel axis. Answering
+    # it with the LLM planner would print KV figures for a model that has
+    # none, which is worse than printing nothing.
+    if _is_image(recipe, facts, request.app, model):
+        from ainode.planner.compute import plan_for_image
+
+        weights = facts.weights_gb
+        if not weights:
+            weights = _image_weights_gb(manager, model)
+        plan = plan_for_image(
+            weights, nodes, model=model,
+            max_image_size=_int(request, "max_image_size", 1536) or 1536)
+        payload = plan.to_dict()
+        payload["modality"] = "image"
+        payload["nodes"] = [{"node_id": n.node_id, "name": n.name,
+                             "total_gb": n.total_gb, "free_gb": n.free_gb}
+                            for n in nodes]
+        payload["from_catalog"] = recipe is not None
+        return web.json_response(payload)
 
     kv_dtype = request.query.get("kv_cache_dtype") or ""
     if not kv_dtype and recipe is not None:

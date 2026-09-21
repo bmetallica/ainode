@@ -25,7 +25,8 @@ from typing import List, Optional, Sequence
 
 from ainode.planner.facts import ModelFacts
 
-__all__ = ["NodeBudget", "Plan", "kv_bytes_per_token", "plan_for"]
+__all__ = ["NodeBudget", "Plan", "kv_bytes_per_token", "plan_for",
+           "plan_for_image"]
 
 #: CUDA context, the engine itself, activation buffers and the captured graphs.
 #: Measured on this hardware as roughly this much above the weights, and it
@@ -51,6 +52,16 @@ TENSOR_SIZES = (1, 2, 4, 8)
 #: A context window is only useful in round numbers, and vLLM pages the cache
 #: in blocks. Anything the planner recommends is rounded down to this.
 LEN_GRANULARITY = 4096
+
+#: What a diffusion run needs on top of its weights, at 1024x1024. Activations
+#: plus the VAE decode, and the peak lands at the END of a run rather than at
+#: the start — which is why a node that survived loading the model can still
+#: die on the first picture.
+IMAGE_OVERHEAD_GB = 4.0
+
+#: That overhead grows with the pixel count, so the reference is an area and
+#: not an edge: 2048x512 costs what 1024x1024 costs.
+IMAGE_REFERENCE_PIXELS = 1024 * 1024
 
 
 @dataclass
@@ -88,6 +99,9 @@ class Plan:
     #: graph capture list from this value, and capturing those graphs is paid
     #: in full at every single launch.
     max_num_seqs: int = 0
+    #: Image models only: the resolution ceiling the plan assumed. There is no
+    #: KV cache here and no context length, so this is what bounds one run.
+    max_image_size: int = 0
     #: The arithmetic, in the order it was done. This is the point: a number
     #: an operator cannot check is a number they cannot overrule.
     notes: List[str] = field(default_factory=list)
@@ -112,6 +126,7 @@ class Plan:
             "weights_per_node_gb": round(self.weights_per_node_gb, 1),
             "concurrent_requests": self.concurrent_requests,
             "max_num_seqs": self.max_num_seqs,
+            "max_image_size": self.max_image_size,
             "notes": list(self.notes),
             "warnings": list(self.warnings),
             "blocker": self.blocker,
@@ -194,6 +209,78 @@ def _evaluate(facts: ModelFacts, nodes: Sequence[NodeBudget], strategy: str,
     kv_gb = kv_per_node * count
     tokens = int(kv_gb * 1e9 / bytes_per_token) if bytes_per_token else 0
     return _Candidate(list(nodes), strategy, tp, pp, per_node, kv_gb, tokens)
+
+
+def plan_for_image(weights_gb: float, nodes: Sequence[NodeBudget], *,
+                   max_image_size: int = 1536,
+                   model: str = "") -> Plan:
+    """Whether an image model fits, and how big a picture it may be asked for.
+
+    A different calculation, not the same one with different constants. There
+    is no KV cache, no context length, and no parallel axis — a diffusion
+    pipeline runs in one process on one node. What replaces the cache is the
+    peak of a single run, and the knob that bounds it is the resolution.
+
+    Kept separate from plan_for() rather than folded into it with branches:
+    the two share nothing but the word "fits", and a planner that pretended
+    otherwise would print KV figures for a model that has no KV.
+    """
+    plan = Plan(model=model, weights_gb=weights_gb)
+    usable = [n for n in nodes if n.usable_gb > 0]
+    if not usable:
+        plan.blocker = "no node reported any free memory"
+        return plan
+    if weights_gb <= 0:
+        plan.blocker = (
+            f"{model or 'the model'} is not on this node's disk, so its size "
+            f"is unknown. A diffusion pipeline is a directory of components — "
+            f"download it first.")
+        return plan
+
+    pixels = max(1, int(max_image_size)) ** 2
+    overhead = ENGINE_OVERHEAD_GB + IMAGE_OVERHEAD_GB * (
+        pixels / IMAGE_REFERENCE_PIXELS)
+    need = weights_gb + overhead
+
+    # One node. Splitting a diffusion pipeline across machines is not a thing
+    # this engine does, so the largest node either holds it or nothing does.
+    best = max(usable, key=lambda n: n.usable_gb)
+    plan.strategy = "solo"
+    plan.weights_per_node_gb = weights_gb
+    plan.notes = [
+        f"Weights: {weights_gb:.1f} GB on disk",
+        f"Engine plus the peak of one {max_image_size}x{max_image_size} "
+        f"image: {overhead:.1f} GB — activations and the VAE decode, and that "
+        f"peak lands at the END of a run, not at the start",
+        f"Largest node has {best.usable_gb:.1f} GB free after the "
+        f"{SYSTEM_RESERVE_GB:.0f} GB system reserve",
+    ]
+    if best.usable_gb < need:
+        plan.blocker = (
+            f"{need:.0f} GB needed ({weights_gb:.0f} GB of weights plus "
+            f"{overhead:.0f} GB for a {max_image_size}x{max_image_size} "
+            f"image), and the roomiest node has {best.usable_gb:.0f} GB. "
+            f"Lower max_image_size, free memory, or use a smaller "
+            f"quantisation.")
+        return plan
+
+    plan.fits = True
+    plan.node_ids = [best.node_id]
+    plan.max_image_size = int(max_image_size)
+    # Not a concurrency figure: the server runs one generation at a time on
+    # purpose, because two at once on a unified-memory node do not halve the
+    # time, they double the peak.
+    plan.concurrent_requests = 1
+    total = best.total_gb or best.free_gb or need
+    plan.gpu_memory_utilization = min(0.95, round(need / total, 2)) if total else 0.0
+    plan.notes.append(
+        f"Fits on {best.name or best.node_id} with "
+        f"{best.usable_gb - need:.1f} GB to spare")
+    plan.warnings.append(
+        "One image at a time: the engine serialises generation, because two "
+        "concurrent runs on this hardware double the peak rather than halving "
+        "the wait.")
+    return plan
 
 
 def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,

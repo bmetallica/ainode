@@ -329,7 +329,7 @@ def local_launch_specs(app) -> List[dict]:
     carried different fields from its local ones would restore two nodes
     differently from one cluster.
     """
-    from ainode.profiles.store import KIND_LLM
+    from ainode.profiles.store import KIND_IMAGE, KIND_LLM
 
     config = app.get("config")
     manager = app.get("instances")
@@ -343,7 +343,10 @@ def local_launch_specs(app) -> List[dict]:
         node_ids = [own_id] + [_peer_node_id(app, ip) or ip for ip in peers]
         specs.append({
             "model": record.model,
-            "kind": KIND_LLM,
+            # An image instance restored as an LLM would start vLLM on a
+            # diffusers pipeline and fail; the profile has to carry which.
+            "kind": (KIND_IMAGE if str(getattr(record, "kind", "")) == "image"
+                     else KIND_LLM),
             "node_ids": node_ids if peers else [],
             "strategy": str(getattr(inst_config, "parallel_strategy", "") or ""),
             "gpu_memory_utilization": getattr(
@@ -358,6 +361,10 @@ def local_launch_specs(app) -> List[dict]:
             "extra_vllm_args": list(getattr(inst_config, "extra_vllm_args", None) or []),
             "extra_env": dict(getattr(inst_config, "extra_env", None) or {}),
             "engine_image": str(getattr(inst_config, "engine_image", "") or ""),
+            "engine_backend": str(getattr(inst_config, "engine_backend", "") or ""),
+            "max_image_size": getattr(inst_config, "max_image_size", None),
+            "image_steps": getattr(inst_config, "image_steps", None),
+            "image_size": str(getattr(inst_config, "image_size", "") or ""),
         })
     return specs
 
