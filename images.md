@@ -132,8 +132,37 @@ zu riskieren — und genau daran ist auf diesem Cluster schon einmal ein Tag
 draufgegangen (`Failed to find C compiler`, DeepGEMM, die
 InstantTensor-Puffergrenze).
 
+**Und es wird verteilt wie jedes andere Image.** Das fehlte in der ersten
+Fassung dieses Plans und ist kein Detail: ein Image, das nur auf dem Head
+liegt, ist auf Node 3 nichts wert.
+
+AINode hat dafür zwei Wege, und beide greifen hier:
+
+* **`scripts/update-cluster.sh`, Schritt 5b.** Verteilt heute genau ein
+  Engine-Image (`vllm-node`) an alle Knoten — über die lokale Registry auf
+  dem Head, wenn es eine gibt, sonst per `docker save | ssh docker load`.
+  Daraus wird eine **Liste**, und `ainode-diffusers` fährt mit, sobald es
+  lokal gebaut ist. Derselbe Vergleich der Image-**IDs** am Ende, aus
+  demselben Grund: Tags lügen, IDs nicht.
+* **Die Verteilung zur Laufzeit** (`ensure_local_image` /
+  `ensure_peer_has_image` in `ainode/engine/distribute.py`), die greift, wenn
+  ein Katalogrezept ein `engine_image` festnagelt. Unser Rezept tut das
+  (`engine_image="ainode-diffusers:latest"`), also prüft der Ladepfad das
+  Image, bevor er startet.
+
+Der Unterschied zwischen beiden ist der Herkunftsort. Die Laufzeitverteilung
+kann ein Image aus einer Registry ziehen; unseres ist lokal gebaut und liegt
+in keiner. Deshalb ist `update-cluster.sh` der Weg, und die Laufzeitprüfung
+ist das Netz darunter — sie muss, wenn das Image fehlt, **sagen was zu tun
+ist** statt an einem `docker pull` zu scheitern, der nie klappen konnte:
+
+> Das Engine-Image `ainode-diffusers:latest` liegt auf diesem Knoten nicht
+> und ist nirgends zu ziehen — es wird lokal gebaut. Führe auf dem Head
+> `scripts/update-cluster.sh --images` aus.
+
 **Abnahme:** `docker run --rm ainode-diffusers python -c "import torch, diffusers;
-print(torch.cuda.is_available(), diffusers.__version__)"` sagt `True`.
+print(torch.cuda.is_available(), diffusers.__version__)"` sagt `True` — und
+zwar auf **allen drei Knoten**, mit identischer Image-ID.
 
 ### S3 · Der Server
 
