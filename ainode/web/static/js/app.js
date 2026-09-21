@@ -1654,6 +1654,17 @@ const AINode = {
       var split = axis + '=' + n;
       launchHint.className = 'launch-hint';
 
+      // An image model is not splittable at all — one process, one node.
+      var msel0 = document.getElementById('launch-model');
+      var opt0 = msel0 && msel0.selectedIndex >= 0
+        ? msel0.options[msel0.selectedIndex] : null;
+      if (opt0 && opt0.getAttribute('data-modality') === 'image') {
+        launchHint.className = 'launch-hint';
+        launchHint.textContent = '✓ Image model on ' + (names || 'this node') +
+          ' — one process on one node. Any node can serve it; it is not split.';
+        return;
+      }
+
       // Refuse an impossible split up front rather than letting the user press
       // LAUNCH and read a 422. Same rule as the server (parallelism.py).
       if (!self.strategyAllowed(strat, n)) {
@@ -1923,6 +1934,17 @@ const AINode = {
       option.getAttribute('data-modality') === 'image';
     var block = document.getElementById('launch-image-fields');
     if (block) block.style.display = isImage ? '' : 'none';
+    // One node, whichever one. The image engine runs a single process and
+    // has no axis to split along, so leaving several dots lit would let
+    // someone build a launch the server has to refuse.
+    if (isImage && this._selectNodeIds) {
+      var selector = document.getElementById('node-selector');
+      var lit = selector
+        ? Array.prototype.map.call(selector.querySelectorAll('.node-dot.active'),
+                                   function (d) { return d.dataset.nodeId; })
+        : [];
+      if (lit.length > 1) this._selectNodeIds([lit[0]]);
+    }
     // A diffusion run has no KV cache and no context length. Leaving those
     // fields on screen would invite someone to set them and wonder why
     // nothing changed.

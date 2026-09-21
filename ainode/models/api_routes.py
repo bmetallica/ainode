@@ -1027,9 +1027,20 @@ async def handle_model_load(request: web.Request) -> web.Response:
     # path is the one that took two nodes down.
     from ainode.safety.admission import check_admission
 
+    # Scoped to THIS node when the caller named none. This handler runs
+    # where the instance will live — /api/cluster/load has already forwarded
+    # it to the target — so "is there room" means room HERE. Left unscoped it
+    # asked whether room existed anywhere in the cluster, and a load onto a
+    # full node sailed through because a different one had space.
+    wanted_nodes = str_list_field(body, "node_ids") or None
+    if not wanted_nodes:
+        own = str(getattr(request.app.get("config"), "node_id", "") or "")
+        if own:
+            wanted_nodes = [own]
+
     refusal = check_admission(
         request.app, model,
-        node_ids=str_list_field(body, "node_ids") or None,
+        node_ids=wanted_nodes,
         strategy=strategy_str,
         max_model_len=_int_or_zero(body.get("max_model_len")),
         gpu_memory_utilization=gmu,

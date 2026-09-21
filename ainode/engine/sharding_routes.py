@@ -83,6 +83,25 @@ async def handle_sharding_plan(request: web.Request) -> web.Response:
     })
 
 
+def _refuse_distributed_image(app, model: str) -> str:
+    """"" unless this is an image model, which cannot be split at all."""
+    try:
+        from ainode.planner.api_routes import _is_image, _recipe
+
+        if not _is_image(_recipe(app, model), None, app, model):
+            return ""
+    except Exception:
+        logger.debug("could not tell whether %s is an image model", model,
+                     exc_info=True)
+        return ""
+    return (
+        f"{model} is an image model, and the image engine runs one process on "
+        f"one node — there is no tensor or pipeline axis to split it along. "
+        f"Select a single node and launch it there. Which node is free "
+        f"choice: any of them can serve it, provided it has the memory."
+    )
+
+
 def _remembered_placement(app, model: str):
     """Where this model was last told to run, or None.
 
@@ -145,6 +164,15 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
             ),
             "load_instead": base,
         }, status=422)
+
+    # An image model has no parallel axis at all: the diffusers engine runs
+    # one process on one node. Selecting two and pressing launch would form a
+    # Ray cluster for vLLM and fail minutes later with a message about a
+    # checkpoint vLLM cannot read — true, and no help in working out that the
+    # mistake was the node count.
+    image_refusal = _refuse_distributed_image(request.app, model)
+    if image_refusal:
+        return web.json_response({"error": image_refusal}, status=422)
 
     min_nodes = int_field(body, "min_nodes", default=1, minimum=1) or 1
 

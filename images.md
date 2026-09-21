@@ -47,6 +47,25 @@ behoben war), die Bildeinstellungen des Formulars reisten auch bei
 Textmodellen mit, und weder Suche noch Modelle-Seite kennzeichneten ein
 Bildmodell als solches.
 
+### Nachgereicht (#143): jeder Knoten, nicht Node 3
+
+Node 3 ist eine Deployment-Entscheidung, keine Eigenschaft von AINode — im
+Code steht nirgends eine Knoten-ID. Die Rückfrage danach hat zwei Fehler
+aufgedeckt:
+
+* **Das Zulassungstor fragte „ist irgendwo im Cluster Platz", wo es „ist hier
+  Platz" meinte.** Ein Start auf einen vollen Knoten ging durch, weil ein
+  anderer Luft hatte. `handle_model_load` läuft auf dem Knoten, auf dem die
+  Instanz landet — die Cluster-Weiterleitung hat schon stattgefunden — also
+  wird der Knotensatz jetzt auf genau diesen eingegrenzt, wenn der Aufrufer
+  keinen nennt. Betraf **beide** Modellarten, nicht nur Bilder.
+* **Eine Mehrknotenauswahl wurde nicht abgelehnt.** Zwei Punkte im Formular
+  und Start hätte ein Ray-Cluster für vLLM aufgebaut und wäre Minuten später
+  an einem Checkpoint gescheitert, den vLLM nicht lesen kann — wahr, und
+  keine Hilfe dabei zu verstehen, dass der Fehler die Knotenzahl war. Der
+  verteilte Pfad lehnt jetzt mit Begründung ab, und das Formular leuchtet für
+  ein Bildmodell nur einen Punkt.
+
 **Was das nicht ersetzt: Schritt 0.** Ob diffusers auf dieser Hardware trägt,
 ist weiterhin ungemessen — der Code ist derselbe, ob der Versuch gelingt oder
 nicht, aber ob er etwas erzeugt, entscheidet allein der Lauf auf Node 3.
