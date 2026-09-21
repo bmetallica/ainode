@@ -54,6 +54,48 @@ class TestTheInventoryNamesWhatExists:
         assert "MIT" in FORK
 
 
+class TestTheInventoryNoticesWhenItGoesStale:
+    """Documentation kept current by discipline goes stale; kept current by a
+    failing test, it does not. These are the two kinds of drift that matter:
+    a whole subsystem arriving undocumented, and a number that quietly stops
+    being true."""
+
+    def test_every_package_in_the_tree_is_accounted_for(self):
+        # A new ainode/<package>/ is a new subsystem. If it is worth a
+        # directory it is worth a line in the inventory — and if it is
+        # genuinely upstream's, say so there instead.
+        # Packages that exist upstream. Adding to this list is a deliberate
+        # act: it says "this one is not ours", which is exactly the claim the
+        # inventory is about.
+        upstream = {"api", "auth", "bench", "cli", "core", "datasets",
+                    "discovery", "embeddings", "engine", "metrics", "models",
+                    "onboarding", "secrets", "service", "training", "web"}
+        packages = {p.name for p in (ROOT / "ainode").iterdir()
+                    if p.is_dir() and (p / "__init__.py").exists()}
+        for package in sorted(packages - upstream):
+            assert package in FORK, (
+                f"ainode/{package}/ exists and docs/fork-changes.md does not "
+                f"mention it")
+
+    def test_the_test_count_it_claims_is_still_roughly_true(self):
+        import re
+
+        claimed = re.search(r"([\d,]+) tests\.", FORK)
+        assert claimed, "the inventory should say how large the suite is"
+        number = int(claimed.group(1).replace(",", ""))
+        functions = sum(
+            len(re.findall(r"^\s*def test_", path.read_text(), re.M))
+            for path in (ROOT / "tests").glob("test_*.py"))
+        # Loose on purpose. The figure in the document is what pytest reports,
+        # which counts parametrised cases separately, while this counts the
+        # functions that produce them — so the two legitimately differ by a
+        # few hundred. The drift this is here to catch is the other kind: a
+        # document that still claims a suite half this size.
+        assert 0.6 <= number / max(1, functions) <= 1.6, (
+            f"docs/fork-changes.md claims {number} tests; there are "
+            f"{functions} test functions. Re-run the suite and update it.")
+
+
 class TestTheHardwareFactsAreWrittenDown:
     """The things that cost days to learn, kept in the repository rather than
     in someone's head."""
