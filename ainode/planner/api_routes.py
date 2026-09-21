@@ -115,6 +115,37 @@ def _image_weights_gb(manager, model: str) -> float:
     return total / 1e9
 
 
+def _attach_measurement(app, model: str, payload: dict) -> None:
+    """Put what this cluster has actually measured beside what was estimated.
+
+    Not instead of: the plan's own arithmetic stays visible, because a
+    measurement taken at 64k context says nothing about the same model at
+    256k, and quietly replacing one number with the other would hide that.
+    Side by side, the difference is the interesting part — a plan that
+    predicted 68 GB for something that cost 74 is a planner worth correcting.
+    """
+    from ainode.measure.recorder import measured_for
+
+    measurement = measured_for(app, model)
+    if measurement is None:
+        return
+    payload["measured"] = {
+        "memory_gb": measurement.get("memory_gb"),
+        "load_seconds": measurement.get("load_seconds"),
+        "launches": measurement.get("launches"),
+        "failures": measurement.get("failures"),
+        "last_ok": measurement.get("last_ok"),
+        "node_id": measurement.get("node_id"),
+        "max_model_len": measurement.get("max_model_len"),
+        "tokens_per_second": measurement.get("tokens_per_second"),
+        "seconds_per_image": measurement.get("seconds_per_image"),
+    }
+    estimated = payload.get("weights_gb") or 0
+    actual = measurement.get("memory_gb") or 0
+    if estimated and actual:
+        payload["measured"]["vs_plan_gb"] = round(actual - estimated, 1)
+
+
 def _int(request, name, default=0):
     try:
         return int(request.query.get(name) or default)
@@ -152,6 +183,7 @@ async def handle_plan(request: web.Request) -> web.Response:
             weights, nodes, model=model,
             max_image_size=_int(request, "max_image_size", 1536) or 1536)
         payload = plan.to_dict()
+        _attach_measurement(request.app, model, payload)
         payload["modality"] = "image"
         payload["nodes"] = [{"node_id": n.node_id, "name": n.name,
                              "total_gb": n.total_gb, "free_gb": n.free_gb}
@@ -182,6 +214,7 @@ async def handle_plan(request: web.Request) -> web.Response:
     )
 
     payload = plan.to_dict()
+    _attach_measurement(request.app, model, payload)
     payload["kv_cache_dtype"] = kv_dtype or "auto"
     payload["nodes"] = [{"node_id": n.node_id, "name": n.name,
                          "total_gb": n.total_gb, "free_gb": n.free_gb}
