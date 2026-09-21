@@ -117,6 +117,10 @@ class Recorder:
         Only for models that have done enough to have an average worth
         keeping — a speed from three requests is noise, and writing it down
         would make it look like a fact.
+
+        An image model has no tokens, so its speed is the average latency:
+        one request, one picture. The proxy times those exactly as it times a
+        completion, which is why nothing extra has to be measured for it.
         """
         collector = self._app.get("metrics_collector")
         if collector is None:
@@ -125,24 +129,32 @@ class Recorder:
             stats = collector.model_stats() or {}
         except Exception:
             return
+        kinds = self._kinds()
         for model, entry in stats.items():
             if not isinstance(entry, dict):
                 continue
             if (entry.get("requests") or 0) < 5:
                 continue
-            speed = entry.get("avg_tokens_per_second")
-            if speed:
-                try:
+            try:
+                if kinds.get(model) == "image":
+                    latency = entry.get("avg_latency_ms") or 0
+                    if latency:
+                        self.store.record_speed(
+                            model, seconds_per_image=float(latency) / 1000.0)
+                    continue
+                speed = entry.get("avg_tokens_per_second")
+                if speed:
                     self.store.record_speed(model, tokens_per_second=float(speed))
-                except Exception:
-                    logger.debug("could not record speed for %s", model,
-                                 exc_info=True)
+            except Exception:
+                logger.debug("could not record speed for %s", model,
+                             exc_info=True)
 
-    def record_image_speed(self, model: str, seconds_per_image: float) -> None:
-        try:
-            self.store.record_speed(model, seconds_per_image=seconds_per_image)
-        except Exception:
-            logger.debug("could not record image speed", exc_info=True)
+    def _kinds(self) -> Dict[str, str]:
+        out: Dict[str, str] = {}
+        for model, instance in self._instances():
+            record = getattr(instance, "record", None)
+            out[model] = str(getattr(record, "kind", "") or "llm")
+        return out
 
     # -- reading ------------------------------------------------------------
 

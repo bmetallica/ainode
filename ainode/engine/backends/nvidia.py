@@ -149,8 +149,15 @@ class NvidiaBackend(EngineBackend):
         # Fabric wiring, resolved lazily on first use — see _topology().
         self._topology_cache: Optional[TopologyInfo] = None
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        self._log_file: Path = LOGS_DIR / "nvidia-vllm.log"
-        self._distributed_log: Path = LOGS_DIR / "nvidia-distributed.log"
+        # One file per instance, for the same reason as the eugr backend: two
+        # models loading at once into one file produce output nobody can
+        # attribute, and the per-instance log topic has nothing to publish.
+        token = str(instance_id or "").strip()
+        self._log_file: Path = LOGS_DIR / (f"nvidia-vllm-{token}.log" if token
+                                           else "nvidia-vllm.log")
+        self._distributed_log: Path = LOGS_DIR / (
+            f"nvidia-distributed-{token}.log" if token
+            else "nvidia-distributed.log")
 
     # ------------------------------------------------------------------
     # Lifecycle

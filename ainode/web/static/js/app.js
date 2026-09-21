@@ -1191,6 +1191,8 @@ const AINode = {
           detail: inst.load_detail || '',
           timeline: inst.load_timeline || [],
           loadSeconds: inst.load_seconds || 0,
+          kind: inst.kind || 'llm',
+          api_port: inst.api_port || 0,
         });
       });
     });
@@ -2323,6 +2325,10 @@ const AINode = {
             + self.esc(label) + sizeNote + verifiedMark + '</option>';
         }).join('');
       if (cv) select.value = cv;
+      // A model can already be selected when the list is drawn — after a
+      // poll, or when the page is reopened. Without this the image fields
+      // stay hidden for it until someone picks it again.
+      self.toggleImageFields(select.value);
       // Picking a model auto-recommends sharding + nodes from its size and the
       // free memory on each node.
       select.onchange = function () {
@@ -2459,9 +2465,13 @@ const AINode = {
       if (Object.keys(env).length) advanced.extra_env = env;
     }
 
-    // An image model takes different settings, and the fields for them are
-    // only on screen when one is selected.
-    Object.assign(advanced, this.imageOverrides ? this.imageOverrides() : {});
+    // An image model takes different settings. Only for one: the fields are
+    // hidden for a text model but keep whatever was last typed into them, and
+    // sending max_image_size with an LLM would persist a meaningless value
+    // onto its config.
+    if (this.toggleImageFields && this.toggleImageFields(model)) {
+      Object.assign(advanced, this.imageOverrides());
+    }
 
     var launchBtn = document.getElementById('launch-btn');
     if (launchBtn) { launchBtn.disabled = true; launchBtn.textContent = 'LAUNCHING...'; }
@@ -3950,6 +3960,8 @@ const AINode = {
       var fitBadge = self.placementBadge(m);
       var catalogBadge = m.in_catalog ? '<span class="fit-badge rec">✓ Recommended</span>' : '';
       var quantBadge = m.quant ? '<span class="fit-badge ' + (/MLX|GGUF/.test(m.quant) ? 'untested' : 'quant') + '">' + self.esc(m.quant) + '</span>' : '';
+      var modalityBadge = m.modality === 'image'
+        ? '<span class="fit-badge">\u25a3 Image</span>' : '';
       var statusBadge = isLoaded ? '<span class="model-badge loaded">Loaded</span>'
         : isOnDisk ? '<span class="model-badge loaded">Downloaded</span>'
         : '<span class="model-badge available">Available</span>';
@@ -3961,7 +3973,7 @@ const AINode = {
         '<div class="download-card-info">' +
         '<div class="download-card-header">' +
         '<div class="download-card-name">' + self.esc(m.name) + '</div>' +
-        '<div class="download-card-badges">' + catalogBadge + quantBadge + fitBadge + statusBadge + '</div>' +
+        '<div class="download-card-badges">' + catalogBadge + modalityBadge + quantBadge + fitBadge + statusBadge + '</div>' +
         '</div>' +
         '<div class="download-card-repo">' + self.esc(m.hf_repo) + '</div>' +
         '<div class="download-card-desc">' + sizeStr + (downloadsStr ? ' &middot; ' + downloadsStr : '') + '</div>' +
@@ -4079,6 +4091,7 @@ const AINode = {
             family: m.family || '',
             params: m.params_b ? m.params_b + 'B' : '',
             quantization: m.quantization,
+            modality: m.modality || 'text',
             minMem: m.min_memory_gb || m.size_gb,
             recommended: m.recommended || false,
             created_at: m.created_at || '',
@@ -4158,6 +4171,11 @@ const AINode = {
       var verBadge = model.verified ? '<span class="fit-badge rec">✓ Verified on GB10</span>'
         : (model.curated ? '<span class="fit-badge untested">Curated · untested</span>' : '');
       var quantBadge = model.quantization ? '<span class="fit-badge quant">' + self.esc(model.quantization.toUpperCase()) + '</span>' : '';
+      // Which engine this needs. Without it the page shows a picture model
+      // and a chat model as the same kind of thing, and the first hint that
+      // they are not is a failed launch.
+      var modalityBadge = model.modality === 'image'
+        ? '<span class="fit-badge">\u25a3 Image</span>' : '';
       var paramsText = model.params ? model.params + ' params' : '';
       var descParts = [paramsText, model.size].filter(Boolean);
       var capabilityBadges = self.renderCapabilityBadges(model);
@@ -4187,7 +4205,7 @@ const AINode = {
         '<div class="download-card-info">' +
         '<div class="download-card-header">' +
         '<div class="download-card-name">' + self.esc(model.name || model.id) + '</div>' +
-        '<div class="download-card-badges">' + verBadge + quantBadge + capabilityBadges + fitBadge + statusBadge + whereBadge + '</div>' +
+        '<div class="download-card-badges">' + verBadge + modalityBadge + quantBadge + capabilityBadges + fitBadge + statusBadge + whereBadge + '</div>' +
         '</div>' +
         '<div class="download-card-repo">' + self.esc(model.hf_repo || model.id) + '</div>' +
         '<div class="download-card-desc">' + descParts.join(' &middot; ') + (model.desc ? '<br><span class="download-card-tagline">' + self.esc(model.desc) + '</span>' : '') + '</div>' +

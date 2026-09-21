@@ -28,6 +28,25 @@ Aufgenommen am 2026-09-21 auf `main` @ 96041b0 (2371 Tests).
 | S7 UI | #140 | Bildfelder im Launch-Formular, eigene Ansicht *Images* |
 | S8 Telemetrie | #140 | `kind` im `models`-Payload, Bild-Metriken auf `engine/<modell>` |
 
+### Beim Durchsehen gefunden und behoben (#142)
+
+Vier Fehler, alle derselben Gestalt: ein Feld, das an einem Ende eines Pfades
+existiert und unterwegs verloren geht — also funktioniert das, was darauf
+aufbaut, stillschweigend nie, obwohl jedes einzelne Stück richtig ist.
+
+| | Befund |
+|---|---|
+| **A** | `kind` fiel aus den Instanz-Projektionen von `/api/nodes` und `/api/cluster/resources` heraus. Die *Images*-Ansicht fragt genau danach und war damit **dauerhaft leer**, bei korrektem Rest. |
+| **B** | Ein selbst heruntergeladenes Bildmodell steht in keinem Katalog, also sagte nichts, welche Engine es braucht — und die Vorgabe des Knotens ist vLLM, das eine Pipeline gar nicht laden kann. Jetzt entscheidet der Checkpoint selbst: `model_index.json` statt `config.json`. |
+| **C** | `record_image_speed` war toter Code; `seconds_per_image` konnte nie gefüllt werden. Ein Bildmodell hat keine Tokens, seine Geschwindigkeit ist die mittlere Latenz — eine Anfrage, ein Bild. |
+| **D** | Beim Einsammeln eines Profils von den Peers wurde `kind` auf `KIND_LLM` überschrieben. Ein Bildmodell auf Node 3 — dort, wo es hingehört — kam als LLM ins Profil zurück, und das Wiederherstellen hätte vLLM auf eine Diffusers-Pipeline losgelassen. |
+
+Dazu aus demselben Durchgang: der ältere `nvidia`-Backend schrieb weiterhin
+alle Instanzen in **eine** Logdatei (dasselbe Problem, das für `eugr` schon
+behoben war), die Bildeinstellungen des Formulars reisten auch bei
+Textmodellen mit, und weder Suche noch Modelle-Seite kennzeichneten ein
+Bildmodell als solches.
+
 **Was das nicht ersetzt: Schritt 0.** Ob diffusers auf dieser Hardware trägt,
 ist weiterhin ungemessen — der Code ist derselbe, ob der Versuch gelingt oder
 nicht, aber ob er etwas erzeugt, entscheidet allein der Lauf auf Node 3.
