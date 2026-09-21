@@ -2174,8 +2174,26 @@ const AINode = {
     var warn = (plan.warnings || []).map(function (w) {
       return '<div class="plan-warn">⚠ ' + this.esc(w) + '</div>';
     }, this).join('');
+    // What it actually cost the last time, beside what the plan expects.
+    // Not instead of: a measurement at one context length says nothing about
+    // another, and the difference between the two is the interesting part.
+    var m = plan.measured;
+    var measured = '';
+    if (m && m.memory_gb) {
+      measured = '<div class="plan-measured">▣ Measured here: ' +
+        m.memory_gb + ' GB' +
+        (m.load_seconds ? ', ' + this.formatSeconds(m.load_seconds) + ' to load' : '') +
+        (m.max_model_len ? ' at ' + m.max_model_len.toLocaleString() + ' context' : '') +
+        (m.tokens_per_second ? ', ' + m.tokens_per_second + ' tok/s' : '') +
+        (m.seconds_per_image ? ', ' + m.seconds_per_image + ' s/image' : '') +
+        ' · ' + m.launches + ' launch' + (m.launches === 1 ? '' : 'es') +
+        (m.failures ? ', ' + m.failures + ' failed' : '') +
+        (m.vs_plan_gb ? ' (' + (m.vs_plan_gb > 0 ? '+' : '') + m.vs_plan_gb +
+         ' GB vs the plan)' : '') +
+        '</div>';
+    }
     hint.className = 'launch-hint' + ((plan.warnings || []).length ? ' warn' : '');
-    hint.innerHTML = line + warn +
+    hint.innerHTML = line + measured + warn +
       '<div class="plan-notes">' +
       (plan.notes || []).map(function (n) {
         return '<div>' + this.esc(n) + '</div>';

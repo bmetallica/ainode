@@ -1245,6 +1245,11 @@ h4.chat-h { font-size: 14px; color: var(--nvidia-green); }
   color: var(--text-muted);
 }
 
+.plan-measured {
+  margin-top: 6px;
+  color: var(--nvidia-green);
+}
+
 .plan-warn {
   margin-top: 6px;
   color: #ffb84d;

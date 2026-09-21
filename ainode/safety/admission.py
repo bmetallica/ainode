@@ -83,6 +83,15 @@ def _planner_says(app, model: str, *, node_ids=None, strategy: str = "auto",
         # well be a distributed one whose weights live on a peer.
         return ""
 
+    measured = _measured_cost(app, model)
+    if measured:
+        # This model has run here. What it actually cost beats any arithmetic
+        # about what it ought to cost — but only when it was launched the same
+        # way: a memory figure from a 64k context says nothing about 256k.
+        refusal = _measured_says(app, model, measured, max_model_len)
+        if refusal is not None:
+            return refusal
+
     budgets = _budgets_with_reserve(app, node_ids)
     if not budgets:
         return ""
@@ -113,6 +122,43 @@ def _planner_says(app, model: str, *, node_ids=None, strategy: str = "auto",
         f"find out after it has loaded the weights. On this hardware that "
         f"discovery takes the node down. Launch it anyway with \"force\": true "
         f"if you know better than this estimate."
+    )
+
+
+def _measured_cost(app, model: str):
+    """The last measured host cost of this model, or None."""
+    from ainode.measure.recorder import measured_for
+
+    measurement = measured_for(app, model)
+    if measurement is None or not measurement.get("memory_gb"):
+        return None
+    return measurement
+
+
+def _measured_says(app, model: str, measured: dict, max_model_len: int):
+    """Verdict from what the model actually cost, or None to fall through.
+
+    Only when this launch matches the measured one. A model measured at 64k
+    and launched at 256k needs a different amount, and pretending otherwise
+    would be the same overconfidence the estimate is criticised for.
+    """
+    wanted = int(max_model_len or 0)
+    measured_len = int(measured.get("max_model_len") or 0)
+    if wanted and measured_len and wanted != measured_len:
+        return None
+
+    budgets = _budgets_with_reserve(app, None)
+    if not budgets:
+        return None
+    need = float(measured["memory_gb"])
+    roomiest = max(b.usable_gb for b in budgets)
+    if roomiest >= need:
+        return ""
+    return (
+        f"{model} cost {need:.0f} GB the last time it ran here, and the "
+        f"roomiest node has {roomiest:.0f} GB free. That is a measurement, "
+        f"not an estimate. Free memory, or launch anyway with "
+        f"\"force\": true."
     )
 
 

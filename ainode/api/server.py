@@ -47,6 +47,7 @@ from ainode.embeddings.api_routes import register_embedding_routes
 from ainode.placement.api_routes import register_placement_routes
 from ainode.assist.api_routes import register_assist_routes
 from ainode.planner.api_routes import register_planner_routes
+from ainode.measure.api_routes import register_measurement_routes
 from ainode.safety.api_routes import register_safety_routes
 from ainode.profiles.api_routes import register_profile_routes
 from ainode.profiles.store import ProfileStore
@@ -249,6 +250,10 @@ def create_app(
     # The launch planner. Read-only: it computes what a launch would do, and
     # the launch form fills itself in from it.
     register_planner_routes(app)
+
+    # What each model actually cost here, so the next plan can prefer a
+    # measurement to an estimate.
+    register_measurement_routes(app)
 
     # The host memory guard. Registered everywhere: the nodes are what crashed.
     register_safety_routes(app)
@@ -676,6 +681,18 @@ async def _cluster_sync_loop(app: web.Application) -> None:
     try:
         while True:
             await asyncio.sleep(5)
+            # What each launch actually cost, written down by the node that
+            # ran it. Here rather than in the telemetry loop: a measurement
+            # that only existed when MQTT was configured would be missing
+            # from exactly the deployments that most need it.
+            recorder = app.get("measurement_recorder")
+            if recorder is None:
+                from ainode.measure.recorder import Recorder
+
+                recorder = Recorder(app)
+                app["measurement_recorder"] = recorder
+            recorder.poll()
+
             listener: Optional[BroadcastListener] = app.get("broadcast_listener")
             cluster: ClusterState = app["cluster_state"]
             if listener:
