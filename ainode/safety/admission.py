@@ -68,6 +68,11 @@ def _planner_says(app, model: str, *, node_ids=None, strategy: str = "auto",
     manager = app.get("model_manager")
     if manager is None:
         return ""
+
+    image_refusal = _image_says(app, manager, model)
+    if image_refusal is not None:
+        return image_refusal
+
     try:
         facts = local_facts(manager, model)
     except Exception:
@@ -108,6 +113,44 @@ def _planner_says(app, model: str, *, node_ids=None, strategy: str = "auto",
         f"find out after it has loaded the weights. On this hardware that "
         f"discovery takes the node down. Launch it anyway with \"force\": true "
         f"if you know better than this estimate."
+    )
+
+
+def _image_says(app, manager, model: str):
+    """The image planner's verdict, or None when this is not an image model.
+
+    None and "" mean different things here: "" is "an image model, and it
+    fits", None is "not an image model, ask the LLM planner".
+    """
+    try:
+        from ainode.planner.api_routes import _image_weights_gb, _is_image, _recipe
+        from ainode.planner.compute import plan_for_image
+        from ainode.planner.facts import local_facts
+    except Exception:  # pragma: no cover - defensive
+        return None
+    try:
+        recipe = _recipe(app, model)
+        if not _is_image(recipe, local_facts(manager, model), app, model):
+            return None
+        weights = _image_weights_gb(manager, model)
+        if not weights:
+            # Not downloaded yet. The backend refuses with a better message
+            # than anything that could be said from here.
+            return ""
+        config = app.get("config")
+        plan = plan_for_image(
+            weights, _budgets_with_reserve(app, None), model=model,
+            max_image_size=int(getattr(config, "max_image_size", 1536) or 1536))
+    except Exception:
+        logger.debug("the image planner could not plan %s", model, exc_info=True)
+        return None
+    if plan.fits:
+        return ""
+    return (
+        f"{plan.blocker} — refusing the launch rather than letting the engine "
+        f"find out. A diffusion run's peak lands at the END of a picture, so "
+        f"the node would survive the load and die on the first image. Launch "
+        f"it anyway with \"force\": true if you know better than this estimate."
     )
 
 

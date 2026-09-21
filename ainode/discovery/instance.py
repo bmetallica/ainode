@@ -46,6 +46,9 @@ class InstanceRecord:
     #: is a different question from "five minutes doing what".
     load_timeline: List[dict] = field(default_factory=list)
     load_seconds: float = 0.0
+    #: What this instance serves: "llm" or "image". Empty from an older peer,
+    #: which is read as "llm" — everything that existed before was one.
+    kind: str = ""
 
     @property
     def world_size(self) -> int:

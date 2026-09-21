@@ -39,7 +39,11 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$")
 #: different runtime entirely — in-process sentence-transformers, no container.
 KIND_LLM = "llm"
 KIND_EMBEDDING = "embedding"
-KINDS = (KIND_LLM, KIND_EMBEDDING)
+#: Image generation. A separate kind rather than an LLM with a flag, because
+#: restoring one means starting a different engine with different settings —
+#: a profile that got that wrong would bring a node back serving nothing.
+KIND_IMAGE = "image"
+KINDS = (KIND_LLM, KIND_EMBEDDING, KIND_IMAGE)
 
 
 class ProfileError(ValueError):
@@ -78,6 +82,13 @@ class ProfileEntry:
     extra_vllm_args: List[str] = field(default_factory=list)
     extra_env: Dict[str, str] = field(default_factory=dict)
     engine_image: str = ""
+    # Image generation. engine_backend decides WHICH engine restores this
+    # entry, so it is not optional decoration: an image instance restored as
+    # an LLM starts vLLM on a diffusers pipeline and fails.
+    engine_backend: str = ""
+    max_image_size: Optional[int] = None
+    image_steps: Optional[int] = None
+    image_size: str = ""
     note: str = ""
 
     def __post_init__(self) -> None:
@@ -152,6 +163,14 @@ class ProfileEntry:
             body["extra_env"] = dict(self.extra_env)
         if self.engine_image:
             body["engine_image"] = self.engine_image
+        if self.engine_backend:
+            body["engine_backend"] = self.engine_backend
+        if self.max_image_size is not None:
+            body["max_image_size"] = self.max_image_size
+        if self.image_steps is not None:
+            body["image_steps"] = self.image_steps
+        if self.image_size:
+            body["image_size"] = self.image_size
         return body
 
     def to_dict(self) -> dict:
