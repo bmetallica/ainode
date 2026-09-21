@@ -3,6 +3,7 @@ stack (vLLM via eugr's launch-cluster.sh, vLLM via NVIDIA's run_cluster.sh,
 or future options). All implement the EngineBackend ABC."""
 
 from ainode.engine.backends.base import EngineBackend
+from ainode.engine.backends.diffusers import DiffusersBackend
 from ainode.engine.backends.eugr import EugrBackend
 from ainode.engine.backends.nvidia import NvidiaBackend
 
@@ -21,9 +22,17 @@ def get_backend(config, on_ready=None, instance_id="") -> EngineBackend:
         return EugrBackend(config, on_ready=on_ready, instance_id=instance_id)
     if backend == "nvidia":
         return NvidiaBackend(config, on_ready=on_ready, instance_id=instance_id)
+    if backend == "diffusers":
+        # Image generation. Not a vLLM at all: one process, one node, no Ray —
+        # but the same interface, so everything AINode does around instances
+        # applies to it unchanged.
+        return DiffusersBackend(config, on_ready=on_ready,
+                                instance_id=instance_id)
     raise ValueError(
-        f"Unknown engine_backend={backend!r}. Valid options: 'eugr', 'nvidia'."
+        f"Unknown engine_backend={backend!r}. "
+        f"Valid options: 'eugr', 'nvidia', 'diffusers'."
     )
 
 
-__all__ = ["EngineBackend", "EugrBackend", "NvidiaBackend", "get_backend"]
+__all__ = ["EngineBackend", "DiffusersBackend", "EugrBackend", "NvidiaBackend",
+           "get_backend"]

@@ -32,12 +32,22 @@ def _section() -> str:
 
 class TestItIsDistributed:
     def test_there_is_a_step_for_it(self):
-        assert "Distributing the engine image" in SCRIPT
+        assert "Distributing ${ENGINE_IMAGE}" in SCRIPT
 
     def test_only_after_base_rebuilt_it(self):
-        """A normal update leaves the engine image alone, so pushing 20 GB on
-        every run would be pure waste."""
-        assert 'if [[ $DO_BASE -eq 1 && ${#NODE_LIST[@]} -gt 0 ]]; then' in _section()
+        """A normal update leaves the engine images alone, so pushing 20 GB on
+        every run would be pure waste. --images is the deliberate exception:
+        the image-generation engine is built by hand on the head, and forcing
+        a full vLLM rebuild to move it would be absurd."""
+        assert 'if [[ ( $DO_BASE -eq 1 || $DO_IMAGES -eq 1 ) && ' \
+            '${#NODE_LIST[@]} -gt 0 ]]; then' in _section()
+
+    def test_every_engine_image_travels_not_just_the_vllm_one(self):
+        # AINode grew a second engine. An image that exists only on the head
+        # cannot serve on node 3, which is where it is meant to run.
+        section = _section()
+        assert 'for ENGINE_IMAGE in "${ENGINE_IMAGES[@]}"' in section
+        assert "ainode-diffusers" in section
 
     def test_it_goes_through_the_registry_when_there_is_one(self):
         section = _section()
@@ -66,8 +76,8 @@ class TestItVerifiesWhatTheLauncherWillCheck:
         assert re.search(r'peer_id.*==.*head_id|"\$peer_id" == "\$head_id"', section)
 
     def test_a_mismatch_is_reported_here_rather_than_at_the_next_launch(self):
-        assert "a distributed launch will abort" in _section()
+        assert "still differs — a launch there will abort" in _section()
 
     def test_the_header_mentions_it(self):
         """Someone reading --help should learn that --base moves ~20 GB."""
-        assert "distributes the ENGINE image too" in SCRIPT
+        assert "distributes the ENGINE images too" in SCRIPT

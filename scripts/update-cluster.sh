@@ -14,8 +14,10 @@
 #   4. optionally sets up the head's registry cache (--registry, idempotent)
 #   5. distributes the new image — through the local registry when it exists,
 #      otherwise by streaming it over SSH
-#   5b. distributes the ENGINE image too, but only after --base rebuilt it:
-#      eugr's launcher aborts when the nodes disagree about it
+#   5b. distributes the ENGINE images too — after --base rebuilt them, or on
+#      demand with --images: eugr's launcher aborts when the nodes disagree
+#      about the one it uses, and an image-generation engine that exists only
+#      on the head cannot serve on node 3
 #   6. restarts the service, members first, head last
 #   7. verifies every node reports the new version
 #
@@ -25,6 +27,9 @@
 #   --nodes a,b,c      the other nodes, as SSH targets
 #   --registry         set up / refresh the image cache on the head
 #   --base             also rebuild the engine image (15-25 min)
+#   --images           distribute the engine images without rebuilding
+#                      anything — for an image built here by hand, such as
+#                      scripts/build-diffusers-image.sh
 #   --skip-pull        do not git pull (build what is checked out)
 #   --skip-build       do not build (distribute and restart what exists)
 #   --image NAME       orchestrator image tag (default: ainode:dev)
@@ -39,6 +44,7 @@ NODES=""
 IMAGE="${AINODE_IMAGE:-ainode:dev}"
 DO_REGISTRY=0
 DO_BASE=0
+DO_IMAGES=0
 SKIP_PULL=0
 SKIP_BUILD=0
 CHECK=0
@@ -50,6 +56,7 @@ while [[ $# -gt 0 ]]; do
         --image) IMAGE="$2"; shift 2 ;;
         --registry) DO_REGISTRY=1; shift ;;
         --base) DO_BASE=1; shift ;;
+        --images) DO_IMAGES=1; shift ;;
         --skip-pull) SKIP_PULL=1; shift ;;
         --skip-build) SKIP_BUILD=1; shift ;;
         --check) CHECK=1; shift ;;
@@ -225,9 +232,22 @@ fi
 # every node ran this script. It stopped being true the moment the build
 # moved to the head alone.
 
-if [[ $DO_BASE -eq 1 && ${#NODE_LIST[@]} -gt 0 ]]; then
-    step "Distributing the engine image"
-    ENGINE_IMAGE="${ENGINE_IMAGE:-vllm-node:latest}"
+# The list, not one image. AINode grew a second engine — diffusers, for image
+# generation — built locally by scripts/build-diffusers-image.sh and therefore
+# in no registry to pull from. An engine image that exists only on the head
+# cannot serve on node 3, which is where it is meant to run.
+ENGINE_IMAGES=("${ENGINE_IMAGE:-vllm-node:latest}")
+for extra in "${DIFFUSERS_IMAGE:-ainode-diffusers:latest}"; do
+    # Only what is actually here: a cluster that never built the image
+    # generation engine should not be told it is missing one.
+    if docker image inspect "$extra" >/dev/null 2>&1; then
+        ENGINE_IMAGES+=("$extra")
+    fi
+done
+
+if [[ ( $DO_BASE -eq 1 || $DO_IMAGES -eq 1 ) && ${#NODE_LIST[@]} -gt 0 ]]; then
+  for ENGINE_IMAGE in "${ENGINE_IMAGES[@]}"; do
+    step "Distributing ${ENGINE_IMAGE}"
     if ! docker image inspect "$ENGINE_IMAGE" >/dev/null 2>&1; then
         warn "${ENGINE_IMAGE} is not here; skipping (did the build fail?)"
     elif [[ -n "$REGISTRY" ]]; then
@@ -242,7 +262,7 @@ if [[ $DO_BASE -eq 1 && ${#NODE_LIST[@]} -gt 0 ]]; then
         done
     else
         for node in "${NODE_LIST[@]}"; do
-            say "${node}: streaming the engine image over SSH (~20 GB, slow)"
+            say "${node}: streaming ${ENGINE_IMAGE} over SSH (slow)"
             if [[ $CHECK -eq 1 ]]; then
                 printf '   would run: docker save %s | ssh %s docker load\n' \
                     "$ENGINE_IMAGE" "$node"
@@ -260,12 +280,13 @@ if [[ $DO_BASE -eq 1 && ${#NODE_LIST[@]} -gt 0 ]]; then
             peer_id="$(ssh -o BatchMode=yes "$node" \
                 "docker image inspect --format '{{.Id}}' ${ENGINE_IMAGE}" 2>/dev/null || true)"
             if [[ -n "$head_id" && "$peer_id" == "$head_id" ]]; then
-                say "${node}: engine image in sync"
+                say "${node}: ${ENGINE_IMAGE} in sync"
             else
-                warn "${node}: engine image still differs — a distributed launch will abort"
+                warn "${node}: ${ENGINE_IMAGE} still differs — a launch there will abort"
             fi
         done
     fi
+  done
 fi
 
 # --- 6. restart -------------------------------------------------------------

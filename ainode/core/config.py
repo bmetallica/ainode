@@ -105,6 +105,16 @@ class NodeConfig:
     mqtt_log_lines: int = 100
     #: Minimum level for AINode's own lines. The engine's are not levelled.
     mqtt_log_level: str = "INFO"
+    # --- image generation (engine_backend="diffusers") ---------------------
+    # A diffusion run has no KV cache and no context length; what bounds it is
+    # the picture. Activations and the VAE decode grow with the square of the
+    # edge, and the peak lands at the END of a run — so this is the knob that
+    # stops one request taking the node down, the counterpart to
+    # --max-model-len. A square edge, applied as a pixel budget.
+    max_image_size: int = 1536
+    image_steps: int = 20
+    image_size: str = "1024x1024"
+    image_dtype: str = "bfloat16"
     host_memory_guard: bool = True
     host_memory_warn_gb: float = 8.0
     host_memory_critical_gb: float = 4.0
