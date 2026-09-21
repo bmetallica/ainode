@@ -3890,12 +3890,16 @@ const AINode = {
         '<input type="text" id="hf-search-input" class="search-input" placeholder="Search HuggingFace (e.g. llama, qwen, mistral, phi)..." value="' + this.esc(query) + '" autofocus>' +
         '<button id="hf-back-btn" class="btn-sm hf-back-btn">← Back to Catalog</button>' +
         '</div>' +
+        // The kinds decide which pipeline tags are queried, so this is part
+        // of the search and not a filter applied to its results.
+        '<div class="pill-group hf-kind-filter" id="hf-kind-filter"></div>' +
         '<div id="downloads-results"></div>';
       container.innerHTML = toolbarHtml;
     }
 
     var resultsContainer = container.querySelector('#downloads-results');
     var countEl = container.querySelector('#hf-count');
+    this.renderHfFilters();
 
     // Back to the two-list catalog.
     var backBtn = container.querySelector('#hf-back-btn');
@@ -3939,7 +3943,9 @@ const AINode = {
 
     if (resultsContainer) resultsContainer.innerHTML = '<div class="downloads-empty">Searching HuggingFace...</div>';
 
-    fetch('/api/models/search?q=' + encodeURIComponent(query) + '&limit=50')
+    var kinds = this.state.hfKinds || [];
+    fetch('/api/models/search?q=' + encodeURIComponent(query) + '&limit=50' +
+          (kinds.length ? '&kind=' + encodeURIComponent(kinds.join(',')) : ''))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         self._hfResults = data.models || [];
@@ -3969,9 +3975,12 @@ const AINode = {
     var showAll = !!this.state.hfShowAll;
     var shown = showAll ? models : runnable;
 
+    this.renderHfFilters();
     if (countEl) {
+      var kinds = this.state.hfKinds || [];
       countEl.textContent = runnable.length + ' runnable for "' + query + '"' +
-        (hiddenCount ? ' · ' + hiddenCount + ' hidden' : '');
+        (kinds.length ? ' in ' + kinds.join(' + ') : '') +
+        (hiddenCount ? ' · ' + hiddenCount + ' this cluster cannot load' : '');
     }
 
     function card(m) {
@@ -3982,8 +3991,17 @@ const AINode = {
       var fitBadge = self.placementBadge(m);
       var catalogBadge = m.in_catalog ? '<span class="fit-badge rec">✓ Recommended</span>' : '';
       var quantBadge = m.quant ? '<span class="fit-badge ' + (/MLX|GGUF/.test(m.quant) ? 'untested' : 'quant') + '">' + self.esc(m.quant) + '</span>' : '';
-      var modalityBadge = m.modality === 'image'
-        ? '<span class="fit-badge">\u25a3 Image</span>' : '';
+      var kindBadge = {
+        image: '<span class="fit-badge">\u25a3 Image generation</span>',
+        vision: '<span class="fit-badge">\u25c9 Vision</span>',
+        embedding: '<span class="fit-badge">\u2261 Embeddings</span>',
+      }[m.kind] || '';
+      // Why it cannot run here, in words. "Dimmed" tells someone that
+      // something is wrong and nothing about what — and the answer is
+      // usually one sentence long.
+      var whyNot = (!self.hfRunnable(m) && m.not_servable_reason)
+        ? '<div class="hf-why-not">' + self.esc(m.not_servable_reason) + '</div>'
+        : '';
       var statusBadge = isLoaded ? '<span class="model-badge loaded">Loaded</span>'
         : isOnDisk ? '<span class="model-badge loaded">Downloaded</span>'
         : '<span class="model-badge available">Available</span>';
@@ -3995,10 +4013,11 @@ const AINode = {
         '<div class="download-card-info">' +
         '<div class="download-card-header">' +
         '<div class="download-card-name">' + self.esc(m.name) + '</div>' +
-        '<div class="download-card-badges">' + catalogBadge + modalityBadge + quantBadge + fitBadge + statusBadge + '</div>' +
+        '<div class="download-card-badges">' + catalogBadge + kindBadge + quantBadge + fitBadge + statusBadge + '</div>' +
         '</div>' +
         '<div class="download-card-repo">' + self.esc(m.hf_repo) + '</div>' +
         '<div class="download-card-desc">' + sizeStr + (downloadsStr ? ' &middot; ' + downloadsStr : '') + '</div>' +
+        whyNot +
         '</div>' +
         '<div class="download-card-actions">' + detailsBtn + downloadBtn + '</div>' +
         '</div>' +
@@ -4054,13 +4073,69 @@ const AINode = {
     return p.known ? '<span class="fit-badge ' + p.cls + '">' + p.label + '</span>' : '';
   },
 
-  // Can AINode's vLLM engine serve this repo? MLX is Apple-only, GGUF is llama.cpp.
+  // Can this deployment actually serve this repo? The verdict is the
+  // server's — it knows which engine each kind needs and therefore which
+  // formats can work — with the name check kept as the fallback for an older
+  // node that does not send one.
   hfRunnable(m) {
     var repo = (m.hf_repo || '').toLowerCase();
-    var vllmOk = m.vllm_ok !== false && !/mlx|gguf|ggml/.test(repo);
+    var ok = m.servable !== undefined
+      ? m.servable !== false
+      : (m.vllm_ok !== false && !/mlx|gguf|ggml/.test(repo));
     var info = this.placementInfo(m);
     // Unknown size (GGUF etc.) can't be placed — treat as not-runnable-here.
-    return vllmOk && info.known && !info.tooLarge;
+    return ok && info.known && !info.tooLarge;
+  },
+
+  // The kinds this deployment serves, in the order they are offered.
+  hfKindOptions() {
+    return [
+      { id: 'chat', label: 'Chat' },
+      { id: 'vision', label: 'Vision' },
+      { id: 'image', label: 'Image generation' },
+      { id: 'embedding', label: 'Embeddings' },
+    ];
+  },
+
+  toggleHfKind(kind) {
+    var current = this.state.hfKinds || [];
+    this.state.hfKinds = current.indexOf(kind) === -1
+      ? current.concat([kind])
+      : current.filter(function (k) { return k !== kind; });
+    // Re-run rather than filter locally: the kinds decide which pipeline tags
+    // are queried, so a filter applied after the fact would only narrow the
+    // results of the wrong search.
+    if (this._hfQuery) this.searchHuggingFace(this._hfQuery);
+    else this.renderHfFilters();
+  },
+
+  renderHfFilters() {
+    var mount = document.getElementById('hf-kind-filter');
+    if (!mount) return;
+    var self = this;
+    var active = this.state.hfKinds || [];
+    mount.innerHTML = this.hfKindOptions().map(function (option) {
+      var on = active.indexOf(option.id) !== -1;
+      return '<button class="pill' + (on ? ' active' : '') +
+        '" data-hf-kind="' + option.id + '">' + self.esc(option.label) +
+        '</button>';
+    }).join('') +
+      (active.length
+        ? '<button class="pill" data-hf-kind="">All</button>'
+        : '<span class="config-field-hint" style="align-self:center">' +
+          'everything this cluster can serve</span>');
+    mount.querySelectorAll('[data-hf-kind]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        var kind = button.getAttribute('data-hf-kind');
+        if (!kind) {
+          self.state.hfKinds = [];
+          if (self._hfQuery) self.searchHuggingFace(self._hfQuery);
+          else self.renderHfFilters();
+          return;
+        }
+        self.toggleHfKind(kind);
+      });
+    });
   },
 
   renderDownloads() {

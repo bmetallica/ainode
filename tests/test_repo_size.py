@@ -95,8 +95,14 @@ class TestTheListEndpointCannotBeAskedForIt:
         from ainode.models.registry import ModelManager
 
         source = inspect.getsource(ModelManager.search_huggingface)
-        assert '"usedStorage"' not in source.split("expand=")[1][:60]
-        assert 'expand=["safetensors"]' in source
+        # The bug this guards: usedStorage is valid on the single-model
+        # endpoint and a 400 on the list one, and asking for it there turned
+        # every search into no results at all. What else is expanded may grow
+        # — tags and the library name now decide whether a repo is loadable
+        # here — but this must never be among it.
+        expanded = source.split("expand=")[1].split("]")[0]
+        assert '"usedStorage"' not in expanded
+        assert '"safetensors"' in expanded
 
     def test_the_reason_is_recorded_where_someone_would_re_add_it(self):
         import inspect

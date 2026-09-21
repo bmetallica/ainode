@@ -66,6 +66,29 @@ aufgedeckt:
   verteilte Pfad lehnt jetzt mit Begründung ab, und das Formular leuchtet für
   ein Bildmodell nur einen Punkt.
 
+### Nachgereicht (#145): beliebiges Modell, beliebige Quantisierung
+
+Die zwei Katalogeinträge sind Vorschläge, nichts weiter — nichts im Ladepfad
+fragt den Katalog, ob ein Modell laufen darf. Ein selbst gesuchtes Bildmodell
+funktioniert seit #142 genauso, weil der Checkpoint selbst entscheidet.
+
+Was dazu noch gefehlt hat:
+
+* **Die Suche kannte keine Arten.** Jetzt `chat`, `vision`, `image`,
+  `embedding` — und die Art bestimmt, welche Pipeline-Tags überhaupt abgefragt
+  werden, ist also Teil der Suche und kein Filter über deren Ergebnis.
+  Embedding-Modelle waren bis dahin gar nicht suchbar.
+* **Das Format-Urteil war eine Namensprüfung für alle gleich.** Jetzt je Art,
+  aus Tags und Bibliotheksnamen statt nur aus dem Repo-Namen — und **mit
+  Begründung**: GGUF heißt bei einem Chatmodell „das ist llama.cpps Format",
+  bei einem Bildmodell „die Datei enthält nur den Transformer, der
+  Text-Encoder ist die größere Hälfte". Nunchaku wird nicht als „nicht
+  unterstützt" abgetan, sondern mit dem echten Hindernis: kein aarch64-Build
+  seiner Kernel.
+* **Jede Quantisierung, die sich laden lässt, ist zugelassen** — fp8, int4,
+  awq, gptq, nvfp4, bf16. Die Grenze verläuft nicht am Bit, sondern am
+  Layout: eine diffusers-Pipeline ja, eine ComfyUI-Einzeldatei nein.
+
 **Was das nicht ersetzt: Schritt 0.** Ob diffusers auf dieser Hardware trägt,
 ist weiterhin ungemessen — der Code ist derselbe, ob der Versuch gelingt oder
 nicht, aber ob er etwas erzeugt, entscheidet allein der Lauf auf Node 3.
