@@ -55,6 +55,7 @@ New packages, none of which exist upstream:
 | `ainode/clients/opencode.py` | Generates a client config from what is actually serving | Three settings per model that are wrong in ways that surface hours later |
 | `ainode/models/tool_parsers.py` | Picks a tool-call and reasoning parser from the model family | |
 | `ainode/api/params.py` | One place that coerces request fields | |
+| `ainode/update/` | Update from the fork's source: is the branch ahead of the commit this image was built from, and the `git pull` + `update-cluster.sh` run behind a button | Upstream compares a version against the latest published tag; this deployment builds from a checkout, where the code moves far more often than the version |
 | `ainode/engine/backends/diffusers.py`, `engine/diffusers_server.py` | A second engine kind: image generation | vLLM cannot load a diffusers pipeline at all |
 
 Upstream's `ainode/bench/` was extended rather than replaced: selectable
@@ -103,7 +104,7 @@ The large ones, by how much:
 orchestrator image, the image-generation engine, the registry cache, the
 cluster updater and a diagnostic.
 
-Tests: **87 new files**, 13 upstream files extended, 2587 tests. Two of them
+Tests: **88 new files**, 13 upstream files extended, 2627 tests. Two of them
 hold the documentation to the code rather than to good intentions:
 `test_fork_documentation.py` checks that every module and link this file and
 the README name exists and that every feature row claiming an endpoint matches

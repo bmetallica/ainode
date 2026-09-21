@@ -106,6 +106,13 @@ suggestions, and the checkpoint itself decides which engine serves it. See
 serve and what it cannot. Filter by kind, and where something will not run,
 the card says why in a sentence rather than going grey.
 
+**Updating** — this cluster builds on the head rather than pulling a published
+image, so the update button does what an operator would: `git pull` on the
+checkout, then `scripts/update-cluster.sh` to build, distribute and restart.
+It checks hourly whether *your own fork's* branch is ahead of the commit this
+image was built from — a version number moves far less often than the code —
+and says so on the dashboard.
+
 **Self-contained distribution** — its own images, installer and CI, so it does
 not depend on upstream's releases.
 
@@ -393,6 +400,8 @@ set the read token with `ainode config --hf-token hf_xxx`.
 | Image generation — diffusers engine alongside vLLM, OpenAI `/v1/images/generations`, same card and guard | ✅ |
 | Per-instance engine containers, launch scripts and log files | ✅ |
 | Client config generator (OpenCode) built from what is actually serving | ✅ |
+| Source update from the UI — `git pull` then `scripts/update-cluster.sh`, against your own fork's branch, with the peers' SSH ids held in Settings | ✅ |
+| Update check against the commit the image was built from, hourly plus a manual button, with a dashboard banner when the branch is ahead | ✅ |
 | Hugging Face search by kind — chat / vision / image generation / embeddings; the kind changes the query, not just the result list | ✅ |
 | Per-kind format verdict with its reason — "GGUF holds the transformer alone", "no aarch64 build of Nunchaku's kernels" — instead of a dimmed card | ✅ |
 | Embedding models findable in the Hub search (they were excluded, correctly for vLLM and wrongly for a node that serves them in-process) | ✅ |

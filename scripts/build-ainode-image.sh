@@ -40,6 +40,7 @@ echo "==> Building orchestrator image ainode:${TAG} (context: $REPO_ROOT)"
 echo "    eugr launcher pinned to ${EUGR_COMMIT:0:7}"
 docker build -f scripts/Dockerfile.ainode \
     --build-arg "EUGR_COMMIT=${EUGR_COMMIT}" \
+    --build-arg "AINODE_GIT_SHA=$(git rev-parse HEAD 2>/dev/null || echo unknown)" \
     -t "ainode:${TAG}" .
 
 # Also tag :dev when building the release version — the installer examples and

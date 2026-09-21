@@ -138,6 +138,13 @@ RUN pip install --no-cache-dir \
 # worse. Build with --build-arg AINODE_EXTRAS="" for the lean orchestrator:
 # smaller image, much faster build, no embedding models.
 COPY pyproject.toml scripts/_deps_from_pyproject.py /src/
+# The commit this image was built from. Without it a node can compare its
+# VERSION against a tag but not its CODE against a branch — and this fork
+# deploys from source, where the version moves far less often than the code.
+ARG AINODE_GIT_SHA=""
+ENV AINODE_GIT_SHA=${AINODE_GIT_SHA}
+LABEL org.opencontainers.image.revision=${AINODE_GIT_SHA}
+
 ARG AINODE_EXTRAS="[embeddings]"
 
 # Triton builds its launcher stubs at RUNTIME and needs a C compiler to do it.
