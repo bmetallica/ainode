@@ -72,18 +72,29 @@ class TestTheBackendAlreadyAllowedIt:
         assert "KNOWN_EMBEDDING_MODELS.get(model_id, {})" in load
 
 
-class TestTheSearchCannotFindThem:
-    def test_the_model_search_cannot_reach_an_embedding_model(self):
-        """Recorded so the next person does not go looking for a bug in the
-        search: an embedding model is excluded by the query itself.
+class TestTheSearchCanNowFindThem:
+    """It could not, and the limitation was recorded here rather than left to
+    be rediscovered: the servable tags covered what the vLLM engine could
+    serve, and sentence-similarity is not that — embeddings run in-process,
+    in a different runtime entirely.
 
-        The list of servable tags has since grown — multimodal models were
-        hidden by the same filter — but it covers what this engine can SERVE,
-        and sentence-similarity is not that. Embeddings keep their own tab."""
+    That reasoning was right about the engine and wrong about the question.
+    What the search should cover is what this DEPLOYMENT can serve, and it
+    serves embeddings. They are a kind now, filterable like the rest."""
+
+    def test_the_embedding_tags_are_searchable(self):
         from ainode.models.registry import ModelManager
 
-        assert "sentence-similarity" not in ModelManager.SERVABLE_PIPELINE_TAGS
-        assert "feature-extraction" not in ModelManager.SERVABLE_PIPELINE_TAGS
+        assert "sentence-similarity" in ModelManager.SERVABLE_PIPELINE_TAGS
+        assert "feature-extraction" in ModelManager.SERVABLE_PIPELINE_TAGS
+
+    def test_they_are_their_own_kind_with_their_own_runtime(self):
+        # Not a chat model with a different tag: a different engine, so a
+        # different set of formats can work.
+        from ainode.models.registry import ModelManager
+
+        assert ModelManager.kind_for("sentence-similarity") == "embedding"
+        assert ModelManager.KIND_BACKEND["embedding"] == "embeddings"
 
     def test_the_curated_list_is_still_there(self):
         assert "nomic-ai/nomic-embed-text-v1.5" in KNOWN_EMBEDDING_MODELS

@@ -325,7 +325,10 @@ class TestThePagesSayWhichKindAModelIs:
               "static" / "js" / "app.js").read_text()
 
     def test_the_models_page_badges_it(self):
-        assert self.APP_JS.count("Image</span>") >= 2   # catalog and search
+        # The catalog card says "Image"; the search card says which KIND it
+        # is, since there it stands next to chat, vision and embedding models.
+        assert "Image</span>" in self.APP_JS
+        assert "Image generation</span>" in self.APP_JS
 
     def test_the_catalog_mapping_keeps_the_field(self):
         # It comes from /api/models and was dropped in the remap, so the

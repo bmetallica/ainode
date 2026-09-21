@@ -1717,15 +1717,33 @@ async def handle_delete_model(request: web.Request) -> web.Response:
 
 
 async def handle_search_models(request: web.Request) -> web.Response:
-    """Search HuggingFace Hub for models."""
+    """Search HuggingFace Hub for models.
+
+    ``kind`` narrows it: ``chat``, ``vision``, ``image``, ``embedding``, or
+    several comma-separated. Without it, everything this deployment can serve
+    — which is not everything the Hub has, and the difference is the point.
+    """
     manager: ModelManager = request.app["model_manager"]
     query = request.query.get("q", "").strip()
     if not query:
         return web.json_response({"models": []})
     limit = int(request.query.get("limit", "30"))
+
+    known = list(ModelManager.KIND_TAGS)
+    kinds = [k.strip().lower()
+             for k in (request.query.get("kind") or "").split(",") if k.strip()]
+    unknown = [k for k in kinds if k not in known]
+    if unknown:
+        return web.json_response(
+            {"error": f"unknown kind(s): {', '.join(unknown)}",
+             "known": known}, status=400)
+
     loop = asyncio.get_event_loop()
-    results = await loop.run_in_executor(None, manager.search_huggingface, query, limit)
-    return web.json_response({"models": results, "query": query})
+    results = await loop.run_in_executor(
+        None, functools.partial(manager.search_huggingface, query, limit,
+                                kinds=kinds or None))
+    return web.json_response({"models": results, "query": query,
+                              "kinds": kinds or known})
 
 
 async def handle_recommended(request: web.Request) -> web.Response:

@@ -1827,41 +1827,102 @@ class ModelManager:
     #: One query per tag, merged: list_models takes a single pipeline_tag, and
     #: dropping the filter entirely would bury the results under embeddings
     #: and classifiers that this node cannot run at all.
-    SERVABLE_PIPELINE_TAGS = ("text-generation", "image-text-to-text",
-                              "text-to-image")
-
-    #: pipeline_tag → which engine serves it. The distinction is real and not
-    #: cosmetic: a text-to-image repo is a diffusers PIPELINE — model_index.json
-    #: with a transformer, a text encoder, a VAE and a scheduler beside it —
-    #: and vLLM cannot load it at all. Hiding those models was correct while
-    #: nothing could serve them; now that something can, they are shown and
-    #: labelled, because a search result that leads to a launch failure is
-    #: worse than no search result.
-    MODALITY_BY_TAG = {
-        "text-generation": "text",
-        "image-text-to-text": "text",
-        "text-to-image": "image",
+    #: What AINode can serve, by kind, and the Hub pipeline tags that mean it.
+    #:
+    #: A kind is not a label on a search result — it decides which engine runs
+    #: the model and therefore which formats can work at all. A text-to-image
+    #: repo is a diffusers PIPELINE (model_index.json with a transformer, a
+    #: text encoder, a VAE and a scheduler beside it) and vLLM cannot load it;
+    #: an embedding model runs in-process in sentence-transformers and touches
+    #: neither engine.
+    KIND_TAGS = {
+        "chat": ("text-generation",),
+        "vision": ("image-text-to-text",),
+        "image": ("text-to-image",),
+        "embedding": ("sentence-similarity", "feature-extraction"),
     }
+
+    #: Which engine each kind needs. "" is vLLM, the node default.
+    KIND_BACKEND = {"chat": "", "vision": "", "image": "diffusers",
+                    "embedding": "embeddings"}
+
+    #: Kept for the callers that only care whether it is a picture or not.
+    MODALITY_BY_KIND = {"chat": "text", "vision": "text",
+                        "image": "image", "embedding": "text"}
+
+    SERVABLE_PIPELINE_TAGS = tuple(
+        tag for tags in KIND_TAGS.values() for tag in tags)
+
+    @staticmethod
+    def kind_for(pipeline_tag: str) -> str:
+        tag = str(pipeline_tag or "").strip().lower()
+        for kind, tags in ModelManager.KIND_TAGS.items():
+            if tag in tags:
+                return kind
+        return "chat"
 
     @staticmethod
     def modality_for(pipeline_tag: str) -> str:
-        return ModelManager.MODALITY_BY_TAG.get(
-            str(pipeline_tag or "").strip().lower(), "text")
+        return ModelManager.MODALITY_BY_KIND.get(
+            ModelManager.kind_for(pipeline_tag), "text")
 
     @staticmethod
     def backend_for_modality(modality: str) -> str:
         return "diffusers" if str(modality) == "image" else ""
 
     @staticmethod
-    def _search_every_servable_tag(api, *, query, limit, **kwargs):
+    def servable(kind: str, repo: str, tags=None, library: str = "") -> tuple:
+        """(servable, reason) — can THIS deployment actually load this repo?
+
+        The verdict differs by kind because the engines differ, and a search
+        result that leads to a launch failure is worse than no search result.
+        The reason is returned rather than swallowed: "GGUF" means nothing to
+        someone who has not hit it before, and "we cannot load this, here is
+        what does" is the whole value of the check.
+        """
+        haystack = " ".join(
+            [str(repo or "").lower(), str(library or "").lower()] +
+            [str(t).lower() for t in (tags or [])])
+
+        def has(*needles):
+            return any(n in haystack for n in needles)
+
+        if has("gguf", "ggml"):
+            if kind == "image":
+                return False, ("GGUF holds the transformer alone, and the text "
+                               "encoder — the larger half — would still have "
+                               "to come from the original repo. Use a "
+                               "quantised pipeline instead.")
+            return False, ("GGUF is llama.cpp's format; this engine serves "
+                           "safetensors.")
+        if has("mlx"):
+            return False, "MLX is Apple-silicon only."
+        if has("exl2", "exl3", "exllama"):
+            return False, "ExLlama formats are not loadable by vLLM."
+        if kind == "image":
+            if has("nunchaku", "svdquant"):
+                return False, ("Nunchaku needs its own CUDA kernels, for which "
+                               "there is no aarch64 build.")
+            if has("diffusion-single-file", "comfyui", "comfy-org"):
+                return False, ("A single-file checkpoint for ComfyUI, not a "
+                               "diffusers pipeline directory.")
+        if kind == "embedding" and has("onnx") and not has("safetensors"):
+            return False, "ONNX-only; the embedding runtime loads safetensors."
+        return True, ""
+
+    @staticmethod
+    def _search_every_servable_tag(api, *, query, limit, kinds=None, **kwargs):
         """One search per servable pipeline tag, merged and download-sorted.
 
         A tag that errors is skipped rather than failing the search: the Hub
         has renamed pipeline tags before, and one unknown name should not cost
         the results of the others.
         """
+        wanted = [k for k in (kinds or ModelManager.KIND_TAGS)
+                  if k in ModelManager.KIND_TAGS]
+        tags = [t for k in wanted for t in ModelManager.KIND_TAGS[k]]
         found: dict = {}
-        for tag in ModelManager.SERVABLE_PIPELINE_TAGS:
+        for tag in tags:
             try:
                 for model in api.list_models(search=query, pipeline_tag=tag,
                                              limit=limit, **kwargs):
@@ -1872,7 +1933,8 @@ class ModelManager:
                         key=lambda m: getattr(m, "downloads", 0) or 0, reverse=True)
         return ranked[:limit]
 
-    def search_huggingface(self, query: str, limit: int = 50) -> list[dict]:
+    def search_huggingface(self, query: str, limit: int = 50,
+                           kinds=None) -> list[dict]:
         """Search HuggingFace Hub for models this engine could serve."""
         try:
             from huggingface_hub import HfApi
@@ -1880,14 +1942,18 @@ class ModelManager:
             # huggingface_hub >=1.x dropped `direction`/`task`; use pipeline_tag.
             # expand=safetensors pulls the dtype breakdown so we can show real size.
             models = self._search_every_servable_tag(
-                api, query=query, limit=limit,
+                api, query=query, limit=limit, kinds=kinds,
                 # NOT usedStorage: the Hub rejects it on the LIST endpoint —
                 #   Invalid option: expected one of "author"|…|"safetensors"|…
                 # It is valid on the single-model endpoint, which is where it
                 # was verified, and adding it here turned every search into a
                 # BadRequestError: no results, so nothing to download. The
                 # exact size is fetched per repo below instead.
-                expand=["safetensors"],
+                # tags and the library name decide whether a repo is
+                # loadable here, and the name alone is not enough: a repo can
+                # be a ComfyUI single-file checkpoint without saying so in its
+                # title. expand pulls them with the same one request.
+                expand=["safetensors", "tags", "library_name", "pipeline_tag"],
             )
             catalog_repos = {info.hf_repo.lower() for info in self.get_catalog()}
             results = []
@@ -1910,17 +1976,23 @@ class ModelManager:
                     if tag in repo_l:
                         quant = label
                         break
-                modality = ModelManager.modality_for(
-                    getattr(m, "pipeline_tag", ""))
-                # A GGUF or MLX repo is not servable by either engine here.
-                # For an image model the reason differs — diffusers loads GGUF
-                # only through a separate single-file path, and only for the
-                # transformer — but the verdict is the same, and a verdict
-                # that reads "this will not start" is the useful one.
-                vllm_ok = not ("mlx" in repo_l or "gguf" in repo_l or "ggml" in repo_l)
+                pipeline_tag = getattr(m, "pipeline_tag", "")
+                kind = ModelManager.kind_for(pipeline_tag)
+                modality = ModelManager.modality_for(pipeline_tag)
+                # Judged per kind, because the engines differ and so do the
+                # formats they can load. The reason travels with the verdict:
+                # "GGUF" means nothing to someone who has not hit it before.
+                ok, why_not = ModelManager.servable(
+                    kind, repo, getattr(m, "tags", None),
+                    getattr(m, "library_name", "") or "")
+                vllm_ok = ok           # back-compat for older UI builds
                 results.append({
                     "modality": modality,
-                    "engine_backend": ModelManager.backend_for_modality(modality),
+                    "kind": kind,
+                    "pipeline_tag": pipeline_tag or "",
+                    "servable": ok,
+                    "not_servable_reason": why_not,
+                    "engine_backend": ModelManager.KIND_BACKEND.get(kind, ""),
                     "id": slug,
                     "name": repo.split("/")[-1],
                     "hf_repo": repo,
@@ -1956,6 +2028,12 @@ class ModelManager:
                 hay = (info.hf_repo + " " + info.name + " " + (info.family or "")).lower()
                 if ql in hay and info.hf_repo.lower() not in have:
                     results.append({
+                        "kind": ("image" if getattr(info, "modality", "") == "image"
+                                 else "chat"),
+                        "modality": getattr(info, "modality", "text"),
+                        "servable": True,
+                        "not_servable_reason": "",
+                        "engine_backend": getattr(info, "engine_backend", ""),
                         "id": info.hf_repo.replace("/", "--").lower(),
                         "name": info.name,
                         "hf_repo": info.hf_repo,
