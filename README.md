@@ -61,21 +61,47 @@ upstream does not support. Two assumptions in the original break on that topolog
    TP splits attention heads across ranks and head counts are powers of two, so
    **TP=3 has no models behind it** — three nodes were simply unusable.
 
-What this fork adds:
+What this fork adds, by area. The full inventory, with reasons and file
+pointers, is in [`docs/fork-changes.md`](docs/fork-changes.md).
 
-- **Fabric topology detection** — 2 active CX7 links = direct-attach, 4 = mesh.
-  On a mesh, coordination (Ray, discovery, SSH) moves to the shared 10G Ethernet
-  while NCCL gets all four RoCE devices and routes the ring itself.
-- **A second address list** so model weights travel over a direct RoCE cable
-  where one exists, instead of the coordination Ethernet.
-- **Pipeline and data parallel** in the launch path, the state model and the UI.
-  An impossible split is refused at the API with the alternatives named, rather
-  than failing deep inside vLLM startup.
-- **Node-failure handling** — a head no longer crash-loops when a peer is
-  offline, degraded instances are visible, and one click relaunches them on the
-  nodes that are still up.
-- **Self-contained distribution** — its own image, installer and CI, so it does
-  not depend on upstream's releases.
+**The fabric** — topology detection (2 active CX7 links = direct-attach, 4 =
+mesh; on a mesh, coordination moves to the shared Ethernet while NCCL gets all
+four RoCE devices), a second address list so weights travel over a direct RoCE
+cable, and **pipeline and data parallel** in the launch path, the state model
+and the UI. An impossible split is refused at the API with the alternatives
+named rather than failing deep inside vLLM startup.
+
+**Deciding what to run where** — a **launch planner** that reads the
+checkpoint's own `config.json` and the nodes' free memory and works out whether
+it fits, on which axis, at what context length and for how many concurrent
+users, showing its arithmetic; **profiles** ("what this node should be
+serving", captured from what is running and applied to converge); and
+**placement** ("this model runs on node X, permanently").
+
+**Not taking the node down** — a **host memory guard** in its own thread that
+refuses launches below a reserve and kills the newest engine before the kernel
+starves, plus an **admission gate** in front of both launch paths. On GB10 the
+GPU's memory *is* the host's memory, so an engine that over-allocates does not
+get a CUDA error — it takes the machine with it. Launches also run off the
+event loop, so a loading node no longer disappears from the cluster.
+
+**Knowing what happened** — per-phase load timings, an **error assistant**
+that explains a failure using a model already running, per-instance containers
+and logs, and a **measurement store** that records what each launch actually
+cost and prefers that to any estimate.
+
+**Watching it** — MQTT telemetry for system, GPU, **RoCE fabric counters**
+(`/proc/net/dev` reads zero while RDMA saturates the link), models, engine
+internals (KV cache, preemptions, queue depth), the memory guard, transfers,
+launch events and log forwarding. Every topic is documented in
+[`docs/mqtt-schema.md`](docs/mqtt-schema.md).
+
+**Image generation** — a second engine kind alongside vLLM, which cannot load
+a diffusers pipeline at all. Same card, same guard, same profiles. See
+[`images.md`](images.md).
+
+**Self-contained distribution** — its own images, installer and CI, so it does
+not depend on upstream's releases.
 
 The network heuristics and the 3-node parallelism constraints are adapted from
 [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) (MIT), whose
@@ -90,12 +116,16 @@ Background on what was changed and why: [`docs/mesh/PHASE1-ANALYSE.md`](docs/mes
 (an audit of the original code before any of it was touched — German) and
 [`docs/mesh/BOOTSTRAP.md`](docs/mesh/BOOTSTRAP.md) (publishing this fork's image).
 
-**If you are not running a 3-node mesh, upstream is the better choice** — it is
-the maintained project, and the mesh work here is of no use to you. Two fixes
-found along the way are not mesh-specific and apply to any cluster, so they are
-worth carrying upstream rather than keeping here: a head that crash-looped when
-a peer was offline, and a completed model download that reported stale progress
-because its progress poller raced the completion write. Both are in the
+**If you are not running a multi-node GB10 cluster, upstream is the better
+choice** — it is the maintained project, and the fabric work here is of no use
+to you. Quite a lot of the rest is not hardware-specific, though: the planner,
+profiles, placement, the load timings, the error assistant and the measurement
+store would work on any cluster, and
+[`docs/fork-changes.md`](docs/fork-changes.md) says which pieces those are so
+they can be carried back rather than kept here. Two plain bug fixes found along
+the way belong upstream outright: a head that crash-looped when a peer was
+offline, and a completed model download that reported stale progress because
+its poller raced the completion write. Both are in the
 [changelog](CHANGELOG.md).
 
 ---
@@ -343,6 +373,20 @@ set the read token with `ainode config --hf-token hf_xxx`.
 | One-command cluster update (`scripts/update-cluster.sh`) — build, distribute, restart, verify; repeatable | ✅ |
 | One-command diagnostic report (`scripts/diagnose.sh`) — read-only, secrets redacted, peers included | ✅ |
 | Image cache on the head — Hub pull-through + local registry, so an image is fetched once, not once per node | ✅ |
+| Launch planner — reads the checkpoint's `config.json` and each node's free memory; answers fit, axis, `max-model-len`, KV, concurrency, and shows its arithmetic | ✅ |
+| Host memory guard — own thread, `/proc/meminfo`, refuses launches below a reserve and kills the newest engine before the kernel starves; per-node settings with a DGX Spark preset | ✅ |
+| Admission gate in front of **both** launch paths, scoped to the node the instance will run on | ✅ |
+| Launches run off the event loop — a loading node no longer drops out of the cluster | ✅ |
+| Per-phase load timings — where a five-minute launch actually went | ✅ |
+| Error assistant — explains a failed launch using a model that is already serving; the raw error is never replaced | ✅ |
+| Measurement store — records what each launch really cost and prefers it to any estimate | ✅ |
+| Persistent per-model placement ("this model runs on node X") | ✅ |
+| RoCE fabric telemetry — throughput and error counters from `/sys/class/infiniband`, which `/proc/net/dev` cannot see | ✅ |
+| Engine telemetry — KV-cache fill, preemptions, queue depth, TTFT, per instance | ✅ |
+| MQTT availability via last will, log forwarding, launch events, transfer progress | ✅ |
+| Image generation — diffusers engine alongside vLLM, OpenAI `/v1/images/generations`, same card and guard | ✅ |
+| Per-instance engine containers, launch scripts and log files | ✅ |
+| Client config generator (OpenCode) built from what is actually serving | ✅ |
 
 ---
 
@@ -760,9 +804,22 @@ scrape_configs:
 
 ## Contributing
 
-AINode is Apache-2.0 and welcomes contributions. See
-[CONTRIBUTING.md](CONTRIBUTING.md) — and please run the test suite
-(`pytest tests/`) before opening a PR.
+AINode is Apache-2.0 and welcomes contributions.
+
+**For upstream AINode**, contribute at
+[getainode/ainode](https://github.com/getainode/ainode) — that is the
+maintained project, and most of what you might want to change lives there.
+
+**For this fork**, work on a branch, open a PR, and run both before you do:
+
+```bash
+python -m pytest tests/ -q     # 2539 tests
+ruff check ainode tests
+```
+
+Anything that only makes sense on a GB10 cluster belongs here; anything that
+would work anywhere is better carried upstream, and
+[`docs/fork-changes.md`](docs/fork-changes.md) marks which is which.
 
 ---
 
