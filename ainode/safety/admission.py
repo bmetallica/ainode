@@ -69,7 +69,7 @@ def _planner_says(app, model: str, *, node_ids=None, strategy: str = "auto",
     if manager is None:
         return ""
 
-    image_refusal = _image_says(app, manager, model)
+    image_refusal = _image_says(app, manager, model, node_ids)
     if image_refusal is not None:
         return image_refusal
 
@@ -88,7 +88,7 @@ def _planner_says(app, model: str, *, node_ids=None, strategy: str = "auto",
         # This model has run here. What it actually cost beats any arithmetic
         # about what it ought to cost — but only when it was launched the same
         # way: a memory figure from a 64k context says nothing about 256k.
-        refusal = _measured_says(app, model, measured, max_model_len)
+        refusal = _measured_says(app, model, measured, max_model_len, node_ids)
         if refusal is not None:
             return refusal
 
@@ -135,7 +135,8 @@ def _measured_cost(app, model: str):
     return measurement
 
 
-def _measured_says(app, model: str, measured: dict, max_model_len: int):
+def _measured_says(app, model: str, measured: dict, max_model_len: int,
+                   node_ids=None):
     """Verdict from what the model actually cost, or None to fall through.
 
     Only when this launch matches the measured one. A model measured at 64k
@@ -147,7 +148,7 @@ def _measured_says(app, model: str, measured: dict, max_model_len: int):
     if wanted and measured_len and wanted != measured_len:
         return None
 
-    budgets = _budgets_with_reserve(app, None)
+    budgets = _budgets_with_reserve(app, node_ids)
     if not budgets:
         return None
     need = float(measured["memory_gb"])
@@ -162,7 +163,7 @@ def _measured_says(app, model: str, measured: dict, max_model_len: int):
     )
 
 
-def _image_says(app, manager, model: str):
+def _image_says(app, manager, model: str, node_ids=None):
     """The image planner's verdict, or None when this is not an image model.
 
     None and "" mean different things here: "" is "an image model, and it
@@ -185,7 +186,7 @@ def _image_says(app, manager, model: str):
             return ""
         config = app.get("config")
         plan = plan_for_image(
-            weights, _budgets_with_reserve(app, None), model=model,
+            weights, _budgets_with_reserve(app, node_ids), model=model,
             max_image_size=int(getattr(config, "max_image_size", 1536) or 1536))
     except Exception:
         logger.debug("the image planner could not plan %s", model, exc_info=True)
