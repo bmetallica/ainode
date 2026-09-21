@@ -14,6 +14,28 @@ Aufgenommen am 2026-09-21 auf `main` @ 96041b0 (2371 Tests).
 
 ---
 
+## Stand: gebaut am 2026-09-21
+
+| Schritt | PR | Was daraus wurde |
+|---|---|---|
+| S2 Engine-Image | #138 | `scripts/Dockerfile.diffusers` FROM `vllm-node`, `build-diffusers-image.sh`, Verteilung über `update-cluster.sh --images` |
+| S3 Server | #138 | `ainode/engine/diffusers_server.py` — OpenAI-Bildendpunkt, `/metrics`, Auflösungsgrenze, serialisierte Läufe, kein CPU-Offload |
+| S4 Backend | #138 | `ainode/engine/backends/diffusers.py`, `engine_backend="diffusers"` |
+| S1 Modalität | #139 | `modality` auf `ModelInfo`, `text-to-image` in der Suche, `kind` auf Record und Profilen |
+| S5 Routing | #139 | `POST /v1/images/generations` durch denselben Proxy |
+| S6 Speicher | #139 | `plan_for_image`, Zulassungstor mit der Bildrechnung, `max_image_size` |
+| S9 Profile | #139 | `KIND_IMAGE`, Startparameter im Profil |
+| S7 UI | #140 | Bildfelder im Launch-Formular, eigene Ansicht *Images* |
+| S8 Telemetrie | #140 | `kind` im `models`-Payload, Bild-Metriken auf `engine/<modell>` |
+
+**Was das nicht ersetzt: Schritt 0.** Ob diffusers auf dieser Hardware trägt,
+ist weiterhin ungemessen — der Code ist derselbe, ob der Versuch gelingt oder
+nicht, aber ob er etwas erzeugt, entscheidet allein der Lauf auf Node 3.
+Die beiden Katalogeinträge sind deshalb `verified=False`, und ihre
+`min_memory_gb` sind konservativ geschätzt, nicht gemessen.
+
+---
+
 ## 1. Warum es heute nicht geht
 
 Nachgeprüft, nicht vermutet:

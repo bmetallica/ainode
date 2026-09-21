@@ -82,6 +82,11 @@ def _instances(app) -> List[Dict[str, Any]]:
         phase = getattr(instance.backend, "load_phase", "")
         if phase:
             entry["load_phase"] = phase
+        kind = str(getattr(record, "kind", "") or "")
+        if kind and kind != "llm":
+            # Only when it is not the default, so a dashboard built before
+            # image generation existed reads exactly as it did.
+            entry["kind"] = kind
         out.append(entry)
     return out
 

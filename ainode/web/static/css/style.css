@@ -1110,6 +1110,35 @@ h4.chat-h { font-size: 14px; color: var(--nvidia-green); }
   margin-bottom: 8px;
 }
 
+.image-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.image-card {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.02));
+}
+
+.image-card img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.image-card figcaption {
+  padding: 8px 10px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+
 .instance-head {
   display: flex;
   align-items: center;
