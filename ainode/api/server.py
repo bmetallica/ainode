@@ -1048,7 +1048,11 @@ async def handle_nodes(request: web.Request) -> web.Response:
                      "load_detail": inst.get("load_detail") or "",
                      "load_error": inst.get("load_error") or "",
                      "load_timeline": inst.get("load_timeline") or [],
-                     "load_seconds": inst.get("load_seconds") or 0}
+                     "load_seconds": inst.get("load_seconds") or 0,
+                     # What this instance serves. Dropped here, it never
+                     # reached the browser — and the Images view, which asks
+                     # exactly this question, was permanently empty.
+                     "kind": inst.get("kind") or ""}
                     for inst in (getattr(n, "instances", []) or [])
                     if isinstance(inst, dict) and inst.get("model")
                 ],
@@ -1958,6 +1962,7 @@ async def handle_cluster_resources(request: web.Request) -> web.Response:
             "load_error": inst.get("load_error") or "",
             "load_timeline": inst.get("load_timeline") or [],
             "load_seconds": inst.get("load_seconds") or 0,
+            "kind": inst.get("kind") or "",
         }
 
     distributed_instances = []

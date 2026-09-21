@@ -402,6 +402,27 @@ def catalog_recipe(model: str) -> dict:
     return {}
 
 
+def apply_detected_backend(app, model: str, overrides: dict) -> dict:
+    """Default ``engine_backend`` from what is actually on disk.
+
+    Only when nothing else decided: an explicit choice and a catalog recipe
+    both win. This exists for the model nobody curated — which, on a cluster
+    where the operator downloads what they like, is most of them.
+    """
+    if overrides.get("engine_backend"):
+        return overrides
+    try:
+        from ainode.planner.api_routes import _is_image
+
+        if _is_image(None, None, app, model):
+            overrides["engine_backend"] = "diffusers"
+            logger.info("%s is a diffusers pipeline on disk; serving it with "
+                        "the image engine", model)
+    except Exception:
+        logger.debug("could not detect the engine for %s", model, exc_info=True)
+    return overrides
+
+
 def _resolved_overrides(gmu, overrides) -> dict:
     """Resolve the FULL per-load override set to concrete values, defaulting
     every field the caller did NOT supply to its NodeConfig class default.
@@ -1018,6 +1039,11 @@ async def handle_model_load(request: web.Request) -> web.Response:
                                  status=507)
 
     overrides, gmu = apply_catalog_recipe(model, overrides, gmu)
+    # A diffusion pipeline the operator downloaded themselves is in no
+    # catalog, so nothing above says which engine to use — and the node
+    # default is vLLM, which cannot load one at all. The checkpoint itself
+    # says what it is: model_index.json where a config.json would be.
+    overrides = apply_detected_backend(request.app, model, overrides)
     overrides = apply_tool_calling(model, overrides, str_field(body, "tool_calling"))
 
     # Decide: single-node or distributed?

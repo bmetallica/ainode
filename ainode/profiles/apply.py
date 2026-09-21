@@ -435,7 +435,12 @@ def capture_profile(app, name: str, description: str = "") -> Profile:
                 continue
             served.add(model_id)
             spec = dict(spec)
-            spec["kind"] = KIND_LLM
+            # What the peer said it is, not what we assume. Forcing KIND_LLM
+            # here captured an image model running on node 3 as an LLM, and
+            # restoring that profile started vLLM on a diffusers pipeline —
+            # the exact failure the kind exists to prevent. A peer too old to
+            # send one is an LLM, because that is all there was.
+            spec["kind"] = str(spec.get("kind") or "").strip() or KIND_LLM
             placement = [n for n in (spec.get("node_ids") or []) if n]
             spec["node_ids"] = placement or [node.node_id]
             try:
