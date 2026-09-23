@@ -1,22 +1,34 @@
-"""Every model that uses the InstantTensor loader caps its staging buffer.
+"""No curated model asks for the InstantTensor loader any more.
 
-An engine rebuild (torch 2.11 -> 2.13) left Qwen3.8 unable to load on a node
-with 28 GB genuinely free:
+This file used to assert the opposite: that every model using the loader
+capped its staging buffer at 64 MiB. The cap was added after
 
     RuntimeError: buffer_size (5086090240 B) exceeds device memory budget
     (825161728 B)
 
-and 862404608 B on the next attempt. A budget derived from
-gpu-memory-utilization would be constant; one that moves between runs comes
-from a runtime query — and on GB10 that query answers oddly, the same way
-nvidia-smi reports [N/A] for memory here. Unified memory is the common
-thread, and it is not something a catalog entry can fix.
+and it was reasoned from the GLM recipe, which carries the same variables
+and serves with ``--load-format auto`` — so the cap had never been exercised
+anywhere, and the claim it came with ("what has loaded a 175 GB checkpoint
+here") described a launch that did not use the loader.
 
-What a catalog entry CAN do is stop asking for 5 GB in one piece. 64 MiB is
-what the GLM recipe uses, on this hardware, for a 175 GB checkpoint.
+Measured since, on one node in one day, with every launch of Qwen3.8 that
+had the loader on::
 
-Four models ship the loader, so four needed the cap: the failure was reported
-for one of them and was waiting in the other three.
+    07:08 ok   08:22 ok   09:26 ok
+    13:41 .. 14:48   thirteen failures
+    15:14 ok   15:25 ok   15:30 ok
+    19:29 .. 20:15   six failures
+
+Same flags, same checkpoint, same node. What moves is the budget — 0.47 to
+1.70 GB across those failures — and it moves because it tracks what CUDA
+reports free, which on unified memory is MemFree and not MemAvailable:
+measured at 27.18 GB against 116 GB available, with 91 GB of page cache
+between them. Reading a checkpoint off disk fills that cache, so a load can
+take the room its own loader is about to ask for.
+
+The variables are read — CONCURRENCY=1 halves the buffer — and none of them
+bounds it. So the loader can be made to fit more often and not reliably, and
+a curated recipe is a promise that a launch works.
 """
 
 from __future__ import annotations
@@ -25,6 +37,7 @@ import pytest
 
 from ainode.models.registry import CURATED_CLUSTER_MODELS, FALLBACK_CATALOG
 
+#: Still the right value for anyone switching the loader on deliberately.
 CAP = "67108864"
 
 
@@ -38,33 +51,30 @@ def _instanttensor_models():
     return found
 
 
-class TestEveryUserOfTheLoaderIsCapped:
-    def test_there_are_models_using_it(self):
-        assert _instanttensor_models(), "the test has lost its subject"
+class TestNoCuratedModelChoosesIt:
+    def test_none_of_them_does(self):
+        assert _instanttensor_models() == {}, (
+            "a curated entry is a promise that the launch works, and this "
+            "loader's success depends on a figure the engine will not explain")
 
-    @pytest.mark.parametrize("key", sorted(_instanttensor_models()))
-    def test_the_buffer_is_capped(self, key):
-        info = _instanttensor_models()[key]
-        assert (info.extra_env or {}).get("INSTANTTENSOR_BUFFER_SIZE") == CAP
+    @pytest.mark.parametrize("key", sorted(
+        k for k, v in CURATED_CLUSTER_MODELS.items()
+        if (v.extra_env or {}).get("INSTANTTENSOR_BUFFER_SIZE")))
+    def test_the_settings_stay_for_anyone_switching_it_on(self, key):
+        """Dropping the flag and keeping the knobs is deliberate: an operator
+        who adds --load-format instanttensor gets the configuration that
+        makes it fit most often, rather than the bare default."""
+        env = CURATED_CLUSTER_MODELS[key].extra_env
+        assert env["INSTANTTENSOR_BUFFER_SIZE"] == CAP
+        assert env["INSTANTTENSOR_BACKEND"] == "BUFFERED"
 
-    def test_the_cap_matches_the_one_proven_on_this_hardware(self):
-        """GLM's recipe has loaded a 175 GB checkpoint with it."""
-        glm = CURATED_CLUSTER_MODELS["glm-5.3-flash-nvfp4-spark"]
-        assert glm.extra_env["INSTANTTENSOR_BUFFER_SIZE"] == CAP
 
-    def test_the_measurement_is_recorded_next_to_the_cap(self):
-        """A number without its evidence is a number the next person changes
-        back."""
-        from pathlib import Path
+class TestTheReasonIsRecordedWhereItWillBeRead:
+    def test_the_qwen_entry_carries_the_measurement(self):
+        import inspect
 
-        source = (Path(__file__).resolve().parent.parent / "ainode" / "models" /
-                  "registry.py").read_text()
-        assert "825161728" in source and "862404608" in source
-        assert "moves\n            # between runs" in source
+        from ainode.models import registry
 
-    def test_the_way_out_is_named(self):
-        from pathlib import Path
-
-        source = (Path(__file__).resolve().parent.parent / "ainode" / "models" /
-                  "registry.py").read_text()
-        assert "drop:--load-format" in source
+        source = inspect.getsource(registry)
+        assert "coin flip" in source
+        assert "15:14 ok" in source
