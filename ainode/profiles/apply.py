@@ -400,7 +400,25 @@ def local_launch_specs(app) -> List[dict]:
             "gpu_memory_utilization": getattr(
                 inst_config, "gpu_memory_utilization", None),
             "max_model_len": getattr(inst_config, "max_model_len", None),
-            "kv_cache_dtype": str(getattr(inst_config, "kv_cache_dtype", "") or ""),
+            # Only when the operator chose it. The node default is fp8, and
+            # recording a default as an entry turns it into an instruction:
+            # on restore, handle_model_load marks any stated kv_cache_dtype
+            # EXPLICIT, which is precisely the flag that disables the
+            # vision-model safety rule in serve_args.effective_kv_cache_dtype.
+            #
+            # Captured from the cluster's own profile, on a vision model whose
+            # recipe carries "--kv-cache-dtype auto" and the comment "Vision
+            # models must NOT get fp8 KV on GB10 — it corrupts generation":
+            #
+            #   "kv_cache_dtype": "fp8",
+            #   "extra_vllm_args": [... "--kv-cache-dtype", "auto" ...]
+            #
+            # Restoring that would have served the model with fp8 KV and
+            # produced garbage rather than an error — the worst kind of
+            # regression to capture, because nothing fails.
+            "kv_cache_dtype": (
+                str(getattr(inst_config, "kv_cache_dtype", "") or "")
+                if getattr(inst_config, "kv_cache_dtype_explicit", False) else ""),
             "quantization": str(getattr(inst_config, "quantization", "") or ""),
             "served_model_name": list(
                 getattr(inst_config, "served_model_name", None) or []),

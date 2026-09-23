@@ -65,7 +65,8 @@ class TestWhatALocalInstanceContributes:
     def _spec(self):
         config = _config(
             gpu_memory_utilization=0.87, max_model_len=131072,
-            kv_cache_dtype="fp8", trust_remote_code=True,
+            kv_cache_dtype="fp8", kv_cache_dtype_explicit=True,
+            trust_remote_code=True,
             extra_vllm_args=["--attention-backend", "B12X", "--block-size", "256"],
             extra_env={"CUTE_DSL_ARCH": "sm_121a"},
             engine_image="vllm-node-b12x", parallel_strategy="tensor")
@@ -76,6 +77,7 @@ class TestWhatALocalInstanceContributes:
         spec = self._spec()
         assert spec["gpu_memory_utilization"] == 0.87
         assert spec["max_model_len"] == 131072
+        # Explicit above, so it is the operator's choice and travels.
         assert spec["kv_cache_dtype"] == "fp8"
         assert spec["trust_remote_code"] is True
         assert spec["engine_image"] == "vllm-node-b12x"
@@ -242,3 +244,38 @@ class TestTheEndpoint:
 
         assert "local_launch_specs" in inspect.getsource(server.handle_launch_config)
         assert "local_launch_specs(app)" in inspect.getsource(apply.capture_profile)
+
+
+class TestADefaultIsNotAChoice:
+    """Captured from the cluster's own profile, on a vision model:
+
+        "kv_cache_dtype": "fp8",
+        "extra_vllm_args": [... "--kv-cache-dtype", "auto" ...]
+
+    The recipe says auto and carries the reason — "Vision models must NOT get
+    fp8 KV on GB10 — it corrupts generation (proven 2026-07-06)". The node
+    default is fp8, and capturing that default turned it into an instruction:
+    on restore, a stated kv_cache_dtype is marked EXPLICIT, which is exactly
+    the flag that disables the safety downgrade. The restored model would
+    have produced garbage rather than an error.
+    """
+
+    def _spec(self, explicit):
+        config = _config(kv_cache_dtype="fp8", kv_cache_dtype_explicit=explicit)
+        app = _app_with_local([_Instance(_Record(GLM, []), config)])
+        return local_launch_specs(app)[0]
+
+    def test_the_node_default_is_not_recorded(self):
+        assert self._spec(False)["kv_cache_dtype"] == ""
+
+    def test_an_explicit_choice_is(self):
+        assert self._spec(True)["kv_cache_dtype"] == "fp8"
+
+    def test_the_safety_rule_is_what_this_protects(self):
+        # An empty entry lets effective_kv_cache_dtype run at restore time,
+        # which is where the model directory can be read.
+        from ainode.engine.serve_args import effective_kv_cache_dtype
+
+        source = __import__("inspect").getsource(effective_kv_cache_dtype)
+        assert "kv_cache_dtype_explicit" in source
+        assert "is_multimodal_model" in source
