@@ -657,7 +657,18 @@ def append_solo_instance(app, model: str, gmu=None, *, overrides=None,
     if gmu is None:
         from ainode.core.config import NodeConfig
         gmu = NodeConfig().gpu_memory_utilization
-    gmu, cap_note = cap_utilization(app, gmu, force=force)
+    # THIS node, not the roomiest or the tightest in the cluster. Without the
+    # scope, a launch on node 3 was capped by node 2 — which was busy with a
+    # different model and has nothing to do with this launch:
+    #
+    #     gpu-memory-utilization lowered from 0.60 to 0.15: that fraction of
+    #     spark-1432's total memory is what is free there
+    #
+    # on a launch that was going to spark-13e3. The same mistake the
+    # admission gate made before it was scoped, one file over.
+    gmu, cap_note = cap_utilization(
+        app, gmu, node_ids=[config.node_id] if config.node_id else None,
+        force=force)
 
     port = manager.allocate_port()
     name_token = "" if port == config.api_port else str(port)  # primary keeps legacy names

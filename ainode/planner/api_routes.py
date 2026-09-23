@@ -32,6 +32,9 @@ def node_budgets(app, node_ids=None) -> list:
     load gets recommended onto a node that has nothing left to give.
     """
     cluster = app.get("cluster_state")
+    config = app.get("config")
+    own_id = str(getattr(config, "node_id", "") or "")
+    live = _own_memory(app)
     wanted = set(node_ids or [])
     out = []
     for node in (cluster.members() if cluster is not None else []):
@@ -43,6 +46,14 @@ def node_budgets(app, node_ids=None) -> list:
             continue
         total_mb = float(getattr(node, "gpu_memory_total_mb", 0) or 0)
         used_mb = float(getattr(node, "gpu_memory_used_mb", 0) or 0)
+        # This node's own entry in cluster state is built once at startup and
+        # refreshed by the broadcast it sends, not by the one it receives —
+        # so for itself it can be minutes old, or the figure it had before it
+        # loaded anything. /api/nodes already reads it fresh from the
+        # collector for exactly this reason; planning must too, or a node
+        # plans a launch into memory it is already using.
+        if live and node_id == own_id:
+            total_mb, used_mb = live
         total_gb = float(getattr(node, "gpu_memory_gb", 0) or 0) or total_mb / 1024
         free_gb = (total_mb - used_mb) / 1024 if total_mb else total_gb
         out.append(NodeBudget(
@@ -88,6 +99,23 @@ def budgets_with_guard_reserve(app, node_ids=None) -> list:
         held_back = extra + plan_headroom_gb(budget.total_gb)
         budget.free_gb = max(0.0, budget.free_gb - held_back)
     return budgets
+
+
+def _own_memory(app):
+    """(total_mb, used_mb) measured here, now. None when unreadable."""
+    collector = app.get("metrics_collector")
+    if collector is None:
+        return None
+    try:
+        metrics = collector.get_gpu_metrics() or {}
+    except Exception:
+        logger.debug("could not read local GPU metrics", exc_info=True)
+        return None
+    if metrics.get("error"):
+        return None
+    total = float(metrics.get("memory_total_mb") or 0)
+    used = float(metrics.get("memory_used_mb") or 0)
+    return (total, used) if total else None
 
 
 def _recipe(app, model: str):

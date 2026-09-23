@@ -120,3 +120,133 @@ class TestBothLaunchPathsApplyIt:
 
         source = inspect.getsource(sharding_routes.handle_sharding_launch)
         assert "plan_note" in source.split("cap_note")[2]
+
+
+class _Node:
+    def __init__(self, node_id, total_mb=128000.0, used_mb=8000.0):
+        self.node_id = node_id
+        self.node_name = node_id
+        self.status = "online"
+        self.gpu_memory_total_mb = total_mb
+        self.gpu_memory_used_mb = used_mb
+        self.gpu_memory_gb = total_mb / 1024
+        self.instances = []
+
+
+class _Cluster:
+    def __init__(self, nodes):
+        self._nodes = nodes
+
+    def members(self):
+        return self._nodes
+
+
+class TestItCapsTheNodeYouAreLaunchingOn:
+    """Reported from the cluster, launching Qwen on node 3 while DeepSeek
+    held nodes 1 and 2:
+
+        gpu-memory-utilization lowered from 0.60 to 0.15: that fraction of
+        spark-1432's total memory is what is free there
+
+    spark-1432 is node 2. It had nothing to do with the launch — but the cap
+    asked every node and took the tightest, which is right for a launch that
+    spans them and wrong for one that does not.
+    """
+
+    def _app(self):
+        return {
+            "config": type("C", (), {"node_id": "node3"})(),
+            "cluster_state": _Cluster([
+                _Node("node1", used_mb=110000.0),   # busy: DeepSeek
+                _Node("node2", used_mb=118000.0),   # busier
+                _Node("node3", used_mb=8000.0),     # empty, and the target
+            ]),
+        }
+
+    def test_a_busy_neighbour_does_not_cap_this_launch(self):
+        from ainode.safety.utilization import cap_utilization
+
+        value, note = cap_utilization(self._app(), 0.60, node_ids=["node3"])
+        assert value == 0.60
+        assert note == ""
+
+    def test_without_a_scope_the_tightest_still_decides(self):
+        # Right for a launch that spans the nodes — which is why the scope
+        # has to be passed rather than the behaviour changed.
+        from ainode.safety.utilization import cap_utilization
+
+        value, note = cap_utilization(self._app(), 0.60)
+        assert value < 0.60
+        assert "node2" in note
+
+    def test_the_solo_path_passes_its_own_node(self):
+        import inspect
+
+        from ainode.models.api_routes import append_solo_instance
+
+        source = inspect.getsource(append_solo_instance)
+        assert "node_ids=[config.node_id]" in source
+
+    def test_the_distributed_path_passes_every_participant(self):
+        import inspect
+
+        from ainode.engine import sharding_routes
+
+        assert "[config.node_id] + [n.node_id for n in chosen]" in \
+            inspect.getsource(sharding_routes.handle_sharding_launch)
+
+
+class TestThisNodesOwnFigureIsRead_Live:
+    """A node's own entry in cluster state is refreshed by the broadcast it
+    SENDS, not the one it receives — so for itself it can be the figure it
+    had at startup, before it loaded anything."""
+
+    class _Collector:
+        def __init__(self, used_mb):
+            self._used = used_mb
+
+        def get_gpu_metrics(self):
+            return {"memory_total_mb": 128000.0, "memory_used_mb": self._used}
+
+    def _app(self, stale_used, live_used):
+        return {
+            "config": type("C", (), {"node_id": "node1"})(),
+            "cluster_state": _Cluster([_Node("node1", used_mb=stale_used)]),
+            "metrics_collector": self._Collector(live_used),
+        }
+
+    def test_the_collector_wins_for_this_node(self):
+        from ainode.planner.api_routes import node_budgets
+
+        # Stale says 8 GB used; it is really 110.
+        budget = node_budgets(self._app(8000.0, 110000.0))[0]
+        assert budget.free_gb < 20
+
+    def test_a_peer_is_left_to_its_broadcast(self):
+        from ainode.planner.api_routes import node_budgets
+
+        app = self._app(8000.0, 110000.0)
+        app["cluster_state"] = _Cluster([_Node("node2", used_mb=8000.0)])
+        assert node_budgets(app)[0].free_gb > 100
+
+    def test_an_unreadable_collector_falls_back(self):
+        from ainode.planner.api_routes import node_budgets
+
+        class _Broken:
+            def get_gpu_metrics(self):
+                raise RuntimeError("nvml is unhappy")
+
+        app = self._app(8000.0, 110000.0)
+        app["metrics_collector"] = _Broken()
+        assert node_budgets(app)[0].free_gb > 100
+
+    def test_an_error_payload_falls_back_too(self):
+        from ainode.planner.api_routes import node_budgets
+
+        class _Erroring:
+            def get_gpu_metrics(self):
+                return {"error": "no gpu"}
+
+        app = self._app(8000.0, 110000.0)
+        app["metrics_collector"] = _Erroring()
+        assert node_budgets(app)[0].free_gb > 100
