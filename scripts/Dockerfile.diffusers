@@ -34,8 +34,23 @@ LABEL ai.ainode.engine="diffusers"
 # never creates the unversioned alias, so `python` is not on PATH there. The
 # same applies to the server the backend starts — see
 # ainode/engine/backends/diffusers.py.
+#
+# DIFFUSERS_REF names what to install. A released version is the default and
+# the right answer for most checkpoints; a git ref is needed for one written
+# against an unreleased diffusers, which is not unusual for a model published
+# the week its architecture lands. Qwen-Image-2.1's model_index.json says
+#
+#     "_class_name": "QwenImage21Pipeline",
+#     "_diffusers_version": "0.37.0.dev0"
+#
+# and diffusers instantiates that class by looking it up on its own module —
+# so an older library fails with "module diffusers has no attribute
+# QwenImage21Pipeline", which names the symptom and not the cause. The server
+# turns that into a sentence naming both versions; this is the knob that
+# fixes it.
+ARG DIFFUSERS_REF="diffusers>=0.36"
 RUN python3 -m pip install --no-cache-dir \
-        "diffusers>=0.36" \
+        "${DIFFUSERS_REF}" \
         "accelerate>=1.0" \
         "safetensors>=0.4" \
         "sentencepiece>=0.2" \

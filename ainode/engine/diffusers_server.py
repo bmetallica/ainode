@@ -21,9 +21,12 @@ import base64
 import io
 import json
 import logging
+import os
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
@@ -82,8 +85,54 @@ def load_pipeline(path: str, dtype_name: str) -> None:
         STATE["ready"] = True
         logger.info("Application startup complete.")
     except Exception as exc:  # the card and the assistant read this line
-        STATE["error"] = f"{type(exc).__name__}: {exc}"
+        STATE["error"] = _explain(exc, path)
         logger.error("Engine core initialization failed: %s", STATE["error"])
+        # And then stop. A server that cannot load has nothing to serve, and
+        # staying up means answering 503 for ever while the instance card
+        # sits at "loading weights" — which is what this looked like from the
+        # UI: a progress bar for a load that had died in its first second.
+        # Exiting ends the log stream, and the backend reports a launch that
+        # failed, with these lines as the evidence.
+        logging.shutdown()
+        os._exit(1)
+
+
+#: diffusers instantiates the class named in model_index.json by looking it
+#: up on its own module, so a checkpoint newer than the installed library
+#: fails with an AttributeError naming a class nobody can find.
+_MISSING_CLASS = re.compile(
+    r"module diffusers has no attribute (\w+)", re.IGNORECASE)
+
+
+def _explain(exc: Exception, path: str) -> str:
+    """The exception, plus what it means when it is the version one."""
+    text = f"{type(exc).__name__}: {exc}"
+    match = _MISSING_CLASS.search(str(exc))
+    if not match:
+        return text
+    try:
+        import diffusers
+
+        installed = getattr(diffusers, "__version__", "?")
+    except Exception:  # pragma: no cover - diffusers is imported above
+        installed = "?"
+    wanted = ""
+    try:
+        index = json.loads(
+            (Path(path) / "model_index.json").read_text())
+        wanted = str(index.get("_diffusers_version") or "")
+    except Exception:
+        pass
+    built_with = f", and this checkpoint was written with {wanted}" if wanted else ""
+    return (
+        f"{text} — this engine image has diffusers {installed}{built_with}. "
+        f"{match.group(1)} does not exist in the installed version, so the "
+        f"pipeline named in model_index.json cannot be instantiated. This is "
+        f"the image, not the model or the launch: rebuild the image against "
+        f"a diffusers that has it "
+        f"(scripts/build-diffusers-image.sh, DIFFUSERS_REF=...), or serve a "
+        f"checkpoint built for the version installed here."
+    )
 
 
 def generate(body: dict) -> dict:
