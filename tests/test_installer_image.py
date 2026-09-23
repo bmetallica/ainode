@@ -180,3 +180,56 @@ class TestBuildingWithoutBuildKit:
         with_mounts = [f.name for f in scripts.glob("Dockerfile*")
                        if "--mount=type=" in f.read_text()]
         assert with_mounts == ["Dockerfile.ainode"]
+
+
+class TestTheLayerOrderDoesNotCostAGigabyte:
+    """What a one-line commit is allowed to rebuild.
+
+    Reported from the cluster, watching an update build:
+
+        warum wird hier alles neu runtergeladen, der kram müsste doch
+        gecacht sein oder nicht?
+
+    It should have been. `ARG AINODE_GIT_SHA` changes on every commit and a
+    changed ARG invalidates every layer after it — and it sat above the apt
+    step and the pip step. So every commit re-installed gcc and re-downloaded
+    torch (454 MB), cuDNN (651 MB) and the CUDA runtime. The fix is ordering,
+    not caching: the volatile inputs go last.
+    """
+
+    DOCKERFILE = (Path(__file__).resolve().parent.parent / "scripts" /
+                  "Dockerfile.ainode").read_text()
+
+    def _at(self, needle: str) -> int:
+        index = self.DOCKERFILE.find(needle)
+        assert index > 0, f"{needle!r} is not in the Dockerfile"
+        return index
+
+    def test_the_commit_sha_comes_after_the_dependency_install(self):
+        assert self._at("pip install -r /src/requirements.txt") < \
+            self._at("ARG AINODE_GIT_SHA")
+
+    def test_it_comes_after_the_compiler_too(self):
+        assert self._at("gcc libc6-dev") < self._at("ARG AINODE_GIT_SHA")
+
+    def test_it_still_reaches_the_image(self):
+        # Later, but not gone: the update check compares this against the
+        # fork's branch.
+        assert "ENV AINODE_GIT_SHA=${AINODE_GIT_SHA}" in self.DOCKERFILE
+        assert "org.opencontainers.image.revision" in self.DOCKERFILE
+
+    def test_only_source_follows_it(self):
+        after = self.DOCKERFILE[self._at("ARG AINODE_GIT_SHA"):]
+        # No apt, no dependency resolution: those must be above.
+        assert "apt-get install" not in after
+        assert "pip install -r" not in after
+
+    def test_pyproject_arrives_just_before_it_is_needed(self):
+        # It changes on a version bump, so everything expensive above it
+        # survives one.
+        assert self._at("gcc libc6-dev") < \
+            self._at("COPY pyproject.toml scripts/_deps_from_pyproject.py")
+
+    def test_the_source_copy_is_last_of_the_three(self):
+        assert self._at("COPY pyproject.toml scripts/_deps_from_pyproject.py") < \
+            self._at("COPY ainode /src/ainode")
