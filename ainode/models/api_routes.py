@@ -636,6 +636,25 @@ def append_solo_instance(app, model: str, gmu=None, *, overrides=None,
                               f"{gmu:.2f} would total {projected:.2f} (> 0.90 cap). "
                               f"Unload a model or lower gpu_memory_utilization.")}
 
+    # The same gate the HTTP path applies, here in the shared core — because
+    # the HTTP path is not the only caller. The startup replay and a profile
+    # both reach this function directly, and a model that cannot start is
+    # then retried at every boot: the engine is killed, systemd brings the
+    # container back, the replay launches it again. Reported as "er versucht
+    # qwen jetzt von alleine zu starten", which is exactly what that loop
+    # looks like from outside.
+    #
+    # force still skips it, and the HTTP path keeps its own check because it
+    # can answer with a refusal the UI knows how to act on.
+    from ainode.safety.admission import check_admission
+
+    refusal = check_admission(
+        app, model, node_ids=[config.node_id] if config.node_id else None,
+        gpu_memory_utilization=gmu, force=force)
+    if refusal:
+        logger.warning("refusing to launch %s here: %s", model, refusal)
+        return {"ok": False, "status": 507, "error": str(refusal)}
+
     # Admission passed (or N/A) — NOW it's safe to tear down the old instance.
     if existing is not None:
         try:

@@ -125,6 +125,10 @@ here on 23-09 at gpu-memory-utilization 0.85* — and asking for less, for more
 nodes, or with a flag the killed launch did not carry lifts the refusal by
 itself. When the cause was fixed by something the record cannot see, the
 refusal offers to drop it, keeping the measurements, which are still true.
+The gate sits in the shared launch core, not only in the HTTP handler, so the
+startup replay and a profile cannot walk past it — a model that cannot start
+is not retried at every boot. **Launch anyway** in the form's Advanced section
+skips all of it for one launch.
 **Settings → Memory Guard** lists everything the guard has stopped, fleet-wide,
 with an **Unlock** button each — and a blocked model is badged as such on its
 card rather than reading "On disk" while every launch of it is refused. A launch that ends on a signal is
