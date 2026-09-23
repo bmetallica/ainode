@@ -109,3 +109,34 @@ class TestTheRecipeStillCarriesBoth:
             if "instanttensor" in (entry.extra_vllm_args or []):
                 assert (entry.extra_env or {}).get("INSTANTTENSOR_BUFFER_SIZE"), \
                     f"{entry.id} chooses the loader without capping its buffer"
+
+
+class TestTheLaunchSaysWhatItPassed:
+    """The environment does not appear in the serve command — it travels as
+    `docker -e` — so a launch that lost it looks identical to one that
+    carried it. Which is exactly how INSTANTTENSOR_BUFFER_SIZE went missing
+    for five days without anyone being able to see it."""
+
+    def test_the_banner_names_the_environment(self, tmp_path):
+        script = tmp_path / "launch.sh"
+        script.write_text("vllm serve /models/org--m\n")
+        log = tmp_path / "vllm.log"
+        _backend(INSTANTTENSOR_BUFFER_SIZE="67108864")._log_serve_command(
+            script, log)
+        assert "recipe environment: INSTANTTENSOR_BUFFER_SIZE=67108864" in \
+            log.read_text()
+
+    def test_no_environment_says_so_rather_than_nothing(self, tmp_path):
+        # A blank line reads as "not implemented"; "(none)" reads as an answer.
+        script = tmp_path / "launch.sh"
+        script.write_text("vllm serve /models/org--m\n")
+        log = tmp_path / "vllm.log"
+        _backend()._log_serve_command(script, log)
+        assert "recipe environment: (none)" in log.read_text()
+
+    def test_it_is_sorted_so_two_launches_can_be_compared(self, tmp_path):
+        script = tmp_path / "launch.sh"
+        script.write_text("vllm serve /models/org--m\n")
+        log = tmp_path / "vllm.log"
+        _backend(B="2", A="1")._log_serve_command(script, log)
+        assert "recipe environment: A=1, B=2" in log.read_text()

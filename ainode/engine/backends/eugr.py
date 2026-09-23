@@ -1423,11 +1423,20 @@ class EugrBackend(EngineBackend):
                 break
         rendered = " ".join(c for c in command if c)
         logger.info("serve command: %s", rendered)
+        # And the environment the recipe asked for. It is not in the serve
+        # command — it travels as docker -e — so a launch that lost it looks
+        # identical to one that carried it, which is exactly how
+        # INSTANTTENSOR_BUFFER_SIZE went missing for five days.
+        recipe_env = dict(getattr(self.config, "extra_env", None) or {})
+        env_line = (", ".join(f"{k}={v}" for k, v in sorted(recipe_env.items()))
+                    if recipe_env else "(none)")
+        logger.info("recipe environment: %s", env_line)
         if log_file is None:
             return
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         banner = (f"\n[ainode] ===== launch {self.config.model or '<no model>'} "
-                  f"at {stamp} =====\n[ainode] serve command: {rendered}\n")
+                  f"at {stamp} =====\n[ainode] serve command: {rendered}\n"
+                  f"[ainode] recipe environment: {env_line}\n")
         try:
             log_file.parent.mkdir(parents=True, exist_ok=True)
             with open(log_file, "a") as sink:
