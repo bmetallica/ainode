@@ -124,15 +124,46 @@ def _explain(exc: Exception, path: str) -> str:
     except Exception:
         pass
     built_with = f", and this checkpoint was written with {wanted}" if wanted else ""
+    advice = (
+        "Rebuild the engine image against a diffusers that has it:\n"
+        "    DIFFUSERS_REF=\"git+https://github.com/huggingface/diffusers\" "
+        "scripts/build-diffusers-image.sh")
+    if _at_least(installed, wanted):
+        # Newer than the checkpoint and still missing the class. Telling
+        # anyone to upgrade further would send them around the same loop: a
+        # class that is in no release is in no newer release either.
+        advice = (
+            "The installed version is already newer than the one the "
+            "checkpoint names, so upgrading to another RELEASE will not "
+            "help — this class is not in one. A checkpoint published with "
+            "its architecture usually needs diffusers from git, and the "
+            "model card says which:\n"
+            "    DIFFUSERS_REF=\"git+https://github.com/huggingface/diffusers\" "
+            "scripts/build-diffusers-image.sh")
     return (
         f"{text} — this engine image has diffusers {installed}{built_with}. "
         f"{match.group(1)} does not exist in the installed version, so the "
         f"pipeline named in model_index.json cannot be instantiated. This is "
-        f"the image, not the model or the launch: rebuild the image against "
-        f"a diffusers that has it "
-        f"(scripts/build-diffusers-image.sh, DIFFUSERS_REF=...), or serve a "
-        f"checkpoint built for the version installed here."
+        f"the image, not the model or the launch. {advice}"
     )
+
+
+def _at_least(installed: str, wanted: str) -> bool:
+    """True when ``installed`` is not older than ``wanted``.
+
+    Compared on the numeric head only: "0.40.0" against "0.37.0.dev0" is a
+    comparison of (0, 40, 0) and (0, 37, 0), and the dev suffix says which
+    side of a release it sits on, not which release.
+    """
+    def _parts(value):
+        head = re.match(r"(\d+(?:\.\d+)*)", str(value or ""))
+        return tuple(int(n) for n in head.group(1).split(".")) if head else ()
+
+    left, right = _parts(installed), _parts(wanted)
+    if not left or not right:
+        return False
+    width = max(len(left), len(right))
+    return left + (0,) * (width - len(left)) >= right + (0,) * (width - len(right))
 
 
 def generate(body: dict) -> dict:

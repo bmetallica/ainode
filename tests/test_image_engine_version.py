@@ -99,3 +99,73 @@ class TestTheBuildCanPinDiffusers:
 
     def test_it_documents_the_symptom(self):
         assert "QwenImage21Pipeline" in self.BUILD
+
+
+class TestWhenTheInstalledOneIsAlreadyNewer:
+    """Reported after rebuilding:
+
+        this engine image has diffusers 0.40.0, and this checkpoint was
+        written with 0.37.0.dev0. QwenImage21Pipeline does not exist in the
+        installed version
+
+    0.40 is newer than 0.37 and the class is still missing — because it is in
+    no release at all. Qwen-Image-2.1's own card says
+    `pip install git+https://github.com/huggingface/diffusers`. Telling
+    anyone to upgrade further would send them around the same loop.
+    """
+
+    def _explain(self, tmp_path, installed, wanted):
+        import importlib.util
+        from unittest import mock
+
+        spec = importlib.util.spec_from_file_location(
+            "diffusers_server_versions",
+            ROOT / "ainode" / "engine" / "diffusers_server.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        (tmp_path / "model_index.json").write_text(
+            json.dumps({"_diffusers_version": wanted}))
+        fake = type("m", (), {"__version__": installed})
+        with mock.patch.dict("sys.modules", {"diffusers": fake}):
+            return module._explain(
+                AttributeError(
+                    "module diffusers has no attribute QwenImage21Pipeline"),
+                str(tmp_path))
+
+    def test_it_does_not_send_you_to_another_release(self, tmp_path):
+        out = self._explain(tmp_path, "0.40.0", "0.37.0.dev0")
+        assert "already newer" in out
+        assert "will not help" in out
+
+    def test_it_names_the_install_the_card_names(self, tmp_path):
+        out = self._explain(tmp_path, "0.40.0", "0.37.0.dev0")
+        assert "git+https://github.com/huggingface/diffusers" in out
+
+    def test_an_older_install_is_told_to_upgrade(self, tmp_path):
+        out = self._explain(tmp_path, "0.36.2", "0.37.0.dev0")
+        assert "already newer" not in out
+        assert "DIFFUSERS_REF" in out
+
+    def test_the_comparison_ignores_the_dev_suffix(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "diffusers_server_cmp",
+            ROOT / "ainode" / "engine" / "diffusers_server.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert module._at_least("0.40.0", "0.37.0.dev0") is True
+        assert module._at_least("0.37.0", "0.37.0.dev0") is True
+        assert module._at_least("0.36.2", "0.37.0.dev0") is False
+        assert module._at_least("1.0", "0.40.0") is True
+
+    def test_an_unreadable_version_does_not_claim_to_know(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "diffusers_server_cmp2",
+            ROOT / "ainode" / "engine" / "diffusers_server.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert module._at_least("", "0.37.0") is False
+        assert module._at_least("0.40.0", "") is False
