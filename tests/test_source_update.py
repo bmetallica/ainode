@@ -330,7 +330,7 @@ class TestRunningIt:
         ran = []
 
         class _Runner(UpdateRunner):
-            def _step(self, command, cwd):
+            def _step(self, command, cwd, **kw):
                 ran.append(command)
 
         (tmp_path / ".git").mkdir()
@@ -343,10 +343,12 @@ class TestRunningIt:
         assert ran[0][:2] == ["git", "pull"]
         assert ran[1][0] == "scripts/update-cluster.sh"
         assert "--nodes" in ran[1] and "Spark2" in ran[1]
+        # And not a second time, as root, inside the script.
+        assert "--skip-pull" in ran[1]
 
     def test_a_failure_is_recorded_rather_than_raised(self, tmp_path):
         class _Runner(UpdateRunner):
-            def _step(self, command, cwd):
+            def _step(self, command, cwd, **kw):
                 raise RuntimeError("git exited with 1")
 
         (tmp_path / ".git").mkdir()
@@ -591,3 +593,95 @@ class TestTheImageCarriesGit:
     def test_git_is_installed(self):
         apt = self.DOCKERFILE.split("apt-get install")[1][:400]
         assert "git \\" in apt
+
+
+class TestGitAndTheCheckoutsOwner:
+    """The checkout belongs to the operator; the container runs as root.
+
+        fatal: detected dubious ownership in repository at '/ainode-src'
+
+    Git refusing to act on a repository owned by someone else. The obvious
+    fix — declare it safe and pull as root — works and then leaves objects
+    under .git owned by root, so the next pull the operator runs in their own
+    shell fails on permissions, in a repository that was theirs until we
+    touched it. So git runs as the owner instead.
+    """
+
+    def _env(self, tmp_path, uid=1000, gid=1000, euid=0):
+        from ainode.update import runner as runner_module
+
+        class _Stat:
+            st_uid, st_gid = uid, gid
+
+        return runner_module, _Stat
+
+    def test_it_runs_git_as_the_owner(self, tmp_path, monkeypatch):
+        module, stat = self._env(tmp_path)
+        monkeypatch.setattr(module.os, "stat", lambda p: stat)
+        monkeypatch.setattr(module.os, "geteuid", lambda: 0)
+        kwargs, env = module._owner_of(tmp_path, {})
+        assert kwargs == {"user": 1000, "group": 1000}
+
+    def test_it_moves_home_out_of_roots(self, tmp_path, monkeypatch):
+        # git reads its config from HOME before it does anything else, and
+        # that uid cannot read /root.
+        module, stat = self._env(tmp_path)
+        monkeypatch.setattr(module.os, "stat", lambda p: stat)
+        monkeypatch.setattr(module.os, "geteuid", lambda: 0)
+        _, env = module._owner_of(tmp_path, {"HOME": "/root"})
+        assert env["HOME"] != "/root"
+
+    def test_a_checkout_we_own_is_left_alone(self, tmp_path, monkeypatch):
+        module, stat = self._env(tmp_path, uid=0, gid=0)
+        monkeypatch.setattr(module.os, "stat", lambda p: stat)
+        monkeypatch.setattr(module.os, "geteuid", lambda: 0)
+        kwargs, _ = module._owner_of(tmp_path, {})
+        assert kwargs == {}
+
+    def test_not_being_root_means_no_switching(self, tmp_path, monkeypatch):
+        module, stat = self._env(tmp_path)
+        monkeypatch.setattr(module.os, "stat", lambda p: stat)
+        monkeypatch.setattr(module.os, "geteuid", lambda: 1000)
+        kwargs, _ = module._owner_of(tmp_path, {})
+        assert kwargs == {}
+
+    def test_safe_directory_is_set_either_way(self, tmp_path):
+        from ainode.update.runner import _owner_of
+
+        _, env = _owner_of(tmp_path, {})
+        assert env["GIT_CONFIG_COUNT"] == "1"
+        assert env["GIT_CONFIG_KEY_0"] == "safe.directory"
+        assert env["GIT_CONFIG_VALUE_0"] == str(tmp_path)
+
+    def test_it_does_not_write_a_global_config(self):
+        # `git config --global` would outlive this update and apply to every
+        # repository this container ever touches.
+        import inspect
+
+        from ainode.update import runner as runner_module
+
+        source = inspect.getsource(runner_module)
+        # The comment saying why is allowed to name it; a call is not.
+        assert "git\", \"config" not in source
+        assert "'git', 'config'" not in source
+        assert '"config", "--global"' not in source
+
+    def test_an_existing_git_config_env_is_not_clobbered(self, tmp_path):
+        from ainode.update.runner import _owner_of
+
+        _, env = _owner_of(tmp_path, {
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.name",
+            "GIT_CONFIG_VALUE_0": "someone"})
+        assert env["GIT_CONFIG_COUNT"] == "2"
+        assert env["GIT_CONFIG_KEY_0"] == "user.name"
+        assert env["GIT_CONFIG_KEY_1"] == "safe.directory"
+
+    def test_the_pull_asks_for_it_and_the_build_does_not(self):
+        # The build runs docker, which needs the socket, which is root's.
+        import inspect
+
+        from ainode.update.runner import UpdateRunner
+
+        source = inspect.getsource(UpdateRunner._run)
+        assert "as_owner=True" in source
+        assert source.index("as_owner=True") < source.index("update-cluster.sh")

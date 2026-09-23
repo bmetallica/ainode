@@ -32,6 +32,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -65,6 +66,55 @@ def _last_run_path(app) -> Path:
     from ainode.core.config import AINODE_HOME
 
     return AINODE_HOME / "update-last.json"
+
+
+def _owner_of(directory: Path, env: dict):
+    """(Popen kwargs, env) for running git against a checkout we do not own.
+
+    The container runs as root; the checkout on the host belongs to the
+    operator. Two problems follow, and only one of them announces itself::
+
+        fatal: detected dubious ownership in repository at '/ainode-src'
+
+    That is git refusing to act on a repository owned by someone else — a
+    protection against a repo planted by another user, and exactly the
+    situation here, minus the malice.
+
+    The quiet one is worse. Telling git the directory is safe and pulling as
+    root works, and leaves new objects and pack directories under `.git`
+    owned by root. The next `git pull` the operator runs on the host — in
+    their own shell, as themselves — then fails on permissions, in a
+    repository that was theirs until we touched it.
+
+    So git runs as the owner instead of being told to ignore the ownership.
+    ``safe.directory`` is set as well, through the environment rather than a
+    global config file, for the case where dropping privileges is not
+    possible: not running as root, or a platform without it.
+    """
+    env = dict(env)
+    # Through GIT_CONFIG_* rather than `git config --global`: a setting
+    # written into /root/.gitconfig outlives this update and applies to every
+    # repository this container ever touches.
+    count = 0
+    try:
+        count = int(env.get("GIT_CONFIG_COUNT") or 0)
+    except ValueError:
+        count = 0
+    env[f"GIT_CONFIG_KEY_{count}"] = "safe.directory"
+    env[f"GIT_CONFIG_VALUE_{count}"] = str(directory)
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
+
+    kwargs: dict = {}
+    try:
+        stat = os.stat(directory)
+        if os.geteuid() == 0 and stat.st_uid != 0:
+            kwargs = {"user": stat.st_uid, "group": stat.st_gid}
+            # HOME still points at root's, which that uid cannot read — git
+            # fails reading its config before it does anything else.
+            env["HOME"] = tempfile.gettempdir()
+    except (OSError, AttributeError):
+        logger.debug("could not read the owner of %s", directory, exc_info=True)
+    return kwargs, env
 
 
 class UpdateRunner:
@@ -223,8 +273,11 @@ class UpdateRunner:
         directory = self.source_dir()
         try:
             self._say(f"[ainode] source: {directory}")
-            self._step(["git", "pull", "--ff-only"], directory)
-            command = ["scripts/update-cluster.sh"]
+            self._step(["git", "pull", "--ff-only"], directory, as_owner=True)
+            # --skip-pull because the line above already did it, as the right
+            # user. Letting the script pull again would do it as root, in a
+            # repository owned by somebody else.
+            command = ["scripts/update-cluster.sh", "--skip-pull"]
             if nodes:
                 command += ["--nodes", ",".join(nodes)]
             if base:
@@ -243,12 +296,29 @@ class UpdateRunner:
             # Before the script's last step can end this process.
             self._persist()
 
-    def _step(self, command: List[str], cwd: Path) -> None:
+    def _step(self, command: List[str], cwd: Path, *,
+              as_owner: bool = False) -> None:
         self._say(f"[ainode] $ {' '.join(command)}")
-        process = subprocess.Popen(
-            command, cwd=str(cwd), stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True, bufsize=1,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        kwargs: dict = {}
+        if as_owner:
+            kwargs, env = _owner_of(cwd, env)
+        try:
+            process = subprocess.Popen(
+                command, cwd=str(cwd), stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, bufsize=1, env=env,
+                **kwargs)
+        except (OSError, ValueError) as exc:
+            if not kwargs:
+                raise
+            # Dropping privileges is best effort. Falling back to root with
+            # safe.directory set still updates the checkout; it just leaves
+            # objects the host user cannot write over later.
+            logger.warning("could not run %s as the checkout's owner: %s",
+                           command[0], exc)
+            process = subprocess.Popen(
+                command, cwd=str(cwd), stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
         for line in process.stdout or []:
             self._say(line)
         code = process.wait()
