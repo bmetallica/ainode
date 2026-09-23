@@ -85,12 +85,16 @@ class UpdateRunner:
                 f"The checkout is not visible from inside the container. "
                 f"AINode mounts ~/.ainode, the docker socket and the SSH keys, "
                 f"but not the source — so a source update needs one more "
-                f"mount. On the head, once:\n\n"
-                f"    ainode service install\n"
-                f"    sudo systemctl restart ainode\n\n"
-                f"That re-renders the unit with "
-                f"{host_dir}:{CONTAINER_SOURCE_DIR} and the button works from "
-                f"then on. Until then: scripts/update-cluster.sh on the head.")
+                f"mount. Add it by re-running the installer ON THE HOST, "
+                f"which is idempotent and keeps your config.json:\n\n"
+                f"    curl -fsSL https://raw.githubusercontent.com/"
+                f"bmetallica/ainode/main/scripts/install.sh | bash\n\n"
+                f"It mounts {host_dir} at {CONTAINER_SOURCE_DIR} when a "
+                f"checkout is there, and the button works from then on. "
+                f"(`ainode service install` cannot do it: on the host that "
+                f"command is a wrapper into this container, and the unit is "
+                f"written by the installer.) Until then, update from the "
+                f"head's shell: scripts/update-cluster.sh")
         return (f"No checkout at {host_dir} — set the right path in "
                 f"Settings → Updates.")
 
