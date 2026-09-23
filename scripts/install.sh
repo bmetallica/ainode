@@ -60,9 +60,13 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-log() { printf "\033[1;32m==>\033[0m %s\n" "$*"; }
-warn() { printf "\033[1;33m!!\033[0m %s\n" "$*"; }
-die() { printf "\033[1;31mXX\033[0m %s\n" "$*" >&2; exit 1; }
+# %b, not %s: the longer messages below carry \n so they can lay out a
+# sequence of commands. With %s the reader gets one unreadable line with
+# literal backslash-n in it, which is exactly how the "could not pull" advice
+# reached an operator who then could not follow it.
+log() { printf "\033[1;32m==>\033[0m %b\n" "$*"; }
+warn() { printf "\033[1;33m!!\033[0m %b\n" "$*"; }
+die() { printf "\033[1;31mXX\033[0m %b\n" "$*" >&2; exit 1; }
 
 # Resolve the highest numeric GHCR tag anonymously (public image). Echoes the
 # tag on success; returns non-zero if resolution fails (caller falls back).
@@ -109,6 +113,18 @@ fi
 log "Preparing $AINODE_HOME"
 mkdir -p "$AINODE_HOME"/{models,logs,datasets,training}
 
+# The image this node is already running, from the EnvironmentFile the last
+# install wrote — but only if it is still on disk. Echoes it, or returns
+# non-zero.
+installed_image() {
+    local recorded
+    [ -f "$AINODE_HOME/image.env" ] || return 1
+    recorded=$(sed -n 's/^AINODE_IMAGE=//p' "$AINODE_HOME/image.env" | tail -1)
+    [ -n "$recorded" ] || return 1
+    docker image inspect "$recorded" >/dev/null 2>&1 || return 1
+    echo "$recorded"
+}
+
 # Resolve the image to a PINNED numeric tag (never a floating :latest, which
 # has drifted to ancient builds in the past). Explicit AINODE_IMAGE wins.
 if [ -z "$AINODE_IMAGE" ]; then
@@ -116,6 +132,16 @@ if [ -z "$AINODE_IMAGE" ]; then
         AINODE_VERSION="$RESOLVED_TAG"
         AINODE_IMAGE="${AINODE_GHCR_REPO}:${RESOLVED_TAG}"
         log "Resolved latest GHCR tag: $RESOLVED_TAG"
+    elif INSTALLED_IMAGE="$(installed_image)"; then
+        # A private or not-yet-published package makes the tag list
+        # unreachable, and :latest then fails to pull — which took down
+        # re-runs on nodes that were already installed and running fine.
+        # Re-running this installer is the documented way to get a changed
+        # ExecStart (a new mount, a new flag); it must not need the registry
+        # when the image it would install is already here.
+        AINODE_IMAGE="$INSTALLED_IMAGE"
+        warn "Could not reach ${AINODE_GHCR_REPO} — keeping the image this node already runs:"
+        warn "  ${AINODE_IMAGE}\n  Upgrade it separately with 'ainode update', or pin one with AINODE_IMAGE=..."
     else
         AINODE_IMAGE="${AINODE_GHCR_REPO}:latest"
         warn "Could not resolve latest GHCR tag — falling back to :latest"
@@ -136,7 +162,7 @@ else
     # published yet, and docker's own "manifest unknown" says nothing about how
     # to fix it. Name the two ways forward instead.
     if ! docker pull "$AINODE_IMAGE"; then
-        die "Could not pull $AINODE_IMAGE.\n  If this registry has no published image yet, either:\n    - build it locally on this node and install against it (no GitHub needed):\n        git clone https://github.com/bmetallica/ainode && cd ainode\n        scripts/build-base-image.sh\n        docker build -f scripts/Dockerfile.ainode -t ainode:dev .\n        AINODE_IMAGE=ainode:dev bash scripts/install.sh\n    - or publish one via the publish-image workflow on a self-hosted aarch64 runner.\n  To install from a different registry: AINODE_GHCR_REPO=ghcr.io/<owner>/ainode bash scripts/install.sh"
+        die "Could not pull $AINODE_IMAGE.\n  If this registry has no published image yet, either:\n    - build it locally on this node and install against it (no GitHub needed):\n        git clone https://github.com/bmetallica/ainode && cd ainode\n        scripts/build-base-image.sh\n        docker build -f scripts/Dockerfile.ainode -t ainode:dev .\n        AINODE_IMAGE=ainode:dev bash scripts/install.sh\n    - or publish one via the publish-image workflow on a self-hosted aarch64 runner.\n  If this node was already running AINode, its image is recorded in\n  ${AINODE_HOME}/image.env — the installer reuses it automatically when the\n  registry is unreachable, so this message means it is no longer on disk.\n  To install from a different registry: AINODE_GHCR_REPO=ghcr.io/<owner>/ainode bash scripts/install.sh"
     fi
 fi
 

@@ -99,12 +99,14 @@ The large ones, by how much:
 | `models/registry.py` | +740 | Exact repo sizes, search by kind and its per-kind format verdict, the curated cluster catalog, modality, the size cache |
 | `models/api_routes.py` | +680 | Stacked instances, the admission gate, per-load overrides that reset rather than leak, engine detection from the checkpoint |
 | `engine/sharding_routes.py` | +465 | The real parallel plan, remembered placement, node-failure relaunch, the refusal messages |
+| `scripts/install.sh` | +60 | The `/ainode-src` mount so the UI can update from the checkout, and keeping the image already installed when the registry is unreachable |
+| `service/systemd.py` | +34 | The same mount, in the renderer the CLI uses |
 
 `scripts/` gained the base-image build pinned to an eugr commit, the
 orchestrator image, the image-generation engine, the registry cache, the
 cluster updater and a diagnostic.
 
-Tests: **88 new files**, 13 upstream files extended, 2634 tests. Two of them
+Tests: **88 new files**, 13 upstream files extended, 2648 tests. Two of them
 hold the documentation to the code rather than to good intentions:
 `test_fork_documentation.py` checks that every module and link this file and
 the README name exists and that every feature row claiming an endpoint matches
@@ -116,11 +118,17 @@ field appears in the schema. Change a published field and one of them fails.
 ## 4. What was not changed
 
 Worth saying, because it bounds the surface: the OpenAI-compatible request and
-response shapes, the training subsystem, the onboarding flow, the systemd unit
-renderer, the discovery protocol's wire format (only fields were added, and
-every one of them is optional so an older peer still parses), and the
-installer's contract. A client pointed at this fork sees upstream's API plus
-routes it can ignore.
+response shapes, the training subsystem, the onboarding flow, the discovery
+protocol's wire format (only fields were added, and every one of them is
+optional so an older peer still parses), and the installer's contract — one
+idempotent command that pins an image, writes a unit and keeps your config. A
+client pointed at this fork sees upstream's API plus routes it can ignore.
+
+The two unit renderers are the exception to that last one and are listed in
+section 3: both gained the source mount, and the installer will keep an
+already-installed image rather than fail when the registry cannot be reached.
+What it promises is the same; what it writes into `ExecStart` is one mount
+longer.
 
 ---
 
