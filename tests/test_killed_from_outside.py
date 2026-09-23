@@ -140,3 +140,47 @@ class TestTheGuardTellsTheBackend:
         backend._phase = _Phase()
         backend.note_external_stop("Stopped by the host memory guard")
         assert backend._phase.reason == "Stopped by the host memory guard"
+
+
+class TestTheBudgetHintNamesTheUtilization:
+    """Reported from the cluster, on an empty node:
+
+        RuntimeError: buffer_size (5086090240 B) exceeds device memory
+        budget (1168039936 B)
+
+    A gigabyte of budget on a 128 GB node is not another model in the way —
+    it is gpu_memory_utilization x total, minus the weights, and the
+    utilization was 0.15 because a since-fixed bug capped this launch against
+    a different node. The hint sent the reader to the loader, which is the
+    one thing that was working as intended.
+    """
+
+    def _hint(self):
+        from ainode.engine.load_phase import _INSTANTTENSOR_BUDGET_HINT
+
+        return _INSTANTTENSOR_BUDGET_HINT
+
+    def test_it_says_where_the_budget_comes_from(self):
+        assert "gpu-memory-utilization x the node's total memory" in self._hint()
+
+    def test_it_does_the_arithmetic_for_the_reader(self):
+        # A number in the message is worth a paragraph of explanation.
+        assert "0.15 there leaves 19 GB" in self._hint()
+
+    def test_it_still_offers_the_loader_knobs(self):
+        hint = self._hint()
+        assert "drop:--load-format" in hint
+        assert "INSTANTTENSOR_BUFFER_SIZE=67108864" in hint
+
+    def test_it_still_mentions_a_second_model(self):
+        assert "already loaded on that node" in self._hint()
+
+    def test_the_pattern_still_matches_the_engine_line(self):
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        phase = LoadPhaseTracker()
+        phase.reset()
+        phase.observe("RuntimeError: buffer_size (5086090240 B) exceeds "
+                      "device memory budget (1168039936 B)\n")
+        phase.fail_exit(1)
+        assert "InstantTensor" in phase.failure_reason()
