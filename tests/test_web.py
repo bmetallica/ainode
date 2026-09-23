@@ -22,6 +22,19 @@ def test_get_index_html():
     assert "training" in html
 
 
+def test_the_footer_credits_both_the_author_and_the_fork():
+    """Upstream's credit stays; the fork says it is one, and links to itself.
+
+    Attribution in both directions: the work is Jason's, the deviations are
+    this fork's, and someone looking at a screenshot can tell which code they
+    are looking at.
+    """
+    html = get_index_html()
+    assert "jasonbrashear.com" in html
+    assert "forked by" in html
+    assert "https://github.com/bmetallica/ainode" in html
+
+
 def test_get_index_html_has_js():
     html = get_index_html()
     assert "app.js" in html

@@ -46,7 +46,8 @@ platform, open source ChatGPT alternative.
 ## This is a fork
 
 **Upstream: [getainode/ainode](https://github.com/getainode/ainode)** — everything
-below is theirs unless noted. Apache-2.0, same as this fork.
+below is theirs unless noted. Apache-2.0, same as this fork. The UI footer says
+so too: upstream's credit stays, with *forked by bmetallica* next to it.
 
 It exists to run AINode on **three DGX Sparks wired in a switchless ring**, which
 upstream does not support. Two assumptions in the original break on that topology:

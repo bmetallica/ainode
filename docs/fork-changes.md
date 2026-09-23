@@ -106,7 +106,7 @@ The large ones, by how much:
 orchestrator image, the image-generation engine, the registry cache, the
 cluster updater and a diagnostic.
 
-Tests: **88 new files**, 13 upstream files extended, 2648 tests. Two of them
+Tests: **88 new files**, 13 upstream files extended, 2649 tests. Two of them
 hold the documentation to the code rather than to good intentions:
 `test_fork_documentation.py` checks that every module and link this file and
 the README name exists and that every feature row claiming an endpoint matches
@@ -189,6 +189,10 @@ The network heuristics and the multi-node launch path are adapted from
 `autodiscover.sh`, `launch-cluster.sh` and `docs/NETWORKING.md` document this
 hardware. Borrowed logic is marked at each site; there are no verbatim copies.
 `scripts/_eugr/` is a shallow checkout at a pinned commit, read-only.
+
+AINode itself is [Jason Brashear's](https://jasonbrashear.com). The UI footer
+keeps that credit and adds *forked by bmetallica*, linking here, so a running
+instance — or a screenshot of one — says which code it is.
 
 ## 8. Further reading
 
