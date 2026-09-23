@@ -352,11 +352,11 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         format="safetensors", capabilities=["tool_use", "reasoning", "code"],
         engine_image="vllm/vllm-openai:v0.27.1",
         extra_vllm_args=[
-            # From eugr/spark-vllm-docker's recipes/nemotron-3.5-lightning.yaml
-            # (MIT): instanttensor loads an NVFP4 checkpoint directly instead of
-            # going through the generic safetensors path, and a 30 GB checkpoint
-            # pays the difference on every launch.
-            "--load-format", "instanttensor",
+            # NOT --load-format instanttensor. eugr's recipe
+            # (recipes/nemotron-3.5-lightning.yaml, MIT) uses it, and it is
+            # genuinely faster — but not in this engine image. See the note
+            # on the Qwen3.8 entry below: measured there with every
+            # InstantTensor variable delivered and the buffer unmoved.
             "--moe-backend", "marlin",
             "--enable-prefix-caching",
             "--speculative_config.model",
@@ -382,9 +382,13 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # gpu-memory-utilization. nvidia-smi reports [N/A] for memory on
             # this hardware too; unified memory is the common thread.
             #
-            # 64 MiB is what the GLM recipe uses and what has loaded a 175 GB
-            # checkpoint here. Raise or drop it (drop:--load-format) if a
-            # future engine image reports the budget correctly.
+            # 64 MiB is the size the GLM recipe carries. Worth stating
+            # plainly, because it was read the other way once: GLM serves
+            # with "--load-format auto", so these variables have never been
+            # exercised there either, and "what has loaded a 175 GB
+            # checkpoint here" describes a launch that did not use the
+            # loader. They are kept for an operator who switches it on
+            # deliberately; drop:--load-format is the way back out.
             #
             # BACKEND=BUFFERED is what makes the cap mean anything, and it was
             # missing here: the size was copied from the GLM recipe and the
@@ -429,9 +433,35 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         capabilities=["vision", "tool_use", "reasoning", "code", "multilingual"],
         engine_image="vllm/vllm-openai:v0.27.1",
         extra_vllm_args=[
-            # As in eugr's recipes/qwen3.8-27b-nvfp4-dflash2.yaml (MIT) — see the
-            # note on the Nemotron entry above.
-            "--load-format", "instanttensor",
+            # NOT --load-format instanttensor, though eugr's recipe
+            # (recipes/qwen3.8-27b-nvfp4-dflash2.yaml, MIT) uses it.
+            #
+            # In this engine image the loader cannot be steered. Measured on
+            # the cluster with all five of GLM's InstantTensor variables
+            # provably delivered — the launch banner recorded
+            #
+            #   recipe environment: INSTANTTENSOR_BACKEND=BUFFERED,
+            #   INSTANTTENSOR_BUFFER_SIZE=67108864, INSTANTTENSOR_CHUNK_SIZE=...
+            #
+            # — and the loader still asked for the same 2542796800 B it asks
+            # for with no settings at all, on a node with 116 GB free:
+            #
+            #   instanttensor/_impl.py:811 in _finalize_buffer_size
+            #   RuntimeError: buffer_size (2542796800 B) exceeds device
+            #   memory budget (1067569152 B)
+            #
+            # An unchanged number across every configuration is a setting
+            # that is not read. The budget it is compared against is the
+            # driver's own figure, about a gigabyte on this hardware whatever
+            # the machine has free, so the loader can never fit. Dropping it
+            # costs seconds of load time; keeping it costs every launch.
+            #
+            # And the GLM entry does not contradict this: it carries the same
+            # five variables and serves with "--load-format auto", so the
+            # loader is off there too and those variables have never been
+            # exercised. The claim they came with — "what has loaded a 175 GB
+            # checkpoint here" — is about a recipe that does not use the
+            # loader. Checked rather than assumed, after assuming it once.
             "--enable-prefix-caching",
             # Vision models must NOT get fp8 KV on GB10 — it corrupts generation
             # (proven 2026-07-06). The automatic fp8→auto downgrade only fires
@@ -459,9 +489,13 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # gpu-memory-utilization. nvidia-smi reports [N/A] for memory on
             # this hardware too; unified memory is the common thread.
             #
-            # 64 MiB is what the GLM recipe uses and what has loaded a 175 GB
-            # checkpoint here. Raise or drop it (drop:--load-format) if a
-            # future engine image reports the budget correctly.
+            # 64 MiB is the size the GLM recipe carries. Worth stating
+            # plainly, because it was read the other way once: GLM serves
+            # with "--load-format auto", so these variables have never been
+            # exercised there either, and "what has loaded a 175 GB
+            # checkpoint here" describes a launch that did not use the
+            # loader. They are kept for an operator who switches it on
+            # deliberately; drop:--load-format is the way back out.
             #
             # BACKEND=BUFFERED is what makes the cap mean anything, and it was
             # missing here: the size was copied from the GLM recipe and the
@@ -545,9 +579,13 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # gpu-memory-utilization. nvidia-smi reports [N/A] for memory on
             # this hardware too; unified memory is the common thread.
             #
-            # 64 MiB is what the GLM recipe uses and what has loaded a 175 GB
-            # checkpoint here. Raise or drop it (drop:--load-format) if a
-            # future engine image reports the budget correctly.
+            # 64 MiB is the size the GLM recipe carries. Worth stating
+            # plainly, because it was read the other way once: GLM serves
+            # with "--load-format auto", so these variables have never been
+            # exercised there either, and "what has loaded a 175 GB
+            # checkpoint here" describes a launch that did not use the
+            # loader. They are kept for an operator who switches it on
+            # deliberately; drop:--load-format is the way back out.
             #
             # BACKEND=BUFFERED is what makes the cap mean anything, and it was
             # missing here: the size was copied from the GLM recipe and the
@@ -830,9 +868,13 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # gpu-memory-utilization. nvidia-smi reports [N/A] for memory on
             # this hardware too; unified memory is the common thread.
             #
-            # 64 MiB is what the GLM recipe uses and what has loaded a 175 GB
-            # checkpoint here. Raise or drop it (drop:--load-format) if a
-            # future engine image reports the budget correctly.
+            # 64 MiB is the size the GLM recipe carries. Worth stating
+            # plainly, because it was read the other way once: GLM serves
+            # with "--load-format auto", so these variables have never been
+            # exercised there either, and "what has loaded a 175 GB
+            # checkpoint here" describes a launch that did not use the
+            # loader. They are kept for an operator who switches it on
+            # deliberately; drop:--load-format is the way back out.
             #
             # BACKEND=BUFFERED is what makes the cap mean anything, and it was
             # missing here: the size was copied from the GLM recipe and the

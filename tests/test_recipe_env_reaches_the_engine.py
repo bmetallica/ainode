@@ -95,12 +95,30 @@ class TestEveryBackendAppliesIt:
 
 
 class TestTheRecipeStillCarriesBoth:
-    def test_qwen_has_the_loader_and_its_cap(self):
+    def test_qwen_no_longer_asks_for_a_loader_it_cannot_steer(self):
+        """Measured with all five InstantTensor variables delivered — the
+        launch banner recorded them — and the buffer unchanged at
+        2542796800 B, the same number it asks for with no settings at all.
+        An unchanged number across every configuration is a setting that is
+        not read, and the budget it is compared against is the driver's
+        figure, about a gigabyte whatever the node has free.
+        """
         from ainode.models.registry import CURATED_CLUSTER_MODELS
 
         entry = CURATED_CLUSTER_MODELS["qwen3.8-27b-nvfp4"]
-        assert "instanttensor" in entry.extra_vllm_args
+        assert "instanttensor" not in entry.extra_vllm_args
+        # The variables stay for an operator who switches it on deliberately.
         assert entry.extra_env["INSTANTTENSOR_BUFFER_SIZE"] == "67108864"
+
+    def test_glm_never_used_the_loader_either(self):
+        """The claim the cap came with — "what has loaded a 175 GB checkpoint
+        here" — is about a recipe that serves with --load-format auto. Pinned
+        so the inference is not made again."""
+        from ainode.models.registry import CURATED_CLUSTER_MODELS
+
+        entry = CURATED_CLUSTER_MODELS["glm-5.3-flash-nvfp4-spark"]
+        args = list(entry.extra_vllm_args)
+        assert args[args.index("--load-format") + 1] == "auto"
 
     def test_and_so_do_the_others_that_use_it(self):
         from ainode.models.registry import CURATED_CLUSTER_MODELS
