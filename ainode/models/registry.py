@@ -1552,14 +1552,24 @@ class ModelManager:
             if hf_repo in seen:
                 return
             seen.add(hf_repo)
+            # "Is there a directory" is a different question from "is all of
+            # it here". An interrupted download leaves a directory that looks
+            # finished until an engine reads a shard that is not there.
+            from ainode.models.completeness import download_state
+
+            complete, incomplete_reason = download_state(child)
             catalog_entry = self._find_catalog_by_hf_repo(hf_repo)
             if catalog_entry:
                 entry = catalog_entry.to_dict()
                 entry["downloaded"] = True
                 entry["local_size_gb"] = round(self._dir_size_gb(child), 2)
+                entry["complete"] = complete
+                entry["incomplete_reason"] = incomplete_reason
                 downloaded.append(entry)
             else:
                 downloaded.append({
+                    "complete": complete,
+                    "incomplete_reason": incomplete_reason,
                     "id": hf_repo,
                     "name": hf_repo.split("/")[-1] if "/" in hf_repo else hf_repo,
                     "hf_repo": hf_repo,

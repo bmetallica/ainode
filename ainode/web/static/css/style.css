@@ -2541,6 +2541,15 @@ select {
   border: 1px solid var(--nvidia-green);
 }
 
+/* An interrupted download. Amber rather than green: the directory is there
+   and the model is not, and the difference has to be visible at a glance. */
+.model-badge.failed {
+  background: rgba(255, 176, 32, 0.10);
+  color: #ffb020;
+  border: 1px solid rgba(255, 176, 32, 0.55);
+  cursor: help;
+}
+
 .model-badge.available {
   background: rgba(118, 185, 0, 0.06);
   color: var(--nvidia-green-dim);

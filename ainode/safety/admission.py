@@ -37,6 +37,10 @@ def check_admission(app, model: str, *, node_ids=None, strategy: str = "auto",
     if force:
         return ""
 
+    partial = _completeness_says(app, model)
+    if partial:
+        return partial
+
     unreadable = _quantization_says(app, model)
     if unreadable:
         return unreadable
@@ -129,6 +133,31 @@ def _guard_history_says(app, model: str, *, node_ids=None,
         f"nodes and this refusal lifts by itself; \"force\": true overrides "
         f"it outright."
     )
+
+
+def _completeness_says(app, model: str) -> str:
+    """Refuse a checkpoint that is not all there.
+
+    First of all the checks, because it is the cheapest and the most certain:
+    a missing shard is not a question of memory, and the launch it produces
+    fails minutes in with something about safetensors rather than about the
+    download that was interrupted.
+    """
+    manager = app.get("model_manager")
+    if manager is None:
+        return ""
+    try:
+        from ainode.models.completeness import download_state
+
+        directories = manager.model_dirs_for_repo(model)
+    except Exception:
+        logger.debug("could not locate %s on disk", model, exc_info=True)
+        return ""
+    for directory in directories:
+        complete, reason = download_state(directory)
+        if not complete:
+            return f"{model}: {reason}"
+    return ""
 
 
 def _quantization_says(app, model: str) -> str:
