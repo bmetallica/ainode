@@ -700,6 +700,11 @@ cd /opt/ainode && git pull
 scripts/update-cluster.sh --nodes Spark2,Spark3
 ```
 
+The checkout stays yours: the container runs as root, so `git pull` is run as
+the directory's owner rather than being told to ignore the ownership — a pull
+as root leaves objects under `.git` that your own shell then cannot write
+over.
+
 From then on the button does the same thing: `git pull`, build, distribute,
 restart the peers, verify them, and restart the head last — which from inside
 the container is a `docker stop` of itself that systemd turns into a start on
