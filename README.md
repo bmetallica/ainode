@@ -79,6 +79,13 @@ users, showing its arithmetic; **profiles** ("what this node should be
 serving", captured from what is running and applied to converge); and
 **placement** ("this model runs on node X, permanently").
 
+**Sharding a mixture-of-experts properly** — tensor parallelism splits
+attention and the dense layers and *replicates every expert on every rank*, so
+a 129 GB MoE needs 129 GB per node however short the context is. AINode reads
+the expert count out of `config.json` and passes `--enable-expert-parallel`
+for any multi-node MoE, curated or self-downloaded, and the plan says what it
+assumed.
+
 **Not taking the node down** — on GB10 the GPU's memory *is* the host's
 memory, so an engine that over-allocates does not get a CUDA error; it starves
 the kernel and the node has to be power-cycled. Three things stand in the way,
