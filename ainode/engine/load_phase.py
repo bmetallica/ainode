@@ -390,6 +390,31 @@ _SIGNAL_NOTES = {
 }
 
 
+def _driver_free_mb():
+    """What CUDA reports free, which is not what the machine has free.
+
+    On unified memory these are the same pool and the driver's accounting of
+    it is its own: nvidia-smi prints [N/A] for memory on this hardware and
+    NVML returns used=0. The InstantTensor loader compares its staging buffer
+    against a figure of this kind, and that figure has been measured between
+    0.4 and 1.7 GB on a node with 116 GB genuinely free — which is why the
+    same launch succeeds in the morning and fails after lunch.
+
+    Read here so the two numbers stand next to each other in the failure. A
+    message that reports only the host's free memory invites the reading that
+    the engine is lying; a message that reports both shows where the gap is.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        free, _total = torch.cuda.mem_get_info()
+        return float(free) / (1024 * 1024)
+    except Exception:
+        return None
+
+
 def _host_free_mb():
     """The node's free memory right now, or None.
 
@@ -543,6 +568,10 @@ class LoadPhaseTracker:
     #: something fails, and None on a platform whose /proc looks different.
     free_mb_at_failure = None
 
+    #: What CUDA said was free at the same moment. A different number, and on
+    #: this hardware a wildly different one.
+    driver_free_mb_at_failure = None
+
     def fail(self, reason: str) -> None:
         """Mark the launch dead. Ignored once the engine is serving — the
         launcher exiting after a successful start is normal for a detached
@@ -562,6 +591,7 @@ class LoadPhaseTracker:
         self.phase = PHASE_FAILED
         self.error = reason.strip()
         self.free_mb_at_failure = _host_free_mb()
+        self.driver_free_mb_at_failure = _driver_free_mb()
 
     def fail_exit(self, rc) -> None:
         """Mark the launch dead from a process exit code.
@@ -730,6 +760,14 @@ class LoadPhaseTracker:
         note = (f"the node itself had {free / 1024:.1f} GB free when this "
                 f"failed, which is the figure every memory message here has "
                 f"to be read against")
+        driver = getattr(self, "driver_free_mb_at_failure", None)
+        if driver is not None:
+            # The gap between these two is the whole explanation for a class
+            # of failure that otherwise looks like the engine inventing
+            # numbers.
+            note += (f", while CUDA reported {driver / 1024:.1f} GB free to "
+                     f"the driver — the same pool, counted differently, and "
+                     f"an engine budget is built from the second")
         if "device memory budget" in haystack and free >= _PLENTY_FREE_MB:
             # The hint above offers two readings and an experiment to tell
             # them apart. With this number in hand the experiment is already
