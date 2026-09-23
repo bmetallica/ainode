@@ -803,11 +803,17 @@ image itself stays a separate, explicit step (`ainode update`).
 AINode exposes an OpenAI-compatible API. Drop it into any tool that
 speaks OpenAI:
 
+Point it at **port 3000**, the one AINode itself answers on. Port 8000 is the
+engine's own listener: a vLLM serving one model, with no idea the rest of the
+cluster exists, no `/v1/images/generations`, and no routing. Everything below
+— federation, the kind filter, image generation — is AINode's, and AINode is
+on 3000.
+
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:8000/v1",
+    base_url="http://localhost:3000/v1",
     api_key="not-needed",
 )
 
@@ -830,14 +836,36 @@ offers whatever this endpoint returns as something to chat with. Ask for them
 explicitly:
 
 ```bash
-curl localhost:8000/v1/models                    # chat + vision
-curl localhost:8000/v1/models?type=embedding     # for a RAG client
-curl localhost:8000/v1/models?type=image
-curl localhost:8000/v1/models?type=all           # the complete inventory
+curl localhost:3000/v1/models                    # chat + vision
+curl localhost:3000/v1/models?type=embedding     # for a RAG client
+curl localhost:3000/v1/models?type=image
+curl localhost:3000/v1/models?type=all           # the complete inventory
 ```
 
 Every entry carries `ainode_kind` alongside the OpenAI fields, so a client
 that reads `?type=all` can sort them itself.
+
+#### Image generation from an OpenAI client
+
+`POST /v1/images/generations` takes the OpenAI body — `prompt`, `size`, `n`,
+plus `steps`, `negative_prompt`, `guidance_scale` and `seed` — and answers
+with `data[].b64_json`. It is routed to whichever node holds the image model,
+the same way a chat request is.
+
+In **Open WebUI**: Settings → Images → *Image Generation (Experimental)*,
+engine **OpenAI**, API Base URL `http://<head>:3000/v1`, any non-empty API
+key, and the model typed in by name (`Rin247/Qwen-Image-2.1-FP8`, say) —
+plain `/v1/models` deliberately does not offer image models as things to chat
+with, so the picker will not list it for you.
+
+```bash
+curl -X POST localhost:3000/v1/images/generations \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"Rin247/Qwen-Image-2.1-FP8","prompt":"a lighthouse at dusk",
+       "size":"1024x1024","steps":20}' |
+  python3 -c 'import base64,json,sys; open("out.png","wb").write(
+      base64.b64decode(json.load(sys.stdin)["data"][0]["b64_json"]))'
+```
 
 ### Profiles — one deployment, saved and restored
 
@@ -906,9 +934,9 @@ firehose. Every topic and every field is documented in
 AINode exposes its own metrics on the same port as the API:
 
 ```bash
-curl http://localhost:8000/metrics           # Prometheus text exposition
-curl http://localhost:8000/api/metrics       # JSON snapshot
-curl http://localhost:8000/api/metrics/gpu   # GPU subset
+curl http://localhost:3000/metrics           # Prometheus text exposition
+curl http://localhost:3000/api/metrics       # JSON snapshot
+curl http://localhost:3000/api/metrics/gpu   # GPU subset
 ```
 
 Key series:

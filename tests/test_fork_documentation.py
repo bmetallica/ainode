@@ -154,3 +154,45 @@ class TestTheReadmeMatchesTheCode:
 
         for match in re.finditer(r"\]\(((?:docs/)?[\w/.-]+\.md)\)", README):
             assert (ROOT / match.group(1)).is_file(), match.group(1)
+
+
+class TestTheDocumentedPortIsTheOneWeListenOn:
+    """AINode binds web_port (3000). Port 8000 is the ENGINE's own listener —
+    a vLLM serving one model, with no federation, no kind filter and no
+    /v1/images/generations. The README sent readers there, which works by
+    accident for chat on a node that happens to be serving and not at all for
+    anything this fork added.
+
+        was muss ich bei openwebui eintragen um auf die bildgenerierung
+        zuzugreifen?
+
+    The answer depends on this being right.
+    """
+
+    README = (Path(__file__).resolve().parent.parent / "README.md").read_text()
+
+    def test_the_app_binds_the_web_port(self):
+        import inspect
+
+        from ainode.api import server
+
+        source = inspect.getsource(server)
+        assert "web.run_app(app, host=config.host, port=config.web_port" in source
+
+    def test_no_example_sends_an_ainode_route_to_8000(self):
+        for line in self.README.splitlines():
+            if ":8000" not in line:
+                continue
+            # /api/cluster/update-all is a head-to-head call on the API port
+            # in a cluster where that is how it is deployed; everything else
+            # named here is served by the aiohttp app.
+            assert "/v1/" not in line and "/api/metrics" not in line \
+                and "/metrics" not in line, line
+
+    def test_the_openai_example_uses_3000(self):
+        assert 'base_url="http://localhost:3000/v1"' in self.README
+
+    def test_the_image_recipe_is_there(self):
+        assert "/v1/images/generations" in self.README
+        assert "Open WebUI" in self.README
+        assert "b64_json" in self.README
