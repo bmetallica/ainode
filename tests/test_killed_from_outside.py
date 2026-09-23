@@ -311,3 +311,56 @@ class TestItDecidesTheBudgetQuestion:
                               "torch.OutOfMemoryError: CUDA out of memory\n")
         assert "116.3 GB free" in reason
         assert "NOT gpu-memory-utilization" not in reason
+
+
+class TestTheTwoFreeMemoryNumbers:
+    """116 GB free and a 1 GB budget in the same message reads as the engine
+    inventing numbers. They are the same pool counted differently: on unified
+    memory the driver keeps its own accounting, nvidia-smi prints [N/A] for
+    memory on this hardware, and NVML returns used=0. A failure that reports
+    only the host's figure invites the wrong conclusion.
+    """
+
+    def _reason(self, host_mb, driver_mb):
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        phase = LoadPhaseTracker()
+        phase.reset()
+        phase.observe("RuntimeError: buffer_size (2542796800 B) exceeds "
+                      "device memory budget (1067569152 B)\n")
+        phase.fail("the launcher exited (code 1)")
+        phase.free_mb_at_failure = host_mb
+        phase.driver_free_mb_at_failure = driver_mb
+        return phase.failure_reason()
+
+    def test_both_numbers_appear(self):
+        reason = self._reason(116.3 * 1024, 1.1 * 1024)
+        assert "116.3 GB free" in reason
+        assert "1.1 GB free to the driver" in reason
+
+    def test_it_says_they_are_the_same_pool(self):
+        assert "same pool, counted differently" in self._reason(
+            116.3 * 1024, 1.1 * 1024)
+
+    def test_it_says_which_one_the_budget_comes_from(self):
+        assert "budget is built from the second" in self._reason(
+            116.3 * 1024, 1.1 * 1024)
+
+    def test_no_cuda_means_no_second_number(self):
+        reason = self._reason(116.3 * 1024, None)
+        assert "116.3 GB free" in reason
+        assert "to the driver" not in reason
+
+    def test_it_is_read_at_the_moment_of_failure(self):
+        import inspect
+
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        assert "_driver_free_mb()" in inspect.getsource(LoadPhaseTracker.fail)
+
+    def test_a_node_without_torch_does_not_break_the_failure(self):
+        from ainode.engine.load_phase import _driver_free_mb
+
+        # It is imported lazily and every failure is swallowed: this runs on
+        # the orchestrator, which may be the lean build with no torch at all.
+        assert _driver_free_mb() is None or isinstance(_driver_free_mb(), float)
