@@ -110,6 +110,22 @@ class TestTheRecipeStillCarriesBoth:
                 assert (entry.extra_env or {}).get("INSTANTTENSOR_BUFFER_SIZE"), \
                     f"{entry.id} chooses the loader without capping its buffer"
 
+    def test_the_cap_travels_with_the_backend_that_honours_it(self):
+        """A size without BACKEND=BUFFERED is a number nothing reads.
+
+        Measured on the cluster with the size alone in place and provably
+        delivered to the engine: a 2.4 GB buffer, unchanged across runs, on a
+        node with 116 GB free. The default backend derives its buffer from
+        the checkpoint; only the buffered one honours the setting.
+        """
+        from ainode.models.registry import CURATED_CLUSTER_MODELS
+
+        for entry in CURATED_CLUSTER_MODELS.values():
+            env = entry.extra_env or {}
+            if env.get("INSTANTTENSOR_BUFFER_SIZE"):
+                assert env.get("INSTANTTENSOR_BACKEND") == "BUFFERED", \
+                    f"{entry.id} caps a buffer the default backend never reads"
+
 
 class TestTheLaunchSaysWhatItPassed:
     """The environment does not appear in the serve command — it travels as
