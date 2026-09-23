@@ -109,6 +109,19 @@ def _is_safe_path_arg(path: str) -> bool:
     return bool(isinstance(path, str) and path and _SAFE_PATH_RE.match(path))
 
 
+#: An environment name, and a value made of the same characters a path may
+#: contain. Separate from the path check because that one has no reason to
+#: allow "=" and this one must.
+_SAFE_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _is_safe_env_pair(key: str, value: str) -> bool:
+    """True if ``KEY=VALUE`` is safe to interpolate unquoted."""
+    return bool(isinstance(key, str) and _SAFE_ENV_KEY_RE.match(key)
+                and isinstance(value, str) and value
+                and _SAFE_PATH_RE.match(value))
+
+
 class EugrBackendError(RuntimeError):
     """Raised when the backend cannot be driven (missing binary, bad config)."""
 
@@ -949,9 +962,44 @@ class EugrBackend(EngineBackend):
                 "-v", "/mnt/shared-models:/mnt/shared-models:ro",
                 "--entrypoint", shim_container_path,
             ])
+        extra_docker_args.extend(self._recipe_env_args())
         env = self._build_env()
         env["VLLM_SPARK_EXTRA_DOCKER_ARGS"] = " ".join(extra_docker_args)
         return env
+
+    def _recipe_env_args(self) -> List[str]:
+        """``-e KEY=VALUE`` for every entry in ``config.extra_env``.
+
+        The catalog has carried these all along and this backend never read
+        them. NvidiaBackend applies extra_env and so does the diffusers one;
+        the eugr path — which is what this deployment actually runs — built
+        its docker arguments without it, so a recipe's environment silently
+        did not exist.
+
+        What that cost, exactly: the Qwen3.8-27B-NVFP4 entry sets
+        ``--load-format instanttensor`` AND
+        ``INSTANTTENSOR_BUFFER_SIZE=67108864``, and the comment beside the
+        second one describes the failure it prevents — the same error, the
+        same moving budget, the same hardware. The flag arrived; the cap did
+        not. The model then failed on every launch with a 4.7 GB staging
+        buffer it had been configured not to ask for, and the only way
+        through was to drop the loader the recipe had deliberately chosen.
+
+        Validated, because VLLM_SPARK_EXTRA_DOCKER_ARGS is expanded unquoted
+        by the launcher: a space or a metacharacter here is a docker flag
+        rather than a variable.
+        """
+        out: List[str] = []
+        for key, value in (getattr(self.config, "extra_env", None) or {}).items():
+            pair = f"{key}={value}"
+            if not _is_safe_env_pair(str(key), str(value)):
+                raise EugrBackendError(
+                    f"Refusing to pass environment entry {pair!r} to the "
+                    f"launcher: it is expanded unquoted into the docker run "
+                    f"arguments, so whitespace or a shell metacharacter there "
+                    f"injects docker flags rather than setting a variable.")
+            out.extend(["-e", pair])
+        return out
 
     #: Engine cache directories, as ``(our subdirectory, container path)``.
     #: The launcher mounts these itself from ``$HOME/.cache`` — which, called
