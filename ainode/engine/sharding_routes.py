@@ -488,6 +488,9 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         request.app, overrides.get("gpu_memory_utilization"),
         node_ids=[config.node_id] + [n.node_id for n in chosen],
         force=bool(body.get("force")))
+    if capped is None and cap_note:
+        return web.json_response({"error": cap_note, "refused_by": "admission"},
+                                 status=507)
     if capped is not None:
         overrides["gpu_memory_utilization"] = capped
     if cap_note:

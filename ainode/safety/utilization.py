@@ -76,6 +76,11 @@ def cap_utilization(app, requested: Optional[float], *, node_ids=None,
 
     Returns ``requested`` unchanged — and an empty note — whenever there is
     nothing to say: force, no budgets, or a request that already fits.
+
+    Returns ``None`` with a note when there is no value worth launching at:
+    a node with less free memory than the floor cannot serve anything, and
+    capping to the floor would produce a launch that is certain to fail with
+    a message about something else.
     """
     if requested is None or force:
         return requested, ""
@@ -94,6 +99,21 @@ def cap_utilization(app, requested: Optional[float], *, node_ids=None,
     capped = max(MIN_UTILIZATION, round(ceiling, 2))
     if capped >= value:
         return requested, ""
+    if ceiling < MIN_UTILIZATION:
+        # The floor is not a value to launch at. Below it the engine gets
+        # less than its own weights need, so the launch is a guaranteed
+        # failure ninety seconds later — reported as a staging buffer that
+        # does not fit, or a KV cache that cannot be allocated, neither of
+        # which is what went wrong. Refusing says the true thing now.
+        return None, (
+            f"{where} has {ceiling * 100:.0f}% of its memory free once the "
+            f"host reserve is held back — less than the {MIN_UTILIZATION:.0%} "
+            f"floor below which an engine cannot hold its own weights. This "
+            f"launch would fail during the load, not at admission, and the "
+            f"message would be about a buffer rather than about the node. "
+            f"Free memory there, pick another node, or pass \"force\": true "
+            f"to try it anyway."
+        )
     note = (
         f"gpu-memory-utilization lowered from {value:.2f} to {capped:.2f}: "
         f"that fraction of {where}'s total memory is what is free there once "

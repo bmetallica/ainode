@@ -78,12 +78,24 @@ class TestTheCap:
         app = _app(monkeypatch, [_spark(20.0)])
         assert cap_utilization(app, 0.97, force=True) == (0.97, "")
 
-    def test_it_never_caps_into_uselessness(self, monkeypatch):
-        # Below this the engine cannot hold its own weights; refusing in the
-        # admission gate says why, a 0.02 launch just fails strangely.
+    def test_it_refuses_rather_than_capping_into_uselessness(self, monkeypatch):
+        # Below the floor the engine gets less than its own weights need, so
+        # capping there produces a launch that is certain to fail ninety
+        # seconds later with a message about a staging buffer. Refusing says
+        # the true thing now.
         app = _app(monkeypatch, [_spark(1.0)])
-        value, _ = cap_utilization(app, 0.9)
-        assert value == MIN_UTILIZATION
+        value, note = cap_utilization(app, 0.9)
+        assert value is None
+        assert "cannot hold its own weights" in note
+        assert "force" in note
+
+    def test_the_floor_is_still_a_floor_when_there_is_room_above_it(self, monkeypatch):
+        # A node with a little room caps to something launchable rather than
+        # being refused.
+        app = _app(monkeypatch, [_spark(28.0)])
+        value, note = cap_utilization(app, 0.9)
+        assert value is not None and value >= MIN_UTILIZATION
+        assert "lowered from" in note
 
     def test_nothing_requested_is_nothing_changed(self, monkeypatch):
         assert cap_utilization(_app(monkeypatch, [_spark(120.0)]), None) == (None, "")
@@ -119,7 +131,19 @@ class TestBothLaunchPathsApplyIt:
         from ainode.engine import sharding_routes
 
         source = inspect.getsource(sharding_routes.handle_sharding_launch)
-        assert "plan_note" in source.split("cap_note")[2]
+        # The note reaches the response the operator reads, not only the log.
+        assert "plan_note" in source.split("cap_note")[4]
+
+    def test_a_node_with_no_room_is_refused_not_capped(self):
+        import inspect
+
+        from ainode.engine import sharding_routes
+        from ainode.models import api_routes
+
+        assert "capped is None" in inspect.getsource(
+            sharding_routes.handle_sharding_launch)
+        assert "if gmu is None:" in inspect.getsource(
+            api_routes.append_solo_instance)
 
 
 class _Node:
@@ -172,11 +196,12 @@ class TestItCapsTheNodeYouAreLaunchingOn:
 
     def test_without_a_scope_the_tightest_still_decides(self):
         # Right for a launch that spans the nodes — which is why the scope
-        # has to be passed rather than the behaviour changed.
+        # has to be passed rather than the behaviour changed. node2 has
+        # nothing free at all, so the unscoped answer is a refusal naming it.
         from ainode.safety.utilization import cap_utilization
 
         value, note = cap_utilization(self._app(), 0.60)
-        assert value < 0.60
+        assert value is None
         assert "node2" in note
 
     def test_the_solo_path_passes_its_own_node(self):
