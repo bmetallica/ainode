@@ -14,7 +14,42 @@ Aufgenommen am 2026-09-21 auf `main` @ 96041b0 (2371 Tests).
 
 ---
 
+
 ## Stand: gebaut am 2026-09-21
+
+### 2026-09-23 — Qwen-Image-2.1 braucht ein neueres diffusers
+
+Der erste echte Ladeversuch auf dem Cluster:
+
+    ERROR Engine core initialization failed:
+      AttributeError: module diffusers has no attribute QwenImage21Pipeline
+
+`model_index.json` des Checkpoints nennt `"_class_name": "QwenImage21Pipeline"`
+und `"_diffusers_version": "0.37.0.dev0"` — geschrieben gegen einen
+Entwicklungsstand, nicht gegen ein Release. diffusers instanziiert die Klasse,
+indem es sie auf dem eigenen Modul nachschlägt; eine ältere Bibliothek
+scheitert deshalb mit einem Namen, den niemand einordnen kann.
+
+Zwei Konsequenzen, beide umgesetzt:
+
+* `scripts/build-diffusers-image.sh` nimmt `DIFFUSERS_REF`, damit das Image
+  gegen einen Git-Stand gebaut werden kann:
+
+      DIFFUSERS_REF="git+https://github.com/huggingface/diffusers@main" \
+        scripts/build-diffusers-image.sh
+
+  Voreinstellung bleibt ein Release — ein Git-Ref ist für den Checkpoint, der
+  ihn braucht, nicht für alle.
+
+* Der Server **beendet sich**, wenn das Laden scheitert. Vorher blieb er
+  stehen und antwortete dauerhaft mit 503, sodass die Instanzkarte bei 40 %
+  hing: ein Fortschrittsbalken für einen Ladevorgang, der in der ersten
+  Sekunde gestorben war. Und die Meldung nennt jetzt beide Versionen und sagt,
+  dass das Image das Problem ist, nicht das Modell.
+
+Schritt 0 bleibt damit weiter offen: ob `QwenImage21Pipeline` auf
+aarch64/Blackwell *läuft*, ist ungemessen — bisher wissen wir nur, dass die
+installierte Bibliothek sie nicht kennt.
 
 | Schritt | PR | Was daraus wurde |
 |---|---|---|

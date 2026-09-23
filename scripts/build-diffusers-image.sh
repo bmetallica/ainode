@@ -16,6 +16,17 @@ cd "$REPO_ROOT"
 
 ENGINE_BASE="${ENGINE_BASE:-vllm-node:latest}"
 IMAGE="${DIFFUSERS_IMAGE:-ainode-diffusers:latest}"
+# What to install for diffusers. A released version is right for most
+# checkpoints; one written against an unreleased diffusers needs a git ref,
+# which is not unusual for a model published the week its architecture lands:
+#
+#   DIFFUSERS_REF="git+https://github.com/huggingface/diffusers@main" \
+#     scripts/build-diffusers-image.sh
+#
+# The symptom without it is "module diffusers has no attribute
+# QwenImage21Pipeline" — the class named in the checkpoint's model_index.json
+# does not exist in the library that is installed.
+DIFFUSERS_REF="${DIFFUSERS_REF:-diffusers>=0.36}"
 
 if ! docker image inspect "$ENGINE_BASE" >/dev/null 2>&1; then
     echo "The engine base image ${ENGINE_BASE} is not on this node." >&2
@@ -24,8 +35,10 @@ if ! docker image inspect "$ENGINE_BASE" >/dev/null 2>&1; then
 fi
 
 echo "==> Building ${IMAGE} FROM ${ENGINE_BASE}"
+echo "    diffusers: ${DIFFUSERS_REF}"
 docker build \
     --build-arg "ENGINE_BASE=${ENGINE_BASE}" \
+    --build-arg "DIFFUSERS_REF=${DIFFUSERS_REF}" \
     -f scripts/Dockerfile.diffusers \
     -t "$IMAGE" \
     scripts/
