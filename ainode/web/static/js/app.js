@@ -3494,6 +3494,20 @@ const AINode = {
         var btn = e.target.closest && e.target.closest('.queue-item-cancel');
         if (!btn || !container.contains(btn)) return;
         e.stopPropagation();
+        var pauseJob = btn.getAttribute('data-pause-job');
+        if (pauseJob) {
+          btn.disabled = true;
+          btn.textContent = '…';
+          self.pauseDownload(pauseJob);
+          return;
+        }
+        var resumeRepo = btn.getAttribute('data-resume-repo');
+        if (resumeRepo) {
+          btn.disabled = true;
+          btn.textContent = '…';
+          self.resumeDownload(resumeRepo);
+          return;
+        }
         var jobId = btn.getAttribute('data-job-id');
         if (!jobId) return;
         btn.disabled = true;
@@ -3501,6 +3515,50 @@ const AINode = {
         self.cancelDownload(jobId);
       });
     }
+  },
+
+  // Pause keeps the partial files; cancel deletes them. That is the whole
+  // difference, and it is worth a separate button on a 200 GB pull.
+  pauseDownload(jobId) {
+    var self = this;
+    fetch('/api/models/download-pause', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_id: jobId }),
+    }).then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (data) {
+        Object.keys(self.state.activeDownloads || {}).forEach(function (repo) {
+          var dl = self.state.activeDownloads[repo];
+          if (dl.jobId === jobId) {
+            dl.status = data.status === 'pausing' ? 'pausing' : dl.status;
+            self.renderQueueItemInPlace(repo);
+          }
+        });
+        if (data.error) self.toast(data.error, 'error');
+      }).catch(function (err) { self.toast('Error: ' + err.message, 'error'); });
+  },
+
+  resumeDownload(hfRepo) {
+    var self = this;
+    fetch('/api/models/download-resume', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hf_repo: hfRepo }),
+    }).then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (data) {
+        if (data.error) { self.toast(data.error, 'error'); return; }
+        self.state.activeDownloads = self.state.activeDownloads || {};
+        var previous = self.state.activeDownloads[hfRepo] || {};
+        self.state.activeDownloads[hfRepo] = {
+          jobId: data.job_id, hfRepo: hfRepo, status: 'downloading',
+          startedAt: Date.now(), elapsed: 0,
+          totalBytes: previous.totalBytes || 0,
+          downloadedBytes: previous.downloadedBytes || 0,
+          progress: previous.progress,
+        };
+        self.saveActiveDownloads();
+        self.renderDownloadsQueue();
+        self.resumeDownloadPolling(hfRepo);
+        self.toast('Resuming ' + hfRepo, 'info');
+      }).catch(function (err) { self.toast('Error: ' + err.message, 'error'); });
   },
 
   cancelDownload(jobId) {
@@ -3592,13 +3650,21 @@ const AINode = {
       statusLabel = '✕ Cancelled';
     } else if (dl.status === 'cancelling') {
       statusLabel = 'Cancelling...';
+    } else if (dl.status === 'pausing') {
+      statusLabel = 'Pausing — finishing the file in flight...';
+    } else if (dl.status === 'paused') {
+      statusLabel = '⏸ Paused' + (sizeStr ? ' · ' + sizeStr : '') +
+        ' — Resume continues from here';
+      cancelBtn = '<button class="queue-item-cancel" data-resume-repo="' +
+        this.esc(dl.hfRepo) + '" title="Resume download">▶</button>';
     } else if (hasPct) {
       statusLabel = pctStr + ' · ' + sizeStr + (rateStr ? ' · ' + rateStr : '') + (etaStr ? ' · ' + etaStr : '');
       barHtml =
         '<div class="queue-item-bar">' +
           '<div class="queue-item-bar-progress" style="width:' + pct.toFixed(2) + '%"></div>' +
         '</div>';
-      cancelBtn = '<button class="queue-item-cancel" data-job-id="' + this.esc(dl.jobId) + '" title="Cancel download">✕</button>';
+      cancelBtn = '<button class="queue-item-cancel" data-pause-job="' + this.esc(dl.jobId) + '" title="Pause — keeps what has been downloaded">⏸</button>' + 
+        '<button class="queue-item-cancel" data-job-id="' + this.esc(dl.jobId) + '" title="Cancel download — deletes what has been downloaded">✕</button>';
     } else {
       // No total yet — show indeterminate shimmer
       statusLabel = 'Starting... ' + elapsedStr + (sizeStr ? ' · ' + sizeStr : '');
@@ -3606,7 +3672,8 @@ const AINode = {
         '<div class="queue-item-bar">' +
           '<div class="queue-item-bar-fill"></div>' +
         '</div>';
-      cancelBtn = '<button class="queue-item-cancel" data-job-id="' + this.esc(dl.jobId) + '" title="Cancel download">✕</button>';
+      cancelBtn = '<button class="queue-item-cancel" data-pause-job="' + this.esc(dl.jobId) + '" title="Pause — keeps what has been downloaded">⏸</button>' + 
+        '<button class="queue-item-cancel" data-job-id="' + this.esc(dl.jobId) + '" title="Cancel download — deletes what has been downloaded">✕</button>';
     }
 
     return '<div class="queue-item ' + statusClass + '" data-queue-repo="' + this.esc(dl.hfRepo) + '">' +
@@ -4261,7 +4328,8 @@ const AINode = {
       var entry = { id: repo, slug: m.id || repo, name: m.name || repo.split('/').pop(),
         size: '~' + Math.round(sz) + ' GB', sizeGb: sz, desc: m.description || 'Downloaded model',
         quantization: m.quantization || null, minMem: m.min_memory_gb || sz, hf_repo: repo,
-        downloaded: true, nodes: m.nodes || [] };
+        downloaded: true, nodes: m.nodes || [],
+        complete: m.complete !== false, incompleteReason: m.incomplete_reason || '' };
       if (matchesQuery(entry)) installed.push(entry);
     });
     var bySize = function (a, b) { return (a.sizeGb || 0) - (b.sizeGb || 0); };
@@ -4273,10 +4341,17 @@ const AINode = {
       var onDisk = isOnDisk(model);
       var fits = gpuMem >= (model.minMem || model.sizeGb);
       var fitBadge = self.placementBadge(model);
+      // "On disk" was answering "is there a directory", which an interrupted
+      // download also satisfies — so a half-downloaded model looked ready and
+      // failed minutes into a launch with something about safetensors.
+      var partial = onDisk && model.complete === false;
       var statusBadge = isLoaded ?
         '<span class="model-badge loaded">Loaded</span>' :
-        (onDisk ? '<span class="model-badge loaded">On disk</span>' :
-          '<span class="model-badge available">Available</span>');
+        (partial ? '<span class="model-badge failed" title="' +
+            self.esc(model.incompleteReason || 'The download was interrupted') +
+            '">Incomplete</span>' :
+          (onDisk ? '<span class="model-badge loaded">On disk</span>' :
+            '<span class="model-badge available">Available</span>'));
       var verBadge = model.verified ? '<span class="fit-badge rec">✓ Verified on GB10</span>'
         : (model.curated ? '<span class="fit-badge untested">Curated · untested</span>' : '');
       var quantBadge = model.quantization ? '<span class="fit-badge quant">' + self.esc(model.quantization.toUpperCase()) + '</span>' : '';

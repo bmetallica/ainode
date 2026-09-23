@@ -79,6 +79,14 @@ users, showing its arithmetic; **profiles** ("what this node should be
 serving", captured from what is running and applied to converge); and
 **placement** ("this model runs on node X, permanently").
 
+**Downloads you can stop and pick up again** — Pause keeps the partial files
+and Resume carries on from them (huggingface_hub reuses its own
+`.incomplete`), while Cancel still deletes them. And a download that was
+interrupted — by a restart, an update, a lost link — is listed as
+**Incomplete** rather than as On disk: the check is the checkpoint's own shard
+index, so a model missing a shard says which one instead of failing minutes
+into a launch with a message about safetensors.
+
 **Sharding a mixture-of-experts properly** — tensor parallelism splits
 attention and the dense layers and *replicates every expert on every rank*, so
 a 129 GB MoE needs 129 GB per node however short the context is. AINode reads

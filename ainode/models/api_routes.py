@@ -62,6 +62,8 @@ def register_model_routes(app: web.Application, manager: Optional[ModelManager] 
     app.router.add_get("/api/models/downloaded", handle_list_downloaded)
     app.router.add_post("/api/models/download-repo", handle_download_repo)
     app.router.add_post("/api/models/download-cancel", handle_cancel_download)
+    app.router.add_post("/api/models/download-pause", handle_pause_download)
+    app.router.add_post("/api/models/download-resume", handle_resume_download)
     app.router.add_get("/api/models/download/status", handle_download_status)
     app.router.add_get("/api/models/downloads/active", handle_active_downloads)
     app.router.add_post("/api/models/delete-repo", handle_delete_repo)
@@ -1528,6 +1530,78 @@ class _DownloadCancelled(Exception):
     pass
 
 
+async def handle_pause_download(request: web.Request) -> web.Response:
+    """POST /api/models/download-pause {job_id} — stop, but keep what is there.
+
+    The same stop a cancel performs, minus the part that makes it a cancel:
+    the partial tree is kept. huggingface_hub writes each file to
+    ``<name>.incomplete`` and renames on success, and it reuses those on the
+    next attempt — so resuming is starting the same download again, which
+    then skips every file already present and continues the one that was not.
+
+    There is no pause *inside* a file transfer to hook into; this is the
+    honest version of pause on this API, and it is the one that matters on a
+    200 GB pull over a domestic line.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    job_id = str_field(body, "job_id")
+    jobs: dict = request.app["download_jobs"]
+    if not job_id or job_id not in jobs:
+        return web.json_response({"error": "job not found"}, status=404)
+
+    job = jobs[job_id]
+    if job.get("status") != "downloading":
+        return web.json_response(
+            {"error": f"job is {job.get('status')}, not downloading"}, status=409)
+
+    job["_cancel"] = True
+    job["_keep_partial"] = True
+    job["status"] = "pausing"
+    return web.json_response({"job_id": job_id, "status": "pausing",
+                              "model_id": job.get("model_id", "")})
+
+
+async def handle_resume_download(request: web.Request) -> web.Response:
+    """POST /api/models/download-resume {hf_repo} — carry on where it stopped.
+
+    A new job against the same repo. Every file already on disk is skipped by
+    huggingface_hub and the partial one continues from its ``.incomplete``,
+    so this is a resume in every sense except the implementation.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    hf_repo = str_field(body, "hf_repo", "model_id").strip()
+    if not hf_repo or "/" not in hf_repo:
+        return web.json_response({"error": "hf_repo required"}, status=400)
+
+    jobs: dict = request.app["download_jobs"]
+    running = [jid for jid, job in jobs.items()
+               if job.get("model_id") == hf_repo
+               and job.get("status") in ("downloading", "pausing", "cancelling")]
+    if running:
+        return web.json_response(
+            {"error": f"{hf_repo} is already downloading", "job_id": running[0]},
+            status=409)
+
+    manager: ModelManager = request.app["model_manager"]
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {"model_id": hf_repo, "status": "downloading", "error": None,
+                    "finished_at": None, "resumed": True}
+    _cleanup_old_jobs(jobs)
+    asyncio.get_event_loop().create_task(
+        _run_download_repo(manager, hf_repo, job_id, jobs, request.app))
+    return web.json_response({"job_id": job_id, "hf_repo": hf_repo,
+                              "status": "downloading", "resumed": True},
+                             status=202)
+
+
 async def handle_cancel_download(request: web.Request) -> web.Response:
     """POST /api/models/download-cancel -- cancel an in-progress download."""
     try:
@@ -1678,8 +1752,12 @@ async def _run_download_repo(manager: "ModelManager", hf_repo: str, job_id: str,
             terminal["downloaded_bytes"] = total_bytes
         discard_partial = False
     except _DownloadCancelled:
-        terminal = {"status": "cancelled"}
-        discard_partial = True
+        # Paused, not cancelled, when the caller asked to keep what is there:
+        # the difference between the two is entirely what happens to the
+        # partial tree, and deleting it is what makes a cancel a cancel.
+        paused = bool(jobs.get(job_id, {}).get("_keep_partial"))
+        terminal = {"status": "paused" if paused else "cancelled"}
+        discard_partial = not paused
     except Exception as exc:
         terminal = {"status": "failed", "error": str(exc)}
         discard_partial = False
