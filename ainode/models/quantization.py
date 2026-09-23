@@ -113,6 +113,52 @@ def quantization_verdict(config: Dict[str, Any]) -> Tuple[bool, str]:
     )
 
 
+#: ``quant_algo`` values that name a vLLM quantization method, for a
+#: checkpoint whose config states the algorithm but not the method.
+#:
+#: vLLM picks its quantization backend from ``quantization_config
+#: ["quant_method"]``. A checkpoint that omits that key states what it is and
+#: not how to read it, and vLLM's answer to "I do not recognise this" is to
+#: treat the layers as unquantized — which for a mixture-of-experts means
+#: materialising every expert at full width. Observed on the cluster with
+#: sparkarena/Minimax-M3-v0-NVFP4-REAP50, whose config carries
+#:
+#:     "quant_algo": "NVFP4", "group_size": 16, "exclude_modules": [...]
+#:
+#: and no ``quant_method`` at all. The engine said so in its own log and
+#: nobody was reading it:
+#:
+#:     Using FlashInfer CUTLASS Unquantized MoE backend
+#:
+#: and the node filled up at any context length, with or without expert
+#: parallelism, because a 129 GB checkpoint read as unquantized is not a
+#: 129 GB checkpoint any more.
+QUANT_ALGO_METHODS = {
+    "nvfp4": "modelopt_fp4",
+    "fp8": "modelopt",
+    "mxfp8": "modelopt_mxfp8",
+    "w4a8_awq": "modelopt",
+}
+
+
+def missing_quant_method(config: Dict[str, Any]) -> str:
+    """The vLLM ``--quantization`` value this checkpoint fails to ask for.
+
+    "" when the config names its method properly, when there is no
+    quantization, or when the algorithm is one we have no mapping for —
+    guessing a backend is worse than letting the engine decide.
+    """
+    if not isinstance(config, dict):
+        return ""
+    quant = config.get("quantization_config")
+    if not isinstance(quant, dict):
+        return ""
+    if str(quant.get("quant_method") or "").strip():
+        return ""
+    algo = str(quant.get("quant_algo") or "").strip().lower()
+    return QUANT_ALGO_METHODS.get(algo, "")
+
+
 #: Hugging Face repo names that say "mixed-bit" out loud. Only used to say so
 #: earlier, in the download list, where there is no config.json to read yet.
 _MIXED_NAME = re.compile(r"(\d+\.\d+)\s*bit", re.IGNORECASE)

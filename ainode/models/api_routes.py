@@ -1083,6 +1083,18 @@ async def handle_model_load(request: web.Request) -> web.Response:
     overrides = apply_detected_backend(request.app, model, overrides)
     overrides = apply_tool_calling(model, overrides, str_field(body, "tool_calling"))
 
+    # What the checkpoint needs regardless of who is launching it. On one
+    # node that is the quantization method its config states but does not
+    # name; the distributed path adds expert parallelism on top.
+    from ainode.engine.serve_args import merge_vllm_args
+    from ainode.models.architecture import architecture_args
+
+    needed = architecture_args(request.app, model, len(wanted_nodes or []) or 1)
+    if needed:
+        overrides["extra_vllm_args"] = merge_vllm_args(
+            needed, overrides.get("extra_vllm_args"))
+        logger.info("%s: %s — stated by the checkpoint", model, " ".join(needed))
+
     # Decide: single-node or distributed?
     sharding_config = None
     if cluster is not None:
