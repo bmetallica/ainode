@@ -380,6 +380,13 @@ def local_launch_specs(app) -> List[dict]:
     for instance in (manager.instances() if manager is not None else []):
         inst_config = _instance_config(instance)
         record = instance.record
+        if not str(getattr(record, "model", "") or "").strip():
+            # Every peer path here guards this and the local one did not. An
+            # entry with no model cannot be restored — ProfileEntry refuses
+            # it — so capturing one turns "save what is running" into an
+            # error about a field the operator never filled in.
+            logger.warning("skipping an instance with no model in the capture")
+            continue
         peers = list(getattr(record, "peer_ips", []) or [])
         node_ids = [own_id] + [_peer_node_id(app, ip) or ip for ip in peers]
         specs.append({

@@ -244,6 +244,7 @@ class EugrBackend(EngineBackend):
         env = self._launcher_env()
 
         logger.info("Starting solo vLLM via the launcher: %s", " ".join(cmd))
+        self._log_serve_command(launch_script)
         self._process = subprocess.Popen(
             cmd,
             env=env,
@@ -1389,6 +1390,30 @@ class EugrBackend(EngineBackend):
         # ENGINE_MODELS_DIR there, whatever it is called on the host.
         return f"{ENGINE_MODELS_DIR}/{model.replace('/', '--')}", model
 
+    def _log_serve_command(self, launch_script: Path) -> None:
+        """Record the `vllm serve` line this launch was built from.
+
+        The engine's traceback says what went wrong with an argument; nothing
+        said what the arguments were. An empty repo id, a flag with no value,
+        a speculative config that lost its quoting — all of them are obvious
+        next to the command and invisible without it.
+        """
+        try:
+            text = launch_script.read_text()
+        except OSError:
+            return
+        lines = [ln.strip() for ln in text.splitlines()]
+        start = next((i for i, ln in enumerate(lines)
+                      if ln.startswith("vllm serve")), None)
+        if start is None:
+            return
+        command = []
+        for line in lines[start:]:
+            command.append(line.rstrip("\\").strip())
+            if not line.endswith("\\"):
+                break
+        logger.info("serve command: %s", " ".join(c for c in command if c))
+
     def _write_launch_script(self, plan: ParallelPlan, solo: bool = False) -> Path:
         """Emit a ``vllm serve`` script for eugr to execute inside the container.
 
@@ -1451,6 +1476,23 @@ class EugrBackend(EngineBackend):
         if getattr(self.config, "trust_remote_code", False) and wanted("--trust-remote-code"):
             extra += "    --trust-remote-code \\\n"
         serve_target, implied_name = self._serve_target_and_name()
+        if not serve_target:
+            # `vllm serve ''` reaches Hugging Face with an empty repo id and
+            # comes back as a validation error about a name that is not a
+            # name — which says nothing about the instance that has no model.
+            # Reported from a profile restore:
+            #
+            #   HFValidationError: Repo id must use alphanumeric chars ... : ''
+            #
+            # Whatever produced an instance with no model, the launch is not
+            # the place to discover it and the engine is not the place to
+            # explain it.
+            raise EugrBackendError(
+                "This instance has no model to serve: its config carries an "
+                "empty model name, so there is nothing to hand `vllm serve`. "
+                "A launch reaches here with a model or it does not reach here "
+                "at all — if this came from a profile, the entry it was "
+                "restored from is the thing to look at.")
         names = [str(n) for n in (getattr(self.config, "served_model_name", None) or [])
                  if str(n).strip()]
         if not names and implied_name:
