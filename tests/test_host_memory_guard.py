@@ -117,21 +117,71 @@ class TestRefusingALaunch:
 
 
 class TestKillingTheNewest:
-    def test_one_dip_is_not_a_verdict(self, tmp_path):
-        # The cache is allocated in one go and the kernel reclaims right
-        # behind it; a momentary reading below the line is normal.
+    def test_below_the_critical_line_it_acts_at_once(self, tmp_path):
+        # It used to wait for a second sample. On this hardware the second
+        # sample is taken on a node that is already gone: 4 GB of headroom is
+        # a fraction of a second at memory bandwidth.
         guard = _guard(tmp_path, available_mb=1000, critical_gb=4, warn_gb=8)
-        guard._tick()
-        assert guard._app["instances"].instances()[-1].backend.killed is False
         guard._tick()
         assert guard._app["instances"].instances()[-1].backend.killed is True
 
+    def test_the_warning_band_alone_is_not_a_verdict(self, tmp_path):
+        # Below warn, above critical, and steady: a node serving two models
+        # sits here legitimately.
+        guard = _guard(tmp_path, available_mb=6000, critical_gb=4, warn_gb=8)
+        guard._tick()
+        guard._tick()
+        assert guard._app["instances"].instances()[-1].backend.killed is False
+
     def test_it_recovers_without_acting(self, tmp_path):
-        guard = _guard(tmp_path, available_mb=1000, critical_gb=4)
+        # In and out of the warning band at a survivable rate: the page cache
+        # being reclaimed behind a load looks like this.
+        ticks = iter([0.0, 1.0, 2.0, 3.0, 4.0])
+        guard = _guard(tmp_path, available_mb=6000, critical_gb=4, warn_gb=8,
+                       clock=lambda: next(ticks))
+        guard._tick()
+        guard._meminfo = _meminfo(tmp_path, available_mb=9000)
+        guard._tick()
+        guard._meminfo = _meminfo(tmp_path, available_mb=6500)
+        guard._tick()
+        assert guard._app["instances"].instances()[-1].backend.killed is False
+
+
+class TestFallingFast:
+    """The line that was never observed being crossed.
+
+    An engine sizing its KV cache goes from "plenty" to "none" between two
+    samples. Waiting for a reading below the critical line means waiting for
+    a reading that is never taken — the node stops answering first.
+    """
+
+    def _clock(self, values):
+        it = iter(values)
+        return lambda: next(it)
+
+    def test_a_steep_drop_inside_the_warning_band_acts(self, tmp_path):
+        guard = _guard(tmp_path, available_mb=60000, critical_gb=4, warn_gb=8,
+                       clock=self._clock([0.0, 1.0, 2.0, 3.0]))
+        guard._tick()                                    # 60 GB, calm
+        guard._meminfo = _meminfo(tmp_path, available_mb=7000)
+        guard._tick()                                    # 53 GB gone in a second
+        assert guard._app["instances"].instances()[-1].backend.killed is True
+
+    def test_a_steep_drop_that_lands_safely_does_not(self, tmp_path):
+        # The same slope, but still far above the warning line: a model
+        # finished loading, which is what that looks like.
+        guard = _guard(tmp_path, available_mb=120000, critical_gb=4, warn_gb=8,
+                       clock=self._clock([0.0, 1.0, 2.0, 3.0]))
         guard._tick()
         guard._meminfo = _meminfo(tmp_path, available_mb=60000)
         guard._tick()
-        guard._meminfo = _meminfo(tmp_path, available_mb=1000)
+        assert guard._app["instances"].instances()[-1].backend.killed is False
+
+    def test_a_slow_slide_into_the_band_does_not(self, tmp_path):
+        guard = _guard(tmp_path, available_mb=9000, critical_gb=4, warn_gb=8,
+                       clock=self._clock([0.0, 1.0, 2.0, 3.0]))
+        guard._tick()
+        guard._meminfo = _meminfo(tmp_path, available_mb=7000)
         guard._tick()
         assert guard._app["instances"].instances()[-1].backend.killed is False
 
@@ -300,3 +350,81 @@ class TestTheSettings:
         app = create_app(config=NodeConfig(node_id="head"), engine=None)
         paths = {getattr(r.resource, "canonical", "") for r in app.router.routes()}
         assert "/api/safety/memory" in paths
+
+
+class TestTheMemberNodeCanDefendItself:
+    """The half of a distributed launch that had no defence at all.
+
+    A member's engine container is started over SSH by the head's launcher.
+    AINode on that node never creates an instance record, so the guard there
+    found nothing to stop and logged that it had found nothing — while the
+    node it was watching filled up and died. Reported from the cluster:
+
+        wenn ich z.b. minimax3 auf node 1 und node2 starte läuft der speicher
+        sofort auf 122gb voll und die sparks schmieren komplett ab
+    """
+
+    def test_the_names_match_the_backends(self):
+        from ainode.engine.backends.diffusers import DiffusersBackend
+        from ainode.engine.backends.eugr import EugrBackend
+        from ainode.safety.memory_guard import ENGINE_CONTAINERS
+
+        assert EugrBackend.CONTAINER_BASENAME in ENGINE_CONTAINERS
+        assert DiffusersBackend.CONTAINER_BASENAME in ENGINE_CONTAINERS
+
+    def _guard_with_docker(self, tmp_path, monkeypatch, running):
+        calls = []
+
+        class _Done:
+            def __init__(self, stdout=""):
+                self.stdout = stdout
+                self.returncode = 0
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if cmd[:2] == ["docker", "ps"]:
+                return _Done("\n".join(running))
+            return _Done()
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        guard = MemoryGuard({"instances": None},
+                            meminfo=_meminfo(tmp_path, available_mb=900),
+                            critical_gb=4, warn_gb=8, poll_seconds=0.01)
+        return guard, calls
+
+    def test_it_kills_the_engine_container(self, tmp_path, monkeypatch):
+        guard, calls = self._guard_with_docker(
+            tmp_path, monkeypatch, ["vllm_node", "ainode", "some-database"])
+        assert guard.act(guard.read()) == "vllm_node"
+        assert ["docker", "kill", "vllm_node"] in calls
+
+    def test_it_does_not_kill_ainode_itself(self, tmp_path, monkeypatch):
+        # That would stop the guard along with everything else, and systemd
+        # would bring the node back up into the same launch.
+        guard, calls = self._guard_with_docker(
+            tmp_path, monkeypatch, ["ainode", "ainode-db"])
+        assert guard.act(guard.read()) is None
+        assert not any(c[:2] == ["docker", "kill"] for c in calls)
+
+    def test_a_stacked_instances_container_counts(self, tmp_path, monkeypatch):
+        guard, calls = self._guard_with_docker(
+            tmp_path, monkeypatch, ["vllm_node-8001", "ainode_image-8002"])
+        stopped = guard.act(guard.read())
+        assert "vllm_node-8001" in stopped and "ainode_image-8002" in stopped
+
+    def test_the_stop_is_recorded_like_any_other(self, tmp_path, monkeypatch):
+        guard, _ = self._guard_with_docker(tmp_path, monkeypatch, ["vllm_node"])
+        guard.act(guard.read())
+        assert guard.stops == 1
+        assert "member of a launch the head started" in guard.read().actions[-1]["reason"]
+
+    def test_an_instance_record_still_wins(self, tmp_path, monkeypatch):
+        # On the head there IS a record, and stopping the right instance beats
+        # killing every engine container on the node.
+        calls = []
+        monkeypatch.setattr("subprocess.run",
+                            lambda cmd, **kw: calls.append(cmd))
+        guard = _guard(tmp_path, available_mb=900, critical_gb=4)
+        guard.act(guard.read())
+        assert guard._app["instances"].instances()[-1].backend.killed is True
+        assert calls == []

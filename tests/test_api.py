@@ -346,9 +346,11 @@ async def test_cluster_load_local_dispatch_passes_gmu(client, app, monkeypatch):
 
     calls = {}
 
-    def fake_append(app, model, gmu=None, *, overrides=None, persist=True):
+    def fake_append(app, model, gmu=None, *, overrides=None, persist=True,
+                    force=False):
         calls["model"] = model
         calls["gmu"] = gmu
+        calls["force"] = force
         return {"ok": True, "model": model, "instance_id": "n:x",
                 "api_port": 8000, "stacked": False}
 

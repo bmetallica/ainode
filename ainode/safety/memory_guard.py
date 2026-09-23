@@ -39,14 +39,31 @@ __all__ = ["MemoryGuard", "MemoryReading", "host_available_mb", "PRESETS"]
 
 MEMINFO = Path("/proc/meminfo")
 
-#: How often to look. Two seconds is fast enough to catch a cache allocation
-#: going wrong and slow enough to cost nothing.
-POLL_SECONDS = 2.0
+#: Engine container names, as the backends create them. A member node has no
+#: instance record to stop, so these are what it has to work with. Kept in
+#: step with EugrBackend.CONTAINER_BASENAME and DiffusersBackend's; a test
+#: asserts they still match.
+ENGINE_CONTAINERS = ("vllm_node", "ainode_image")
+
+#: How often to look. One second, because the thing being watched moves at
+#: memory bandwidth: a 100 GB KV allocation on a 273 GB/s machine crosses the
+#: whole reserve in well under a second, and two seconds of grace was two
+#: seconds spent after the node was already unrecoverable.
+POLL_SECONDS = 1.0
 
 #: A single dip is not a verdict. The KV cache is allocated in one go, and the
 #: kernel reclaims page cache right behind it, so a momentary reading below the
-#: line is normal. Two in a row is a trend.
-BREACHES_BEFORE_ACTING = 2
+#: WARNING line is normal. Below the CRITICAL line it is not: acting on the
+#: second sample meant acting a second late, on a node that had four
+#: gigabytes left when the first one was taken.
+BREACHES_BEFORE_ACTING = 1
+
+#: Falling this fast, in MB per second, while already inside the warning band
+#: is treated as a breach in its own right. Waiting for the critical line
+#: there is waiting for a number that will be passed between two samples: an
+#: engine sizing its cache goes from "plenty" to "none" without ever being
+#: observed in between, which is exactly how two nodes were lost.
+FAST_DROP_MB_PER_SECOND = 4096.0
 
 #: Named starting points. The Spark numbers are for a 128 GB unified-memory
 #: node where the GPU allocation and the operating system share one pool; a
@@ -147,6 +164,8 @@ class MemoryGuard:
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._breaches = 0
+        #: (monotonic, available_mb) of the previous sample, for the slope.
+        self._previous: Optional[tuple] = None
         self._actions: List[dict] = []
         self._last = MemoryReading(warn_mb=self.warn_mb,
                                    critical_mb=self.critical_mb)
@@ -252,9 +271,21 @@ class MemoryGuard:
 
     def _tick(self) -> None:
         reading = self.read()
-        if not reading.readable or not reading.critical:
+        if not reading.readable:
+            self._breaches = 0
+            self._previous = None
+            return
+
+        falling = self._falling_fast(reading)
+        if not reading.critical and not falling:
             self._breaches = 0
             return
+        if falling and not reading.critical:
+            logger.error("host memory at %.0f MB and falling faster than "
+                         "%.0f MB/s — acting inside the warning band rather "
+                         "than waiting for %.0f MB, which would be crossed "
+                         "between two samples", reading.available_mb,
+                         FAST_DROP_MB_PER_SECOND, self.critical_mb)
         self._breaches += 1
         if self._breaches < BREACHES_BEFORE_ACTING:
             logger.warning("host memory at %.0f MB, below the %.0f MB line "
@@ -264,10 +295,36 @@ class MemoryGuard:
         self._breaches = 0
         self.act(reading)
 
+    def _falling_fast(self, reading: MemoryReading) -> bool:
+        """Inside the warning band and dropping faster than the reserve lasts."""
+        now = self._clock()
+        previous, self._previous = self._previous, (now, reading.available_mb)
+        if previous is None or not reading.blocking:
+            return False
+        elapsed = now - previous[0]
+        if elapsed <= 0:
+            return False
+        return (previous[1] - reading.available_mb) / elapsed > FAST_DROP_MB_PER_SECOND
+
     def act(self, reading: MemoryReading) -> Optional[str]:
         """Stop the newest engine. Returns the model stopped, or None."""
         instance = self._newest_instance()
         if instance is None:
+            # A MEMBER node has no instance record for a distributed launch:
+            # its engine container is started over SSH by the head's launcher,
+            # and AINode here never created one. That is the node this guard
+            # could do nothing for — and in a two-node launch it is half the
+            # cluster. The container is right there on the socket.
+            stopped = self._kill_engine_containers()
+            if stopped:
+                self._record(reading, ", ".join(stopped), (
+                    f"Stopped by the host memory guard: only "
+                    f"{reading.available_mb:.0f} MB of host memory were left "
+                    f"(limit {reading.critical_mb:.0f} MB). No instance is "
+                    f"recorded here — this node is a member of a launch the "
+                    f"head started — so the engine container(s) were killed "
+                    f"directly: {', '.join(stopped)}."))
+                return ", ".join(stopped)
             logger.error("host memory at %.0f MB with no instance to stop",
                          reading.available_mb)
             return None
@@ -298,6 +355,10 @@ class MemoryGuard:
                 record.status = "failed"
             except Exception:
                 logger.debug("could not mark the record", exc_info=True)
+        self._record(reading, model, reason)
+        return model or None
+
+    def _record(self, reading: MemoryReading, model: str, reason: str) -> None:
         action = {
             "at": time.time(), "model": model, "reason": reason,
             "available_mb": round(reading.available_mb),
@@ -312,7 +373,40 @@ class MemoryGuard:
             except Exception:
                 logger.debug("the memory guard's action callback failed",
                              exc_info=True)
-        return model or None
+
+    def _kill_engine_containers(self) -> List[str]:
+        """``docker kill`` every engine container this node is running.
+
+        Names, not images: the launcher names them, and an engine image can be
+        anything an operator points the node at. Nothing else on the socket is
+        touched — AINode's own container is not in this list, and killing it
+        would take the guard with it.
+        """
+        import subprocess
+
+        names: List[str] = []
+        try:
+            listing = subprocess.run(
+                ["docker", "ps", "--format", "{{.Names}}"],
+                capture_output=True, text=True, timeout=10)
+        except Exception:
+            logger.exception("could not list containers")
+            return []
+        for name in (listing.stdout or "").split():
+            if any(name == base or name.startswith(f"{base}-")
+                   for base in ENGINE_CONTAINERS):
+                names.append(name)
+        killed = []
+        for name in names:
+            try:
+                # kill, not stop: this node has no time for a graceful exit.
+                subprocess.run(["docker", "kill", name], capture_output=True,
+                               text=True, timeout=15)
+                killed.append(name)
+                logger.error("host memory guard killed container %s", name)
+            except Exception:
+                logger.exception("could not kill %s", name)
+        return killed
 
     def _newest_instance(self):
         manager = self._app.get("instances") if self._app is not None else None

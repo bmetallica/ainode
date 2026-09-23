@@ -36,6 +36,10 @@ def check_admission(app, model: str, *, node_ids=None, strategy: str = "auto",
     if force:
         return ""
 
+    unreadable = _quantization_says(app, model)
+    if unreadable:
+        return unreadable
+
     guard = app.get("memory_guard")
     if guard is not None:
         try:
@@ -48,6 +52,41 @@ def check_admission(app, model: str, *, node_ids=None, strategy: str = "auto",
 
     return _planner_says(app, model, node_ids=node_ids, strategy=strategy,
                          max_model_len=max_model_len)
+
+
+def _quantization_says(app, model: str) -> str:
+    """Refuse a checkpoint this engine provably cannot parse.
+
+    Before the memory questions, because it is not one: there is no amount of
+    free memory that makes an unreadable quantization_config readable, and the
+    failure it prevents costs two nodes and several minutes before vLLM gets
+    as far as parsing it.
+
+    This is the one refusal here that `force` still overrides — the operator
+    may have put the plugin in the engine image since, and this file cannot
+    see inside it.
+    """
+    manager = app.get("model_manager")
+    if manager is None:
+        return ""
+    try:
+        from ainode.models.quantization import quantization_verdict
+        from ainode.planner.facts import read_config
+
+        directories = manager.model_dirs_for_repo(model)
+    except Exception:
+        logger.debug("could not locate %s on disk", model, exc_info=True)
+        return ""
+
+    for directory in directories:
+        config = read_config(directory)
+        if not config:
+            continue
+        servable, reason = quantization_verdict(config)
+        if not servable:
+            return reason
+        return ""
+    return ""
 
 
 def _planner_says(app, model: str, *, node_ids=None, strategy: str = "auto",
