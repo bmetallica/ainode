@@ -44,7 +44,7 @@ New packages, none of which exist upstream:
 | `ainode/engine/distribute.py`, `acquire.py`, `mirror.py` | Weights and engine images move head → peers over the fabric; a sub-node fetches from a neighbour rather than from the internet | Measured: 80 MB/s from a peer against 1.1 MB/s from Hugging Face |
 | `ainode/engine/load_phase.py` | Reads the engine's own output into a coarse phase, a detail line, a failure cause **and a per-phase clock** | A five-minute load showed "starting · 8%" throughout, which is indistinguishable from a hang |
 | `ainode/engine/serve_args.py` | Merges vLLM flags per flag rather than wholesale | Typing one advanced field used to drop the rest of a model's recipe |
-| `ainode/profiles/` | "What this node should be serving", captured from what is running, applied to converge, one of them the default at boot | Bringing three nodes back after a restart was a dozen manual steps |
+| `ainode/profiles/` | "What the cluster should be serving", captured from what is running, applied to converge — each entry on the node it names, and a copy running anywhere else stopped — one of them the default at boot | Bringing three nodes back after a restart was a dozen manual steps |
 | `ainode/placement/` | One model, one node set, remembered | A cluster settles into an arrangement; re-picking it on every relaunch is re-configuring rather than running |
 | `ainode/planner/` | Reads the checkpoint's own `config.json` and the nodes' free memory and computes: does it fit, which axis, what `max-model-len`, how much KV, how many concurrent users — and shows its working | The alternative was a person with a calculator, once per model |
 | `ainode/safety/` | Host memory guard and the admission gate in front of both launch paths | Two nodes were lost to a launch that did not fit |
@@ -106,7 +106,7 @@ The large ones, by how much:
 orchestrator image, the image-generation engine, the registry cache, the
 cluster updater and a diagnostic.
 
-Tests: **88 new files**, 13 upstream files extended, 2667 tests. Two of them
+Tests: **88 new files**, 13 upstream files extended, 2683 tests. Two of them
 hold the documentation to the code rather than to good intentions:
 `test_fork_documentation.py` checks that every module and link this file and
 the README name exists and that every feature row claiming an endpoint matches

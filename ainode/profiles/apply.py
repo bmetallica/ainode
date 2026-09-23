@@ -140,6 +140,22 @@ async def _start_llm_entry(app, entry: ProfileEntry) -> ApplyResult:
     """
     body = entry.launch_body()
 
+    # Somewhere else. A solo entry carrying one node id is a peer's model, and
+    # append_solo_instance below would have started it HERE — reading the
+    # placement only for embeddings, while an LLM entry captured from node 3
+    # came back on the head. The route that already knows how to reach another
+    # node does it.
+    target = _entry_target_node(app, entry)
+    if target and not entry.is_distributed:
+        from ainode.api.server import handle_cluster_load
+
+        response = await handle_cluster_load(_AppRequest(app, {
+            **body, "node_id": target, "model": entry.model}))
+        if response.status == 200:
+            return ApplyResult(entry.model, "launched", True, node_id=target)
+        return ApplyResult(entry.model, "launch_failed", False,
+                           _response_error(response), node_id=target)
+
     if entry.is_distributed:
         from ainode.engine.sharding_routes import handle_sharding_launch
 
@@ -189,6 +205,28 @@ def _entry_target_node(app, entry: ProfileEntry) -> str:
         return ""
     own = str(getattr(app.get("config"), "node_id", "") or "")
     return "" if wanted[0] == own else wanted[0]
+
+
+def _entry_runs_here(app, entry: ProfileEntry) -> bool:
+    """Does this entry describe something that should run on THIS node?
+
+    An entry with no placement runs wherever the profile is applied. One that
+    names nodes runs on those — and a distributed entry names several, this
+    node among them.
+
+    This is the question step 1 has to ask before it decides what to stop. It
+    used to ask only "is this model in the profile", which is a different
+    question: an embedding model placed on node 3 is in the profile, so a copy
+    running here was never stopped — and then step 2 dutifully started it on
+    node 3 as well. The model ran in two places, and since the local copy
+    stayed in this node's manifest it came back after every restart, without
+    anyone asking for it.
+    """
+    wanted = [n for n in (entry.node_ids or []) if n]
+    if not wanted:
+        return True
+    own = str(getattr(app.get("config"), "node_id", "") or "")
+    return own in wanted
 
 
 async def _start_embedding_entry(app, entry: ProfileEntry) -> ApplyResult:
@@ -244,8 +282,11 @@ async def apply_profile(app, profile: Profile, *, wait: bool = True) -> dict:
 
     llm_entries = [e for e in profile.entries if e.kind != KIND_EMBEDDING]
     emb_entries = [e for e in profile.entries if e.kind == KIND_EMBEDDING]
-    wanted_llm = {e.model for e in llm_entries}
-    wanted_emb = {e.model for e in emb_entries}
+    # What should be running HERE — not what is in the profile. The two differ
+    # exactly when an entry names another node, which is the case this fork
+    # exists for.
+    wanted_llm = {e.model for e in llm_entries if _entry_runs_here(app, e)}
+    wanted_emb = {e.model for e in emb_entries if _entry_runs_here(app, e)}
 
     results: List[ApplyResult] = []
     stopped: List[str] = []

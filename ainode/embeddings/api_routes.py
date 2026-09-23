@@ -96,6 +96,76 @@ def peer_with_model(app, model_id: str):
     return None
 
 
+def assigned_node(app, model_id: str):
+    """(node_id, host, web_port) of the node a profile places this model on.
+
+    None when no profile names one, or when it names this one.
+
+    Without this, a request for a model the profile puts on node 3 that node 3
+    has not loaded yet fell through to the local manager, which loads whatever
+    it is asked for. The head then served it — and kept serving it, in
+    addition to node 3, for as long as the process lived. An implicit load is
+    not a placement decision, and it should not be able to make one.
+    """
+    store = app.get("profiles")
+    if store is None or not model_id:
+        return None
+    try:
+        profile = store.default_profile()
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("could not read the default profile", exc_info=True)
+        return None
+    if profile is None:
+        return None
+    own = str(getattr(app.get("config"), "node_id", "") or "")
+    from ainode.profiles.store import KIND_EMBEDDING
+
+    wanted = ""
+    for entry in profile.entries:
+        if entry.kind != KIND_EMBEDDING or entry.model != model_id:
+            continue
+        names = [n for n in (entry.node_ids or []) if n]
+        if not names or own in names:
+            return None          # ours, or unplaced: load it here
+        wanted = names[0]
+        break
+    if not wanted:
+        return None
+    cluster = app.get("cluster_state")
+    try:
+        nodes = cluster.get_nodes() if cluster is not None else []
+    except Exception:  # pragma: no cover - defensive
+        return None
+    for node in nodes:
+        if node.node_id == wanted and (getattr(node, "fabric_ip", "") or ""):
+            return node.node_id, node.fabric_ip, node.web_port
+    return wanted, "", 0
+
+
+async def _load_there(request: web.Request, node_id: str, model_id: str) -> str:
+    """Ask another node to load an embedding model. "" on success."""
+    from ainode.api.server import handle_cluster_embedding_load
+
+    class _Body:
+        def __init__(self, app, payload):
+            self.app = app
+            self._payload = payload
+            self.can_read_body = True
+
+        async def json(self):
+            return self._payload
+
+    response = await handle_cluster_embedding_load(
+        _Body(request.app, {"node_id": node_id, "model": model_id}))
+    if response.status == 200:
+        return ""
+    try:
+        import json as _json
+        return str(_json.loads(response.body).get("error") or response.body)
+    except Exception:
+        return f"HTTP {response.status}"
+
+
 async def _forward_embeddings(request: web.Request, body: dict, target) -> web.Response:
     node_id, host, port = target
     url = f"http://{host}:{port}/v1/embeddings"
@@ -155,6 +225,23 @@ async def handle_v1_embeddings(request: web.Request) -> web.Response:
         target = peer_with_model(request.app, model_id)
         if target is not None:
             return await _forward_embeddings(request, body, target)
+        # Nobody has it loaded — but the profile may say where it belongs. Wake
+        # it there rather than here: loading it here would place a model on
+        # this node that the operator placed on another, and it would stay.
+        placed = assigned_node(request.app, model_id)
+        if placed is not None:
+            node_id, host, _port = placed
+            if not host:
+                return _error(
+                    f"{model_id} is placed on node '{node_id}', which is not "
+                    f"in the cluster right now. Loading it here would put it "
+                    f"on two nodes.", code="server_error", status=503)
+            failure = await _load_there(request, node_id, model_id)
+            if failure:
+                return _error(
+                    f"{model_id} is placed on node '{node_id}', which could "
+                    f"not load it: {failure}", code="server_error", status=503)
+            return await _forward_embeddings(request, body, placed)
 
     try:
         vectors = await manager.aembed(model_id, texts)

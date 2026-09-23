@@ -25,8 +25,11 @@ def _cluster(nodes):
 
 
 class _Req:
-    def __init__(self, app):
+    def __init__(self, app, query=None):
         self.app = app
+        # /v1/models reads it to answer "which kinds did you ask for" — a chat
+        # client asks for none and gets the chat-capable ones.
+        self.query = query or {}
 
 
 def _cfg(nid, model=""):
