@@ -95,13 +95,16 @@ class TestEveryBackendAppliesIt:
 
 
 class TestTheRecipeStillCarriesBoth:
-    def test_qwen_no_longer_asks_for_a_loader_it_cannot_steer(self):
-        """Measured with all five InstantTensor variables delivered — the
-        launch banner recorded them — and the buffer unchanged at
-        2542796800 B, the same number it asks for with no settings at all.
-        An unchanged number across every configuration is a setting that is
-        not read, and the budget it is compared against is the driver's
-        figure, about a gigabyte whatever the node has free.
+    def test_qwen_no_longer_asks_for_a_loader_it_cannot_bound(self):
+        """The variables are read and none of them bounds the buffer.
+
+        With none of them the loader asks for 5086090240 B; with all five,
+        2542796800 B — exactly half, which is CONCURRENCY=1. BUFFER_SIZE is
+        not a ceiling on the total: 64 MiB in, 2.4 GB out. The budget it is
+        compared against is the driver's own figure — 825 MB to 1.08 GB
+        measured across a week, on nodes holding 28 to 116 GB free — so it
+        cannot fit, and the node's log shows every instanttensor launch
+        since 09-17 failing on the same line.
         """
         from ainode.models.registry import CURATED_CLUSTER_MODELS
 
