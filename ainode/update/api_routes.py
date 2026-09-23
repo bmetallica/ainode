@@ -68,18 +68,38 @@ async def handle_check(request: web.Request) -> web.Response:
         payload["cached"] = False
 
     runner = get_update_runner(request.app)
-    payload["can_run"] = not runner.why_not()
-    payload["why_not"] = runner.why_not()
+    payload["why_not"] = _blocked(runner, config)
+    payload["can_run"] = not payload["why_not"]
     payload["settings"] = _settings(config)
+    last = runner.last_summary()
+    if last is not None:
+        payload["last_run"] = last
     return web.json_response(payload)
 
 
+def _blocked(runner: UpdateRunner, config) -> str:
+    """Everything that would make the button fail, in the order it fails.
+
+    The dashboard and the button used to disagree: the dashboard asked only
+    whether the checkout was mounted, so it offered an update that the run
+    then refused for a missing tool. One answer, asked in one place.
+    """
+    why = runner.why_not()
+    if why:
+        return why
+    missing = runner.missing_tools(
+        nodes=list(getattr(config, "cluster_ssh_nodes", []) or []))
+    return runner.tool_message(missing) if missing else ""
+
+
 async def handle_get_settings(request: web.Request) -> web.Response:
+    runner = get_update_runner(request.app)
+    why = _blocked(runner, request.app["config"])
     return web.json_response({
         "settings": _settings(request.app["config"]),
         "built_from": built_from(),
-        "can_run": not get_update_runner(request.app).why_not(),
-        "why_not": get_update_runner(request.app).why_not(),
+        "can_run": not why,
+        "why_not": why,
         "container_source_dir": CONTAINER_SOURCE_DIR,
     })
 
@@ -158,4 +178,16 @@ async def handle_run(request: web.Request) -> web.Response:
 
 
 async def handle_status(request: web.Request) -> web.Response:
-    return web.json_response(get_update_runner(request.app).job)
+    """GET /api/update/status — the run in progress, or the last one.
+
+    ``restored: true`` marks a result read back from disk after the update
+    restarted this container. Without it the UI would show an idle updater
+    seconds after a successful update, which reads as "nothing happened".
+    """
+    runner = get_update_runner(request.app)
+    payload = dict(runner.job)
+    missing = runner.missing_tools(nodes=list(
+        getattr(request.app["config"], "cluster_ssh_nodes", []) or []))
+    if missing:
+        payload["missing_tools"] = missing
+    return web.json_response(payload)

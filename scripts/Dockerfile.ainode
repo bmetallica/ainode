@@ -47,10 +47,16 @@ ENV AINODE_HOME=/root/.ainode \
 #             probes). iputils-ping: MTU + reachability probes.
 # curl, jq, ca-certificates, gnupg: preflight/doctor HTTP checks, token
 #             validation against registries, apt key trust for docker-ce.
+# git: this fork deploys from a checkout, and the UI's update button runs
+#             `git pull` plus scripts/update-cluster.sh against the mounted
+#             repository. Without it the button fails with
+#             "No such file or directory: 'git'" — and an image without it
+#             cannot run the update that would give it one.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          ca-certificates \
          curl \
+         git \
          gnupg \
          iproute2 \
          iputils-ping \
@@ -82,8 +88,10 @@ RUN apt-get update \
 #
 # Pinned to the same commit scripts/build-base-image.sh builds the engine from,
 # so the launcher and the image it drives always agree. Fetched as a tarball
-# rather than cloned: no git in this image, and we want the scripts, not the
-# history. Keep EUGR_COMMIT in step with build-base-image.sh — a test asserts
+# rather than cloned: we want the scripts at one commit, not the history, and
+# this layer should not depend on git being installed above it.
+#
+# Keep EUGR_COMMIT in step with build-base-image.sh — a test asserts
 # the two are identical, because they were not: both said c026c92
 # (2026-04-13) while the engine images in service were built from a September
 # checkout, 207 commits and 644 lines of launch-cluster.sh later.

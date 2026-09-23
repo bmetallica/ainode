@@ -6909,6 +6909,21 @@ const AINode = {
       html += '<div class="plan-warn" style="white-space:pre-wrap">' +
         this.esc(data.why_not) + '</div>';
     }
+    // A successful update ends by restarting this container, so the page that
+    // watched it is gone by the time it finishes. The outcome is read back
+    // from disk and said here, or the update looks like it never ran.
+    if (state.last_run && !state.last_run.running) {
+      var lr = state.last_run;
+      var when = lr.finished_at
+        ? new Date(lr.finished_at * 1000).toLocaleString() : '';
+      var cls = lr.status === 'done' ? 'plan-notes' : 'plan-warn';
+      var text = lr.status === 'done'
+        ? 'Last update finished' + (when ? ' ' + when : '') +
+          (lr.nodes && lr.nodes.length ? ' — ' + lr.nodes.join(', ') : '') + '.'
+        : 'Last update ' + lr.status + (when ? ' ' + when : '') +
+          (lr.error ? ': ' + lr.error : '') + '.';
+      html += '<div class="' + cls + '">' + this.esc(text) + '</div>';
+    }
     html += '<div class="config-actions">' +
       '<button class="config-btn" id="upd-check">Check for updates</button>' +
       '<button class="config-btn" id="upd-run"' +
