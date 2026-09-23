@@ -40,6 +40,12 @@ ENV AINODE_HOME=/root/.ainode \
 # docker-cli: AINode spawns the engine container on the local node via
 #             /var/run/docker.sock (mounted read-write by the host unit)
 #             and over SSH to peers.
+# docker-buildx-plugin: the UI's update button builds this very image from
+#             inside this container, and this Dockerfile uses BuildKit cache
+#             mounts. buildx is a RECOMMENDED package of docker-ce-cli, which
+#             --no-install-recommends skips — so the build failed with "the
+#             --mount option requires BuildKit" on a host where the same
+#             command works, because the host has it.
 # openssh-client + sshpass: distributed launch SSHes to peers to run
 #             run_cluster.sh --worker. sshpass handles the first-time
 #             bootstrap before passwordless keys are distributed.
@@ -72,6 +78,7 @@ RUN apt-get update \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
          docker-ce-cli \
+         docker-buildx-plugin \
          docker-compose-plugin \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*

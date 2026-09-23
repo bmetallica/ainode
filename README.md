@@ -702,6 +702,11 @@ curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/inst
 `ainode service install` is not the way to do it: on the host `ainode` is a
 wrapper into the container, and the unit is written by the installer.
 
+The build also needs BuildKit, which the host has and the container did not
+until the image that carries `docker-buildx-plugin`; `build-ainode-image.sh`
+falls back to a BuildKit-free copy of the Dockerfile when the plugin is
+missing, so an older image can still build its successor.
+
 The orchestrator image carries `git` only from the release that introduced
 this feature, so an older image cannot run the update that would replace it —
 the panel says so rather than failing at `git`. Bootstrap it once from the
