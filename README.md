@@ -97,7 +97,9 @@ self-downloaded. And a checkpoint that states `quant_algo` without
 refused with the reason and a one-key repair offered, rather than being loaded
 as if it were not quantized at all and filling the node with experts at full
 width. (A `--quantization` flag cannot fix that one: vLLM derives the method
-from the config and rejects an argument that disagrees with it.)
+from the config and rejects an argument that disagrees with it.) The repair
+runs on every node that holds the weights, because every rank reads its own
+copy.
 
 **Not taking the node down** — on GB10 the GPU's memory *is* the host's
 memory, so an engine that over-allocates does not get a CUDA error; it starves

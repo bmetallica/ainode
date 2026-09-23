@@ -1576,15 +1576,65 @@ async def handle_repair_quantization(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": f"{model} is not on this node's disk"}, status=404)
 
+    peers = _peers_with(request.app, model)
     for directory in directories:
         changed, message = repair_quant_method(directory)
         if changed:
             logger.info("%s: %s", model, message)
             _forget_size(manager, directory)
+            # Every rank reads its own copy of the checkpoint. The weights
+            # are rsynced to the peers, so their config.json is the
+            # unrepaired one, and a distributed launch would fail on node 2
+            # for the reason that was just fixed on node 1.
+            also = await _repair_on_peers(request.app, model, peers)
             return web.json_response({"ok": True, "model": model,
-                                      "changed": True, "detail": message})
+                                      "changed": True, "detail": message,
+                                      "peers": also})
     return web.json_response({"ok": True, "model": model, "changed": False,
                               "detail": message})
+
+
+def _peers_with(app, model: str) -> list:
+    """Peers that advertise this model on disk. [] when none or unknown."""
+    cluster = app.get("cluster_state")
+    own = str(getattr(app.get("config"), "node_id", "") or "")
+    out = []
+    try:
+        members = list(cluster.members()) if cluster is not None else []
+    except Exception:
+        return []
+    for node in members:
+        if node.node_id == own or not (getattr(node, "fabric_ip", "") or ""):
+            continue
+        status = node.status.value if hasattr(node.status, "value") else str(node.status)
+        if status in ("online", "serving", "member-ready"):
+            out.append(node)
+    return out
+
+
+async def _repair_on_peers(app, model: str, peers) -> list:
+    """Ask each peer to repair its own copy. Best effort, reported per node."""
+    session = app.get("client_session")
+    results = []
+    for node in peers:
+        entry = {"node_id": node.node_id, "changed": False, "detail": ""}
+        if session is None:
+            entry["detail"] = "no session"
+            results.append(entry)
+            continue
+        url = (f"http://{node.fabric_ip}:{getattr(node, 'web_port', 3000)}"
+               f"/api/models/repair-quantization")
+        try:
+            async with session.post(
+                    url, json={"model": model},
+                    timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                data = await resp.json(content_type=None)
+                entry["changed"] = bool(data.get("changed"))
+                entry["detail"] = str(data.get("detail") or data.get("error") or "")
+        except Exception as exc:
+            entry["detail"] = f"could not reach it: {exc}"
+        results.append(entry)
+    return results
 
 
 async def handle_pause_download(request: web.Request) -> web.Response:
