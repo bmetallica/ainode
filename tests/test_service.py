@@ -74,7 +74,10 @@ class TestUnitFileGeneration:
         content = systemd.generate_unit_file()
         assert "--pid=host" in content
         assert "AINODE_HOST_HOME=" in content
-        assert "HF_HUB_ENABLE_HF_TRANSFER=1" in content
+        # The accelerator's variable changed name: huggingface_hub dropped
+        # hf_transfer and the old one only produces a FutureWarning.
+        assert "HF_XET_HIGH_PERFORMANCE=1" in content
+        assert "HF_HUB_ENABLE_HF_TRANSFER=1" not in content
         assert "/.docker:/root/.docker:ro" in content
 
 
@@ -293,3 +296,40 @@ class TestSystemctlHelper:
             capture_output=True, text=True, timeout=30,
         )
         assert result.stdout == "active\n"
+
+
+class TestTheDownloadAcceleratorHasANewName:
+    """huggingface_hub dropped hf_transfer. HF_HUB_ENABLE_HF_TRANSFER now
+    only produces a FutureWarning on every start — seen on the cluster's own
+    console — and the replacement is HF_XET_HIGH_PERFORMANCE.
+
+    Not cosmetic: a download we believed was accelerated has not been for
+    however long the installed hub version has been current.
+    """
+
+    def _files(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        return {
+            "Dockerfile.ainode": (root / "scripts" / "Dockerfile.ainode").read_text(),
+            "install.sh": (root / "scripts" / "install.sh").read_text(),
+            "systemd.py": (root / "ainode" / "service" / "systemd.py").read_text(),
+        }
+
+    def test_every_place_that_set_it_uses_the_new_name(self):
+        for name, text in self._files().items():
+            assert "HF_XET_HIGH_PERFORMANCE=1" in text, name
+
+    def test_none_of_them_still_sets_the_old_one(self):
+        for name, text in self._files().items():
+            assert "HF_HUB_ENABLE_HF_TRANSFER=1" not in text, name
+
+    def test_the_engine_container_still_gets_it_explicitly_off(self):
+        # The vLLM image does not ship hf_transfer; inheriting the variable
+        # crashes its first download, whoever set it.
+        import inspect
+
+        from ainode.engine.backends.nvidia import NvidiaBackend
+
+        assert '"HF_HUB_ENABLE_HF_TRANSFER": "0"' in inspect.getsource(NvidiaBackend)

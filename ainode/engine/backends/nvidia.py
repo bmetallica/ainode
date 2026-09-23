@@ -567,7 +567,10 @@ class NvidiaBackend(EngineBackend):
           own view, so the union happens naturally in NCCL).
         * ``NCCL_IB_GID_INDEX=3`` — per Phase 1. Hardcoded because
           every DGX Spark + GX10 we've tested uses the same slot.
-        * ``HF_HUB_ENABLE_HF_TRANSFER=1`` — always on, per install-UX spec.
+        * ``HF_HUB_ENABLE_HF_TRANSFER=0`` — explicitly off: this image does
+          not ship hf_transfer, and inheriting the variable crashes its first
+          download. (The orchestrator uses HF_XET_HIGH_PERFORMANCE now; the
+          old name only warns.)
 
         The socket interface and the fabric IPs come from
         :meth:`_topology`, not straight from ``cluster_interface``: on a
@@ -610,11 +613,11 @@ class NvidiaBackend(EngineBackend):
             "NCCL_IB_SUBNET_AWARE_ROUTING": "1",
             "NCCL_IB_DISABLE": "0",
             # The vLLM image does NOT ship hf_transfer. If AINode's own
-            # container has HF_HUB_ENABLE_HF_TRANSFER=1 (our install-UX
-            # default), that env var would inherit into the vllm container via
-            # docker exec and crash vllm at first weight download. Explicitly
-            # set to "0" so the image uses the standard HF downloader. If a
-            # future image bakes hf_transfer in, flip this to "1".
+            # container sets HF_HUB_ENABLE_HF_TRANSFER, that env var inherits
+            # into the vllm container via docker exec and crashes vllm at the
+            # first weight download. Explicitly off, and kept explicitly off
+            # now that the orchestrator no longer sets it either: an engine
+            # image that picks it up from somewhere else fails the same way.
             "HF_HUB_ENABLE_HF_TRANSFER": "0",
             "HF_TOKEN": self.config.hf_token or "",
             # Attention backend. NOTE (verified 2026-06-17): this
