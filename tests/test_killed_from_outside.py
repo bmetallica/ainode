@@ -166,10 +166,16 @@ class TestTheBudgetHintNamesTheUtilization:
     def test_it_names_the_other_budget_too(self):
         # Two different numbers wear that name, and only one of them moves
         # with the utilization. Observed on an empty node: 116 GB free, a
-        # budget of 449 MB, and raising the utilization changed nothing.
+        # budget of 449 MB, and raising the utilization changed nothing —
+        # and on the same node, hours earlier, the same launch succeeding.
         hint = self._hint()
-        assert "what the driver reports free" in hint
-        assert "page cache" in hint
+        assert "the loader's own runtime query" in hint
+        assert "0.4 and 1.7 GB" in hint
+
+    def test_it_says_to_drop_the_loader_rather_than_tune_it(self):
+        # Tuning is what the first two knobs invite, and the measurements
+        # say it only changes how often the coin lands right.
+        assert "drop rather than to tune" in self._hint()
 
     def test_it_gives_a_way_to_tell_them_apart(self):
         # One experiment, stated as one: raise it once and look.

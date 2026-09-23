@@ -336,12 +336,14 @@ _INSTANTTENSOR_BUDGET_HINT = (
     "wear that name. It can be gpu-memory-utilization x the node's total "
     "memory minus the weights — 0.15 of 128 GB leaves 19 GB, and a 16 GB "
     "checkpoint takes nearly all of it — in which case raise the utilization "
-    "and leave the loader alone. Or it can be what the driver reports free, "
-    "which on this hardware moves with the page cache and has nothing to do "
-    "with the utilization at all. Tell them apart by raising the utilization "
-    "once: if the budget does not move, it is the second, and the two knobs "
-    "above are the answer. If another model is already loaded on that node, "
-    "its reservation is what left so little free."
+    "and leave the loader alone. Or it can be the loader's own runtime "
+    "query, which on this hardware lands anywhere between 0.4 and 1.7 GB "
+    "with no relation to what the machine has free: the same launch on the "
+    "same node succeeds and fails with it hours apart. Tell them apart by "
+    "raising the utilization once: if the budget does not move, it is the "
+    "second, and the loader is the thing to drop rather than to tune. If "
+    "another model is already loaded on that node, its reservation is what "
+    "left so little free."
 )
 
 # vLLM implements pipeline parallelism per architecture, and a model that does

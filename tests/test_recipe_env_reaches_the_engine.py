@@ -95,16 +95,20 @@ class TestEveryBackendAppliesIt:
 
 
 class TestTheRecipeStillCarriesBoth:
-    def test_qwen_no_longer_asks_for_a_loader_it_cannot_bound(self):
-        """The variables are read and none of them bounds the buffer.
+    def test_qwen_no_longer_asks_for_a_loader_that_is_a_coin_flip(self):
+        """Not because it cannot work — it did, repeatedly, the same day it
+        failed nineteen times.
 
-        With none of them the loader asks for 5086090240 B; with all five,
-        2542796800 B — exactly half, which is CONCURRENCY=1. BUFFER_SIZE is
-        not a ceiling on the total: 64 MiB in, 2.4 GB out. The budget it is
-        compared against is the driver's own figure — 825 MB to 1.08 GB
-        measured across a week, on nodes holding 28 to 116 GB free — so it
-        cannot fit, and the node's log shows every instanttensor launch
-        since 09-17 failing on the same line.
+        One node's log: three launches with the loader succeeded in the
+        morning, thirteen failed from 13:41, three succeeded at 15:14-15:30,
+        six failed from 19:29. Same flags, same checkpoint, same node with
+        116 GB free. What moves is the budget the loader compares against —
+        0.47 to 1.70 GB across those failures, a runtime figure bearing no
+        relation to the machine.
+
+        The variables are read (CONCURRENCY=1 halves the buffer) and none of
+        them bounds it, so it can be made to fit more often and not
+        reliably. A curated recipe is a promise that a launch works.
         """
         from ainode.models.registry import CURATED_CLUSTER_MODELS
 
