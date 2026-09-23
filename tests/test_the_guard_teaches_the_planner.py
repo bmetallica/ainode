@@ -415,3 +415,71 @@ class TestTheRecordCanBeDropped:
         app = create_app(config=NodeConfig(node_id="n1"), engine=None)
         paths = {getattr(r.resource, "canonical", "") for r in app.router.routes()}
         assert "/api/measurements/forget-stops" in paths
+
+
+class TestUnlockingFromTheUI:
+    """A command in a paragraph is not a feature.
+
+        bau das bitte ins UI ein um modelle zu entsperren
+    """
+
+    APP_JS = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
+              "static" / "js" / "app.js").read_text()
+
+    def test_the_guard_panel_lists_what_it_stopped(self):
+        assert "Stopped by the guard" in self.APP_JS
+        assert "_blockedModelsCard" in self.APP_JS
+
+    def test_each_one_has_an_unlock_button(self):
+        assert "data-unlock-model" in self.APP_JS
+        assert "unlockModel(" in self.APP_JS
+
+    def test_it_reads_the_fleet_not_just_this_node(self):
+        # The node that ran out is rarely the one you are looking at.
+        card = self.APP_JS.split("async renderConfigMemory()")[1][:900]
+        assert "/api/cluster/measurements" in card
+
+    def test_an_empty_list_explains_itself(self):
+        # Rather than an empty box that could equally mean "not loaded".
+        assert "Nothing is blocked" in self.APP_JS
+
+    def test_it_says_what_unlocking_does_not_do(self):
+        # Dropping the record changes nothing about what the launch asks for.
+        assert "it will run out again" in self.APP_JS
+
+    def test_the_model_card_carries_a_badge(self):
+        assert "blockedBadge" in self.APP_JS
+        assert "Blocked</span>" in self.APP_JS
+
+    def test_the_badge_points_at_where_to_lift_it(self):
+        badge = self.APP_JS.split("var blockedBadge")[1][:500]
+        assert "Settings → Memory Guard" in badge
+
+    def test_the_cluster_route_exists(self):
+        from ainode.api.server import create_app
+        from ainode.core.config import NodeConfig
+
+        app = create_app(config=NodeConfig(node_id="n1"), engine=None)
+        paths = {getattr(r.resource, "canonical", "") for r in app.router.routes()}
+        assert "/api/cluster/measurements/forget-stops" in paths
+
+    def test_the_dispatcher_knows_the_local_handler(self):
+        # Without this the head's own record could only be cleared by the
+        # head talking to itself over the fabric.
+        import inspect
+
+        from ainode.api import server
+
+        source = inspect.getsource(server._cluster_dispatch)
+        assert "forget-stops" in source
+        assert "handle_forget_stops" in source
+
+    def test_the_shape_matches_what_the_endpoint_returns(self):
+        # /api/cluster/measurements answers {models: {name: [per-node]}} —
+        # reading it as {nodes: [...]} would list nothing, silently.
+        import inspect
+
+        from ainode.measure import api_routes
+
+        assert '{"models": by_model}' in inspect.getsource(api_routes.handle_cluster)
+        assert "cluster.models" in self.APP_JS
