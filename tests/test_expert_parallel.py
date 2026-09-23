@@ -383,3 +383,54 @@ class TestTheUIOffersTheRepair:
     def test_it_retries_the_launch_only_when_something_changed(self):
         body = self.APP_JS.split("async offerToRepairTheConfig")[1][:1400]
         assert "return !!out.changed;" in body
+
+
+class TestEveryCopyGetsRepaired:
+    """Every rank reads its own copy.
+
+    The weights are rsynced to the peers, so their config.json is the
+    unrepaired one — a distributed launch would fail on node 2 for the reason
+    that was just fixed on node 1, which is the most annoying possible order
+    to discover this in.
+    """
+
+    def test_the_head_asks_the_peers_too(self):
+        import inspect
+
+        from ainode.models import api_routes
+
+        source = inspect.getsource(api_routes.handle_repair_quantization)
+        assert "_repair_on_peers" in source
+
+    def test_it_only_asks_nodes_that_can_answer(self):
+        import inspect
+
+        from ainode.models import api_routes
+
+        source = inspect.getsource(api_routes._peers_with)
+        assert "fabric_ip" in source
+        assert "member-ready" in source
+
+    def test_the_head_is_not_its_own_peer(self):
+        import inspect
+
+        from ainode.models import api_routes
+
+        assert "node.node_id == own" in inspect.getsource(api_routes._peers_with)
+
+    def test_a_peer_that_cannot_be_reached_is_reported_not_raised(self):
+        import inspect
+
+        from ainode.models import api_routes
+
+        source = inspect.getsource(api_routes._repair_on_peers)
+        assert "could not reach it" in source
+        assert "results.append(entry)" in source
+
+    def test_the_answer_says_what_each_node_did(self):
+        import inspect
+
+        from ainode.models import api_routes
+
+        assert '"peers": also' in inspect.getsource(
+            api_routes.handle_repair_quantization)
