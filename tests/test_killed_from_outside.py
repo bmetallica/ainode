@@ -260,3 +260,48 @@ class TestItSaysWhatTheNodeHadFree:
         phase.fail_exit(-9)
         phase.free_mb_at_failure = 300.0
         assert "0.3 GB free" in phase.failure_reason()
+
+
+class TestItDecidesTheBudgetQuestion:
+    """The hint offers two readings and an experiment to tell them apart.
+    With the node's free memory measured at the moment of failure, the
+    experiment is already over:
+
+        RuntimeError: buffer_size (2542796800 B) exceeds device memory
+        budget (1309911040 B)
+        — the node itself had 116.3 GB free when this failed
+
+    A budget of 1.2 GB on a node with 116 GB free is not a share of anything
+    the launch chose.
+    """
+
+    BUDGET = ("RuntimeError: buffer_size (2542796800 B) exceeds device "
+              "memory budget (1309911040 B)\n")
+
+    def _reason(self, free_mb, line=BUDGET):
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        phase = LoadPhaseTracker()
+        phase.reset()
+        phase.observe(line)
+        phase.fail("the launcher exited (code 1)")
+        phase.free_mb_at_failure = free_mb
+        return phase.failure_reason()
+
+    def test_an_empty_node_settles_it(self):
+        reason = self._reason(116.3 * 1024)
+        assert "NOT gpu-memory-utilization times the total" in reason
+        assert "Raising the utilization will not move it" in reason
+
+    def test_a_full_node_leaves_both_readings_open(self):
+        # There the budget really could be the share, and the answer really
+        # could be to free memory.
+        reason = self._reason(2 * 1024)
+        assert "2.0 GB free" in reason
+        assert "NOT gpu-memory-utilization" not in reason
+
+    def test_another_memory_failure_is_not_decided_for(self):
+        reason = self._reason(116.3 * 1024,
+                              "torch.OutOfMemoryError: CUDA out of memory\n")
+        assert "116.3 GB free" in reason
+        assert "NOT gpu-memory-utilization" not in reason

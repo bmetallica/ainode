@@ -421,6 +421,12 @@ def _signal_note(rc) -> str:
                              f"outside the engine stopped it.")
 
 
+#: Free memory above which "the node is full" is off the table. Eight
+#: gigabytes is the guard's own warning line on this hardware: above it
+#: nothing AINode does would have refused the launch, so a budget of about a
+#: gigabyte cannot be a share of what the machine has.
+_PLENTY_FREE_MB = 8 * 1024
+
 #: Words that make a failure a memory failure. Narrow on purpose.
 _MEMORY_WORDS = ("memory", "buffer_size", "oom", "sigkill", "allocat",
                  "kv cache", "budget")
@@ -716,6 +722,19 @@ class LoadPhaseTracker:
                              self.root_cause or ""]).lower()
         if not any(word in haystack for word in _MEMORY_WORDS):
             return ""
-        return (f"the node itself had {free / 1024:.1f} GB free when this "
+        note = (f"the node itself had {free / 1024:.1f} GB free when this "
                 f"failed, which is the figure every memory message here has "
                 f"to be read against")
+        if "device memory budget" in haystack and free >= _PLENTY_FREE_MB:
+            # The hint above offers two readings and an experiment to tell
+            # them apart. With this number in hand the experiment is already
+            # over: a budget of a gigabyte on a node with a hundred free is
+            # not a share of anything the launch chose.
+            return (
+                f"{note} — so the budget in that message is NOT "
+                f"gpu-memory-utilization times the total. On a node this "
+                f"empty it can only be the driver's own figure, which on "
+                f"unified memory bears no relation to the machine. Raising "
+                f"the utilization will not move it; the loader knobs above "
+                f"are the answer.")
+        return note
