@@ -71,6 +71,17 @@ warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 run()  { if [[ $CHECK -eq 1 ]]; then printf '   would run: %s\n' "$*"; else "$@"; fi; }
 
+# Running inside the AINode container — which is where the UI's update button
+# runs this. The docker socket and the SSH keys are mounted, so building,
+# distributing and restarting the PEERS all work exactly as on the host. Two
+# things do not: there is no sudo to prime, and no systemd to restart this
+# node with. The head's own restart becomes a docker stop of this container,
+# which the unit's Restart=always turns into a start on the new image.
+IN_CONTAINER=0
+if [[ "${AINODE_IN_CONTAINER:-}" == "1" || -f /.dockerenv ]]; then
+    IN_CONTAINER=1
+fi
+
 # Root on another node. `ssh node "sudo ..."` fails with "sudo: a terminal is
 # required" unless that node has passwordless sudo: ssh allocates no TTY for a
 # command and sudo will not read a password without one. Try the
@@ -122,9 +133,12 @@ for node in "${NODE_LIST[@]}"; do
     fi
 done
 
-if [[ $CHECK -eq 0 ]]; then
+if [[ $CHECK -eq 0 && $IN_CONTAINER -eq 0 ]]; then
     # Ask for the local password once, at the start.
     sudo -n true 2>/dev/null || { warn "this node: sudo needs a password"; sudo -v; }
+fi
+if [[ $IN_CONTAINER -eq 1 ]]; then
+    say "this node: inside the AINode container — restarting through docker, not systemd"
 fi
 if [[ ${NEEDS_PASSWORD:-0} -eq 1 ]]; then
     warn "Passwordless sudo on the peers makes this unattended:"
@@ -300,8 +314,14 @@ for node in "${NODE_LIST[@]}"; do
     remote_sudo "$node" "systemctl restart ainode" \
         || warn "${node}: restart failed — check 'journalctl -u ainode -n 50' there"
 done
-say "this node: restarting ainode"
-run sudo systemctl restart ainode
+if [[ $IN_CONTAINER -eq 0 ]]; then
+    say "this node: restarting ainode"
+    run sudo systemctl restart ainode
+else
+    # Deferred to the very end: stopping this container ends this script, so
+    # nothing after it would run — including the verification below.
+    say "this node: restart deferred to the end (it stops the container running this)"
+fi
 
 # --- 7. verify --------------------------------------------------------------
 
@@ -341,7 +361,9 @@ check_node() {
     warn "${label}: did not answer within 60s — check 'journalctl -u ainode -n 50' there"
 }
 
-check_node "this node" ""
+if [[ $IN_CONTAINER -eq 0 ]]; then
+    check_node "this node" ""
+fi
 for node in "${NODE_LIST[@]}"; do
     check_node "$node" "$node"
 done
@@ -350,4 +372,31 @@ step "Done"
 say "AINode ${VERSION} is deployed."
 if [[ -n "$REGISTRY" ]]; then
     say "Next update: the same command. Only changed layers will move."
+fi
+
+# --- 8. this node, last -----------------------------------------------------
+#
+# Only in the container, and only now: everything above still needed this
+# process alive.
+if [[ $IN_CONTAINER -eq 1 && $CHECK -eq 0 ]]; then
+    step "Restarting this node"
+    if [[ "${AINODE_UNIT_SWAPPABLE:-}" != "1" ]]; then
+        # The old unit either pins its image or does not restart on a clean
+        # exit, so stopping ourselves would drop the head rather than swap it.
+        warn "this container was not started by a swappable unit — restart the head yourself:"
+        warn "    sudo systemctl restart ainode"
+        exit 0
+    fi
+    # The unit launches whatever image.env names, and reads it at every start.
+    # Without this the build above is discarded: systemd brings back the image
+    # the node was already running, and an update that changed nothing looks
+    # exactly like one that worked.
+    HOME_DIR="${AINODE_HOME:-/root/.ainode}"
+    if [[ -d "$HOME_DIR" ]] && ! grep -qx "AINODE_IMAGE=${IMAGE}" "${HOME_DIR}/image.env" 2>/dev/null; then
+        say "pinning ${IMAGE} for the service to start"
+        printf 'AINODE_IMAGE=%s\n' "$IMAGE" > "${HOME_DIR}/image.env.tmp"
+        mv -f "${HOME_DIR}/image.env.tmp" "${HOME_DIR}/image.env"
+    fi
+    say "stopping this container; systemd starts it again on ${IMAGE}"
+    exec docker stop -t 30 ainode
 fi

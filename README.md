@@ -682,6 +682,22 @@ curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/inst
 `ainode service install` is not the way to do it: on the host `ainode` is a
 wrapper into the container, and the unit is written by the installer.
 
+The orchestrator image carries `git` only from the release that introduced
+this feature, so an older image cannot run the update that would replace it —
+the panel says so rather than failing at `git`. Bootstrap it once from the
+head's shell:
+
+```bash
+cd /opt/ainode && git pull
+scripts/update-cluster.sh --nodes Spark2,Spark3
+```
+
+From then on the button does the same thing: `git pull`, build, distribute,
+restart the peers, verify them, and restart the head last — which from inside
+the container is a `docker stop` of itself that systemd turns into a start on
+the new image. The page you started it from goes away with it, so the outcome
+is written to `~/.ainode/update-last.json` and shown when you come back.
+
 Re-running the installer never needs the registry if this node already has an
 image: when the GHCR package is private or unpublished, it keeps the image
 recorded in `~/.ainode/image.env` and only re-renders the unit. Upgrading the

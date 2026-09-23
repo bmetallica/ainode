@@ -439,3 +439,155 @@ class TestTheUI:
         # stops itself.
         block = APP_JS.split("async pollUpdateJob() {")[1]
         assert "this container stops" in block
+
+
+class TestTheToolsTheUpdateNeeds:
+    """The orchestrator image is a slim Python container. It had no `git`,
+    so the button failed with
+
+        [ainode] FAILED: [Errno 2] No such file or directory: 'git'
+
+    which says nothing about what to do — and what to do is unusual, because
+    an image without git cannot run the update that would give it one."""
+
+    def _runner(self, tmp_path, monkeypatch, *, missing=("git",)):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "scripts").mkdir()
+        (tmp_path / "scripts" / "update-cluster.sh").write_text("#!/bin/sh\n")
+        config = _Config()
+        config.source_dir = str(tmp_path)
+        monkeypatch.setattr("ainode.update.runner.shutil.which",
+                            lambda tool: None if tool in missing else f"/usr/bin/{tool}")
+        monkeypatch.setattr("ainode.update.runner._last_run_path",
+                            lambda app: tmp_path / "update-last.json")
+        return UpdateRunner({"config": config})
+
+    def test_the_image_is_checked_before_anything_runs(self, tmp_path, monkeypatch):
+        runner = self._runner(tmp_path, monkeypatch)
+        result = runner.start(nodes=["Spark2"])
+        assert result["ok"] is False
+        assert "git" in result["error"]
+
+    def test_it_says_what_the_tool_was_for(self, tmp_path, monkeypatch):
+        runner = self._runner(tmp_path, monkeypatch, missing=("ssh",))
+        assert "reach the other nodes" in runner.tool_message(["ssh"])
+
+    def test_in_a_container_it_names_the_one_time_bootstrap(self, tmp_path,
+                                                            monkeypatch):
+        monkeypatch.setenv("AINODE_IN_CONTAINER", "1")
+        runner = self._runner(tmp_path, monkeypatch)
+        message = runner.tool_message(["git"])
+        assert "update-cluster.sh" in message
+        assert "cannot run the update that would replace it" in message
+
+    def test_ssh_is_only_required_when_there_are_peers(self, tmp_path,
+                                                       monkeypatch):
+        runner = self._runner(tmp_path, monkeypatch, missing=("ssh",))
+        assert runner.missing_tools(nodes=[]) == []
+        assert runner.missing_tools(nodes=["Spark2"]) == ["ssh"]
+
+    def test_a_complete_image_is_not_blocked(self, tmp_path, monkeypatch):
+        runner = self._runner(tmp_path, monkeypatch, missing=())
+        assert runner.missing_tools(nodes=["Spark2"]) == []
+
+    def test_the_panel_asks_the_same_question_as_the_button(self, tmp_path,
+                                                            monkeypatch):
+        # They disagreed: the panel asked only about the mount, so it offered
+        # an update the run then refused.
+        from ainode.update.api_routes import _blocked
+
+        runner = self._runner(tmp_path, monkeypatch)
+        assert "git" in _blocked(runner, _Config())
+
+
+class TestTheResultSurvivesTheRestart:
+    """The last thing a successful update does is stop this container. The
+    process that reports the outcome is never the process that ran it."""
+
+    def _runner(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("ainode.update.runner._last_run_path",
+                            lambda app: tmp_path / "update-last.json")
+        return UpdateRunner({"config": _Config()})
+
+    def test_a_finished_run_is_written_to_disk(self, tmp_path, monkeypatch):
+        runner = self._runner(tmp_path, monkeypatch)
+        runner.job = {"running": True, "status": "running", "lines": ["x"],
+                      "error": "", "finished_at": 0.0, "nodes": ["Spark2"]}
+        runner._run([], False, False)          # no source dir → fails, persists
+        saved = json.loads((tmp_path / "update-last.json").read_text())
+        assert saved["status"] == "failed"
+
+    def test_the_next_process_reads_it_back(self, tmp_path, monkeypatch):
+        (tmp_path / "update-last.json").write_text(json.dumps(
+            {"status": "done", "running": True, "lines": [], "nodes": ["Spark2"],
+             "finished_at": 12.0, "error": ""}))
+        runner = self._runner(tmp_path, monkeypatch)
+        assert runner.job["status"] == "done"
+        # Whatever it said when it was killed, it is not running now.
+        assert runner.job["running"] is False
+        assert runner.job["restored"] is True
+
+    def test_nothing_on_disk_is_simply_idle(self, tmp_path, monkeypatch):
+        runner = self._runner(tmp_path, monkeypatch)
+        assert runner.job["status"] == "idle"
+        assert runner.last_summary() is None
+
+    def test_the_panel_says_what_happened(self):
+        assert "last_run" in APP_JS
+        assert "Last update finished" in APP_JS
+
+
+class TestTheScriptInsideTheContainer:
+    """scripts/update-cluster.sh was written to be run from the head's shell:
+    it primes sudo and ends with `sudo systemctl restart ainode`. Neither
+    exists in the container the UI runs it from."""
+
+    SCRIPT = (Path(__file__).resolve().parent.parent / "scripts" /
+              "update-cluster.sh").read_text()
+
+    def test_it_knows_where_it_is(self):
+        assert "AINODE_IN_CONTAINER" in self.SCRIPT
+        assert "/.dockerenv" in self.SCRIPT
+
+    def test_it_does_not_prime_a_sudo_that_is_not_there(self):
+        primer = self.SCRIPT.split("Ask for the local password once")[0]
+        guard = primer.rstrip().splitlines()[-2]
+        assert "IN_CONTAINER -eq 0" in guard
+
+    def test_the_head_restarts_through_docker(self):
+        tail = self.SCRIPT.split("--- 8.")[1]
+        assert "docker stop -t 30 ainode" in tail
+
+    def test_it_refuses_to_self_stop_under_an_unswappable_unit(self):
+        # There, a stop drops the head instead of swapping its image.
+        tail = self.SCRIPT.split("--- 8.")[1]
+        assert "AINODE_UNIT_SWAPPABLE" in tail
+        assert tail.index("AINODE_UNIT_SWAPPABLE") < tail.index("docker stop")
+
+    def test_the_self_stop_is_the_last_thing_it_does(self):
+        # Everything above it — distributing, restarting peers, verifying —
+        # needs this process alive.
+        assert self.SCRIPT.rstrip().endswith("fi")
+        assert self.SCRIPT.index("docker stop -t 30 ainode") > \
+            self.SCRIPT.index("step \"Verifying\"")
+
+    def test_it_pins_the_image_it_just_built(self):
+        # The unit starts whatever image.env names. Without this the build is
+        # discarded and an update that changed nothing looks like one that
+        # worked.
+        tail = self.SCRIPT.split("--- 8.")[1]
+        assert "image.env" in tail
+
+    def test_it_does_not_verify_a_node_it_has_not_restarted_yet(self):
+        verify = self.SCRIPT.split('step "Verifying"')[1]
+        head_check = verify.split('check_node "this node" ""')[0]
+        assert "IN_CONTAINER -eq 0" in head_check
+
+
+class TestTheImageCarriesGit:
+    DOCKERFILE = (Path(__file__).resolve().parent.parent / "scripts" /
+                  "Dockerfile.ainode").read_text()
+
+    def test_git_is_installed(self):
+        apt = self.DOCKERFILE.split("apt-get install")[1][:400]
+        assert "git \\" in apt

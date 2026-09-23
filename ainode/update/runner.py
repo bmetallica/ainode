@@ -13,14 +13,24 @@ thing is to say exactly which mount is missing rather than to fail at `git`.
 first, head last, so a failure leaves the head able to report it. Inside a
 container the head's restart is a ``docker stop`` of ourselves, which systemd
 turns into a start of the new image — the same trick the existing in-container
-update uses. Which means the last thing this job does is end itself, and the
-job file has to be written before that happens, not after.
+update uses. Which means the last thing this job does is end itself, so the
+outcome is written to disk as it happens: after the restart this object is a
+fresh one with an empty job, and the UI would otherwise show an update that
+apparently never ran.
+
+**The container needs tools the orchestrator image was built without.** It is
+a slim Python image; ``git`` was added for exactly this feature. An older
+image on the node cannot run the update that would replace it, so the
+preflight says so in those words instead of letting subprocess raise
+``No such file or directory: 'git'``.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -41,6 +51,21 @@ CONTAINER_SOURCE_DIR = "/ainode-src"
 #: hundred are the ones anyone reads.
 _MAX_LINES = 400
 
+#: What the update shells out to, and what each one is for. Checked before
+#: anything starts: the run ends with this node restarting, so a failure
+#: halfway leaves a cluster on two versions.
+_TOOLS = {
+    "git": "pull the branch",
+    "docker": "build and distribute the image",
+    "ssh": "reach the other nodes",
+}
+
+
+def _last_run_path(app) -> Path:
+    from ainode.core.config import AINODE_HOME
+
+    return AINODE_HOME / "update-last.json"
+
 
 class UpdateRunner:
     """One update at a time, with its output visible while it happens."""
@@ -51,6 +76,37 @@ class UpdateRunner:
         self._lock = threading.Lock()
         self.job: dict = {"running": False, "status": "idle", "lines": [],
                           "started_at": 0.0, "finished_at": 0.0, "error": ""}
+        self._restore()
+
+    def _restore(self) -> None:
+        """The last run, from disk.
+
+        A successful update ends by stopping this container, so the process
+        that reports the result is never the process that ran it.
+        """
+        try:
+            saved = json.loads(_last_run_path(self._app).read_text())
+        except Exception:
+            return
+        if isinstance(saved, dict) and saved.get("status"):
+            saved["running"] = False
+            saved["restored"] = True
+            self.job = saved
+
+    def _persist(self) -> None:
+        path = _last_run_path(self._app)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.job))
+            tmp.replace(path)
+        except Exception:
+            logger.debug("could not write %s", path, exc_info=True)
+
+    def missing_tools(self, *, nodes: List[str]) -> List[str]:
+        """Which of the tools the update needs are not on PATH."""
+        needed = [t for t in _TOOLS if t != "ssh" or nodes]
+        return [tool for tool in needed if shutil.which(tool) is None]
 
     # -- where the source is ------------------------------------------------
 
@@ -98,6 +154,43 @@ class UpdateRunner:
         return (f"No checkout at {host_dir} — set the right path in "
                 f"Settings → Updates.")
 
+    def last_summary(self) -> Optional[dict]:
+        """A one-line account of the last run, for the panel's Status card."""
+        job = self.job
+        if not job.get("status") or job.get("status") == "idle":
+            return None
+        return {
+            "status": job.get("status", ""),
+            "running": bool(job.get("running")),
+            "finished_at": job.get("finished_at", 0.0),
+            "error": job.get("error", ""),
+            "restored": bool(job.get("restored")),
+            "nodes": list(job.get("nodes") or []),
+        }
+
+    def tool_message(self, missing: List[str]) -> str:
+        """Why this image cannot update itself, and what does it once.
+
+        The orchestrator image is deliberately slim and had no git until the
+        feature that needs it existed. A node on an older image therefore
+        cannot run the update that would give it one — which is a bootstrap
+        problem, not a broken button, and the difference is the whole content
+        of this message.
+        """
+        what = ", ".join(f"{tool} (to {_TOOLS[tool]})" for tool in missing)
+        if not os.environ.get("AINODE_IN_CONTAINER"):
+            return f"This node is missing: {what}. Install it and try again."
+        return (
+            f"This AINode image is missing: {what}. The orchestrator image is "
+            f"a slim Python container and only carries git from the release "
+            f"that introduced updating from source — so an older image cannot "
+            f"run the update that would replace it. Do this once, from the "
+            f"head's shell:\n\n"
+            f"    cd {DEFAULT_SOURCE_DIR} && git pull\n"
+            f"    scripts/update-cluster.sh --nodes <peer1>,<peer2>\n\n"
+            f"That builds and distributes an image that has it, and the button "
+            f"works from then on.")
+
     # -- running ------------------------------------------------------------
 
     def start(self, *, nodes: List[str], base: bool = False,
@@ -109,6 +202,10 @@ class UpdateRunner:
             blocked = self.why_not()
             if blocked:
                 return {"ok": False, "status": 409, "error": blocked}
+            missing = self.missing_tools(nodes=nodes)
+            if missing:
+                return {"ok": False, "status": 409,
+                        "error": self.tool_message(missing)}
             self.job = {"running": True, "status": "running", "lines": [],
                         "started_at": time.time(), "finished_at": 0.0,
                         "error": "", "nodes": list(nodes)}
@@ -143,6 +240,8 @@ class UpdateRunner:
         finally:
             self.job["running"] = False
             self.job["finished_at"] = time.time()
+            # Before the script's last step can end this process.
+            self._persist()
 
     def _step(self, command: List[str], cwd: Path) -> None:
         self._say(f"[ainode] $ {' '.join(command)}")
