@@ -167,14 +167,27 @@ class TestFindingTheCheckout:
     def test_in_a_container_the_missing_mount_is_named_with_the_fix(
             self, tmp_path, monkeypatch):
         # Failing at `git` would be true and useless. The operator needs the
-        # two commands that make the button work.
+        # command that makes the button work — and it is the installer, not
+        # `ainode service install`: on the host that name is a wrapper into
+        # this very container, which is what it says when you try.
         monkeypatch.setenv("AINODE_IN_CONTAINER", "1")
         config = _Config()
         config.source_dir = str(tmp_path / "nowhere")
         why = UpdateRunner({"config": config}).why_not()
-        assert "ainode service install" in why
+        assert "scripts/install.sh | bash" in why
         assert CONTAINER_SOURCE_DIR in why
-        assert "scripts/update-cluster.sh on the head" in why
+        assert "scripts/update-cluster.sh" in why
+
+    def test_it_does_not_send_anyone_to_a_command_that_refuses(self, tmp_path,
+                                                              monkeypatch):
+        monkeypatch.setenv("AINODE_IN_CONTAINER", "1")
+        config = _Config()
+        config.source_dir = str(tmp_path / "nowhere")
+        why = UpdateRunner({"config": config}).why_not()
+        # It may MENTION it, to say why it is not the answer — but never as
+        # the instruction.
+        instruction = why.split("\n\n")[1] if "\n\n" in why else why
+        assert "ainode service install" not in instruction
 
     def test_outside_a_container_it_says_something_simpler(self, tmp_path,
                                                            monkeypatch):
@@ -184,6 +197,33 @@ class TestFindingTheCheckout:
         why = UpdateRunner({"config": config}).why_not()
         assert "No checkout at" in why
         assert "ainode service install" not in why
+
+
+class TestBothRenderersAgree:
+    """There are two: ainode/service/systemd.py and the heredoc in
+    scripts/install.sh. This deployment uses the installer — the CLI refuses
+    to render a unit from inside the container, where there is no systemd bus
+    — so a mount added to only one of them is a mount that does not exist."""
+
+    INSTALL = (Path(__file__).resolve().parent.parent / "scripts" /
+               "install.sh").read_text()
+
+    def test_the_installer_mounts_the_checkout(self):
+        assert f":{CONTAINER_SOURCE_DIR}" in self.INSTALL
+        assert "SOURCE_MOUNT" in self.INSTALL
+
+    def test_it_only_does_so_when_there_is_one(self):
+        # A node installed from the image alone has no repository, and a
+        # mount pointing at nothing fails the container start.
+        block = self.INSTALL.split('SOURCE_MOUNT=""')[1][:500]
+        assert "-d \"$candidate/.git\"" in block
+
+    def test_it_honours_a_checkout_somewhere_else(self):
+        assert "AINODE_SOURCE_DIR" in self.INSTALL
+
+    def test_the_mount_reaches_the_exec_start(self):
+        exec_start = self.INSTALL.split("EXEC_START=")[1].split('"\n\n')[0]
+        assert "${SOURCE_MOUNT}" in exec_start
 
 
 class TestTheUnitMountsIt:

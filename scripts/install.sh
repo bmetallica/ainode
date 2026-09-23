@@ -292,6 +292,24 @@ fi
 
 mkdir -p "$UNIT_DIR"
 
+# The source checkout, when there is one. A source update from the UI is a
+# git pull plus scripts/update-cluster.sh, and both need the repository —
+# which the container otherwise cannot see, since it mounts ~/.ainode, the
+# docker socket and the SSH keys and nothing else.
+#
+# Conditional, and only when the directory really is a checkout: a node
+# installed from the image alone has no repository, and a mount pointing at
+# nothing fails the container start. Re-run this installer after cloning one
+# and the mount appears.
+SOURCE_MOUNT=""
+for candidate in "${AINODE_SOURCE_DIR:-}" /opt/ainode; do
+    if [ -n "$candidate" ] && [ -d "$candidate/.git" ] && [ -d "$candidate/scripts" ]; then
+        SOURCE_MOUNT=" -v ${candidate}:/ainode-src"
+        log "  source checkout at ${candidate} — mounting it for UI updates"
+        break
+    fi
+done
+
 # ExecStart references ${AINODE_IMAGE} (escaped so systemd — not this shell —
 # expands it). The pinned Environment default is overridden by image.env, so
 # `ainode update` swaps the image without re-rendering this unit.
@@ -301,6 +319,7 @@ EXEC_START="/usr/bin/docker run --rm --name ainode \
  -v /var/run/docker.sock:/var/run/docker.sock \
  -v ${HOME}/.ssh:/host-ssh:ro \
  -v ${HOME}/.docker:/root/.docker:ro \
+${SOURCE_MOUNT} \
  --mount type=bind,source=/mnt/shared-models,target=/mnt/shared-models,bind-propagation=rshared \
  -e AINODE_HOME=/root/.ainode \
  -e AINODE_HOST_HOME=${AINODE_HOME} \
