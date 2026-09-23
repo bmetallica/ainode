@@ -58,9 +58,24 @@ und die Fehlermeldung unterscheidet jetzt beide Fälle: ist die installierte
 Version älter als die des Checkpoints, hilft ein Upgrade; ist sie neuer und
 die Klasse fehlt trotzdem, hilft kein weiteres Release, sondern nur git.
 
-Schritt 0 bleibt damit weiter offen: ob `QwenImage21Pipeline` auf
-aarch64/Blackwell *läuft*, ist ungemessen — bisher wissen wir nur, dass keine
-veröffentlichte Bibliothek sie kennt.
+**Schritt 0, beantwortet am 2026-09-23 21:05 auf node3.** Mit dem
+diffusers-Build aus git lädt `Qwen/Qwen-Image-2.1` auf aarch64/Blackwell:
+
+    21:05:07 Loading model weights from /models/Qwen--Qwen-Image-2.1
+    21:05:08 Loading checkpoint shards: 2/2
+    21:05:09 Loading pipeline components: 5/5
+    21:05:19 Application startup complete.
+    21:05:23 GET /v1/models 200
+
+Zwölf Sekunden von „Gewichte lesen" bis „antwortet". Damit ist die Frage, an
+der dieser Plan hing, positiv entschieden: die Pipeline existiert, lädt und
+bedient ihren Port.
+
+Offen bleibt der Rest von Schritt 0 — was ein Bild tatsächlich kostet
+(Sekunden, Speicherspitze am Ende eines Laufs) und ob eine quantisierte
+Variante nötig ist. Die Katalogeinträge stehen deshalb weiter auf
+`verified=False`: ein Modell, das lädt, ist noch kein Modell, das ein Bild
+gemacht hat.
 
 | Schritt | PR | Was daraus wurde |
 |---|---|---|
