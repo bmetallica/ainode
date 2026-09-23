@@ -385,6 +385,27 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # 64 MiB is what the GLM recipe uses and what has loaded a 175 GB
             # checkpoint here. Raise or drop it (drop:--load-format) if a
             # future engine image reports the budget correctly.
+            #
+            # BACKEND=BUFFERED is what makes the cap mean anything, and it was
+            # missing here: the size was copied from the GLM recipe and the
+            # backend that honours it was not. Measured on the cluster with
+            # the size alone in place and provably delivered to the engine
+            # (-e INSTANTTENSOR_BUFFER_SIZE=67108864 in the docker arguments):
+            #
+            #   buffer_size (2542796800 B) exceeds device memory budget
+            #   (1199642624 B)
+            #
+            # — a 2.4 GB buffer, unchanged across runs, on a node with 116 GB
+            # free. A loader that sized its buffer from a 64 MiB setting would
+            # not ask for 2.4 GB; the default backend derives it from the
+            # checkpoint and never reads the number. The rest of GLM's
+            # InstantTensor set comes with it, for the same reason the size
+            # did: they are the configuration that has actually loaded a
+            # checkpoint on this hardware.
+            "INSTANTTENSOR_BACKEND": "BUFFERED",
+            "INSTANTTENSOR_CHUNK_SIZE": "8388608",
+            "INSTANTTENSOR_CONCURRENCY": "1",
+            "INSTANTTENSOR_IO_DEPTH": "3",
             "INSTANTTENSOR_BUFFER_SIZE": "67108864",
         },
         recommended_gmu=0.91,
@@ -441,6 +462,27 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # 64 MiB is what the GLM recipe uses and what has loaded a 175 GB
             # checkpoint here. Raise or drop it (drop:--load-format) if a
             # future engine image reports the budget correctly.
+            #
+            # BACKEND=BUFFERED is what makes the cap mean anything, and it was
+            # missing here: the size was copied from the GLM recipe and the
+            # backend that honours it was not. Measured on the cluster with
+            # the size alone in place and provably delivered to the engine
+            # (-e INSTANTTENSOR_BUFFER_SIZE=67108864 in the docker arguments):
+            #
+            #   buffer_size (2542796800 B) exceeds device memory budget
+            #   (1199642624 B)
+            #
+            # — a 2.4 GB buffer, unchanged across runs, on a node with 116 GB
+            # free. A loader that sized its buffer from a 64 MiB setting would
+            # not ask for 2.4 GB; the default backend derives it from the
+            # checkpoint and never reads the number. The rest of GLM's
+            # InstantTensor set comes with it, for the same reason the size
+            # did: they are the configuration that has actually loaded a
+            # checkpoint on this hardware.
+            "INSTANTTENSOR_BACKEND": "BUFFERED",
+            "INSTANTTENSOR_CHUNK_SIZE": "8388608",
+            "INSTANTTENSOR_CONCURRENCY": "1",
+            "INSTANTTENSOR_IO_DEPTH": "3",
             "INSTANTTENSOR_BUFFER_SIZE": "67108864",
         },
         recommended_gmu=0.60,
@@ -506,6 +548,27 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # 64 MiB is what the GLM recipe uses and what has loaded a 175 GB
             # checkpoint here. Raise or drop it (drop:--load-format) if a
             # future engine image reports the budget correctly.
+            #
+            # BACKEND=BUFFERED is what makes the cap mean anything, and it was
+            # missing here: the size was copied from the GLM recipe and the
+            # backend that honours it was not. Measured on the cluster with
+            # the size alone in place and provably delivered to the engine
+            # (-e INSTANTTENSOR_BUFFER_SIZE=67108864 in the docker arguments):
+            #
+            #   buffer_size (2542796800 B) exceeds device memory budget
+            #   (1199642624 B)
+            #
+            # — a 2.4 GB buffer, unchanged across runs, on a node with 116 GB
+            # free. A loader that sized its buffer from a 64 MiB setting would
+            # not ask for 2.4 GB; the default backend derives it from the
+            # checkpoint and never reads the number. The rest of GLM's
+            # InstantTensor set comes with it, for the same reason the size
+            # did: they are the configuration that has actually loaded a
+            # checkpoint on this hardware.
+            "INSTANTTENSOR_BACKEND": "BUFFERED",
+            "INSTANTTENSOR_CHUNK_SIZE": "8388608",
+            "INSTANTTENSOR_CONCURRENCY": "1",
+            "INSTANTTENSOR_IO_DEPTH": "3",
             "INSTANTTENSOR_BUFFER_SIZE": "67108864",
         },
         recommended_gmu=0.70,
@@ -770,6 +833,27 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # 64 MiB is what the GLM recipe uses and what has loaded a 175 GB
             # checkpoint here. Raise or drop it (drop:--load-format) if a
             # future engine image reports the budget correctly.
+            #
+            # BACKEND=BUFFERED is what makes the cap mean anything, and it was
+            # missing here: the size was copied from the GLM recipe and the
+            # backend that honours it was not. Measured on the cluster with
+            # the size alone in place and provably delivered to the engine
+            # (-e INSTANTTENSOR_BUFFER_SIZE=67108864 in the docker arguments):
+            #
+            #   buffer_size (2542796800 B) exceeds device memory budget
+            #   (1199642624 B)
+            #
+            # — a 2.4 GB buffer, unchanged across runs, on a node with 116 GB
+            # free. A loader that sized its buffer from a 64 MiB setting would
+            # not ask for 2.4 GB; the default backend derives it from the
+            # checkpoint and never reads the number. The rest of GLM's
+            # InstantTensor set comes with it, for the same reason the size
+            # did: they are the configuration that has actually loaded a
+            # checkpoint on this hardware.
+            "INSTANTTENSOR_BACKEND": "BUFFERED",
+            "INSTANTTENSOR_CHUNK_SIZE": "8388608",
+            "INSTANTTENSOR_CONCURRENCY": "1",
+            "INSTANTTENSOR_IO_DEPTH": "3",
             "INSTANTTENSOR_BUFFER_SIZE": "67108864",
         },
         recommended_gmu=0.80,
