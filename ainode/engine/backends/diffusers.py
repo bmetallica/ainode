@@ -135,7 +135,9 @@ class DiffusersBackend(EngineBackend):
         ]
         for key, value in (getattr(self.config, "extra_env", None) or {}).items():
             cmd += ["-e", f"{key}={value}"]
-        cmd += [image, "python", SERVER_CONTAINER_PATH,
+        # python3: the engine image has python3/python3-pip and no
+        # unversioned alias, so `python` is not on PATH in it.
+        cmd += [image, "python3", SERVER_CONTAINER_PATH,
                 "--model-path", model_path,
                 "--served-model-name", self.config.model or "",
                 "--port", str(self.config.api_port),
