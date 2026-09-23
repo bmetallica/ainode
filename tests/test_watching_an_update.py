@@ -114,3 +114,46 @@ class TestItIsAlsoInTheLog:
         readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
         assert "docker logs -f ainode" in readme
         assert "/api/update/status" in readme
+
+
+class TestTellingOneRunFromTheNextOne:
+    """A stored last-run read from a shell says "failed" with no context, and
+    a failure that has since been fixed looks exactly like a current one.
+    Reported after exactly that confusion on the cluster."""
+
+    def _summary(self, **job):
+        from ainode.update.api_routes import _summary
+
+        return _summary(job)
+
+    def test_nothing_has_run(self):
+        assert "no update has run" in self._summary(status="idle")
+
+    def test_a_finished_run_carries_its_time(self):
+        line = self._summary(status="done", finished_at=1790000000.0,
+                             to_sha="9e06f61")
+        assert line.startswith("done 20")
+        assert "9e06f61" in line
+
+    def test_a_failure_carries_its_reason(self):
+        line = self._summary(status="failed", finished_at=1790000000.0,
+                             error="scripts/update-cluster.sh exited with 1")
+        assert "failed" in line and "exited with 1" in line
+
+    def test_a_running_one_says_how_long(self):
+        import time as _time
+
+        line = self._summary(status="running", running=True,
+                             started_at=_time.time() - 600)
+        assert "running for 10 min" in line
+
+    def test_the_endpoint_includes_it(self):
+        import inspect
+
+        from ainode.update import api_routes
+
+        assert '"summary"' in inspect.getsource(api_routes.handle_status)
+
+    def test_the_readme_recipe_uses_it(self):
+        readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
+        assert '["summary"]' in readme

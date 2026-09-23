@@ -68,6 +68,27 @@ def _last_run_path(app) -> Path:
     return AINODE_HOME / "update-last.json"
 
 
+def _head_sha(directory) -> str:
+    """The checkout's commit, short. "" when it cannot be read.
+
+    Recorded at both ends of a run so a result can be told apart from the one
+    before it. "failed" with no date and no commit is indistinguishable from
+    a failure ten minutes ago that has since been fixed — which is exactly
+    the confusion a stored last-run invites.
+    """
+    if directory is None:
+        return ""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             cwd=str(directory), capture_output=True,
+                             text=True, timeout=10,
+                             env={**os.environ, **_owner_of(Path(directory), {})[1]})
+    except Exception:
+        logger.debug("could not read HEAD in %s", directory, exc_info=True)
+        return ""
+    return (out.stdout or "").strip() if out.returncode == 0 else ""
+
+
 def _owner_of(directory: Path, env: dict):
     """(Popen kwargs, env) for running git against a checkout we do not own.
 
@@ -212,10 +233,13 @@ class UpdateRunner:
         return {
             "status": job.get("status", ""),
             "running": bool(job.get("running")),
+            "started_at": job.get("started_at", 0.0),
             "finished_at": job.get("finished_at", 0.0),
             "error": job.get("error", ""),
             "restored": bool(job.get("restored")),
             "nodes": list(job.get("nodes") or []),
+            "from_sha": job.get("from_sha", ""),
+            "to_sha": job.get("to_sha", ""),
         }
 
     def tool_message(self, missing: List[str]) -> str:
@@ -279,6 +303,7 @@ class UpdateRunner:
     def _run(self, nodes: List[str], base: bool, images: bool) -> None:
         directory = self.source_dir()
         try:
+            self.job["from_sha"] = _head_sha(directory)
             self._say(f"[ainode] source: {directory}")
             self._step(["git", "pull", "--ff-only"], directory, as_owner=True)
             # --skip-pull because the line above already did it, as the right
@@ -292,6 +317,7 @@ class UpdateRunner:
             if images:
                 command.append("--images")
             self._step(command, directory)
+            self.job["to_sha"] = _head_sha(directory)
             self.job["status"] = "done"
         except Exception as exc:
             self.job["status"] = "failed"

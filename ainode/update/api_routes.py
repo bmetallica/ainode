@@ -177,6 +177,30 @@ async def handle_run(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "nodes": nodes})
 
 
+def _summary(job: dict) -> str:
+    """One line: what, when, and from which commit.
+
+    "failed" on its own is indistinguishable from a failure half an hour ago
+    that has since been fixed — and that is precisely what a stored last-run
+    looks like when you come back to it from a shell.
+    """
+    status = str(job.get("status") or "idle")
+    if status == "idle":
+        return "no update has run on this node"
+    when = job.get("finished_at") or job.get("started_at") or 0.0
+    stamp = (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(when))
+             if when else "at an unknown time")
+    if job.get("running"):
+        started = job.get("started_at") or 0.0
+        minutes = int((time.time() - started) / 60) if started else 0
+        return f"running for {minutes} min (started {stamp})"
+    sha = str(job.get("to_sha") or job.get("from_sha") or "")
+    at_sha = f", at {sha}" if sha else ""
+    error = str(job.get("error") or "")
+    tail = f" — {error}" if error else ""
+    return f"{status} {stamp}{at_sha}{tail}"
+
+
 async def handle_status(request: web.Request) -> web.Response:
     """GET /api/update/status — the run in progress, or the last one.
 
@@ -186,6 +210,7 @@ async def handle_status(request: web.Request) -> web.Response:
     """
     runner = get_update_runner(request.app)
     payload = dict(runner.job)
+    payload["summary"] = _summary(payload)
     missing = runner.missing_tools(nodes=list(
         getattr(request.app["config"], "cluster_ssh_nodes", []) or []))
     if missing:

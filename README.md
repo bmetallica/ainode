@@ -731,14 +731,22 @@ output back up, and the dashboard carries a banner while one is in flight. From
 the head's shell, either of:
 
 ```bash
-docker logs -f ainode | grep --line-buffered '^.*update |'   # every line, live
+# one line: running / done / failed, when, and from which commit
+curl -s localhost:3000/api/update/status |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["summary"])'
+
+docker logs -f ainode | grep --line-buffered 'update |'      # every line, live
+
 curl -s localhost:3000/api/update/status |                   # the last lines
-  python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"]); print(*d["lines"][-30:], sep="\n")'
+  python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["summary"]); print(*d["lines"][-30:], sep="\n")'
 ```
 
-It is finished when `status` reads `done` — or when this node restarts under
-you, which is the last thing a successful update does. The outcome is kept in
-`~/.ainode/update-last.json` and shown in the panel afterwards.
+`summary` carries the timestamp and the commit on purpose: a bare `failed` is
+indistinguishable from a failure half an hour ago that has since been fixed,
+and what `/api/update/status` returns between runs is the *last* one, not a
+current one. It is finished when it reads `done` — or when this node restarts
+under you, which is the last thing a successful update does. The outcome is
+kept in `~/.ainode/update-last.json` and shown in the panel afterwards.
 
 From then on the button does the same thing: `git pull`, build, distribute,
 restart the peers, verify them, and restart the head last — which from inside
