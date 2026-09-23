@@ -89,6 +89,13 @@ Was dazu noch gefehlt hat:
   awq, gptq, nvfp4, bf16. Die Grenze verläuft nicht am Bit, sondern am
   Layout: eine diffusers-Pipeline ja, eine ComfyUI-Einzeldatei nein.
 
+### Beim ersten Bauen auf der Hardware (#148)
+
+`python: not found`. Das Engine-Image installiert `python3` und `python3-pip`
+und legt den unversionierten Alias nie an — `python` ist dort schlicht nicht
+im PATH. Betraf **zwei** Stellen: den Image-Build und den Befehl, mit dem das
+Backend den Server startet. Die zweite hätte erst beim ersten Laden zugeschlagen.
+
 **Was das nicht ersetzt: Schritt 0.** Ob diffusers auf dieser Hardware trägt,
 ist weiterhin ungemessen — der Code ist derselbe, ob der Versuch gelingt oder
 nicht, aber ob er etwas erzeugt, entscheidet allein der Lauf auf Node 3.

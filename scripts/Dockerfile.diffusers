@@ -30,12 +30,16 @@ LABEL ai.ainode.engine="diffusers"
 # plain install happily replaces the aarch64/Blackwell build underneath with
 # a generic wheel — which is exactly the failure this image exists to avoid.
 # The four below are the whole of what the server needs.
-RUN python -m pip install --no-cache-dir \
+# python3, not python: the engine image installs python3/python3-pip and
+# never creates the unversioned alias, so `python` is not on PATH there. The
+# same applies to the server the backend starts — see
+# ainode/engine/backends/diffusers.py.
+RUN python3 -m pip install --no-cache-dir \
         "diffusers>=0.36" \
         "accelerate>=1.0" \
         "safetensors>=0.4" \
         "sentencepiece>=0.2" \
- && python -c "import torch, diffusers; print('torch', torch.__version__, 'diffusers', diffusers.__version__)"
+ && python3 -c "import torch, diffusers; print('torch', torch.__version__, 'diffusers', diffusers.__version__)"
 
 # Read at startup by the server; overridden per instance by the backend.
 ENV AINODE_IMAGE_ENGINE=1 \
@@ -44,4 +48,4 @@ ENV AINODE_IMAGE_ENGINE=1 \
 # The server itself is not baked in: the backend writes it next to the launch
 # and mounts it, the same way the eugr path hands its launch script to the
 # engine container. One less image rebuild per change to the serving code.
-CMD ["python", "-c", "print('AINode diffusers engine image. The backend supplies the server script.')"]
+CMD ["python3", "-c", "print('AINode diffusers engine image. The backend supplies the server script.')"]

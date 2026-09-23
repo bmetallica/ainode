@@ -322,6 +322,27 @@ class TestTheBackend:
                       "load_timeline", "load_seconds"):
             assert hasattr(backend, field), field
 
+    def test_it_starts_the_server_with_python3(self):
+        """The engine image installs python3/python3-pip and never creates
+        the unversioned alias, so `python` is not on PATH in it:
+
+            /bin/sh: 1: python: not found
+
+        which is what the image build said the first time it was run on the
+        cluster, and what the server start would have said next."""
+        source = (ROOT / "ainode" / "engine" / "backends" /
+                  "diffusers.py").read_text()
+        assert '"python3", SERVER_CONTAINER_PATH' in source
+        assert '"python", SERVER_CONTAINER_PATH' not in source
+
+    def test_the_image_build_uses_it_too(self):
+        dockerfile = (ROOT / "scripts" / "Dockerfile.diffusers").read_text()
+        for line in dockerfile.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("RUN ", "CMD ")):
+                assert "python " not in stripped.replace("python3", "py3"), line
+                assert '"python"' not in stripped, line
+
     def test_the_command_carries_the_resolution_limit(self):
         from ainode.engine.backends import diffusers as module
 
