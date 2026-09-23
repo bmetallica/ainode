@@ -329,8 +329,13 @@ _INSTANTTENSOR_BUDGET_HINT = (
     "something the model needs: put drop:--load-format in the extra vLLM args "
     "to load the ordinary way, or cap the buffer with an environment entry "
     "INSTANTTENSOR_BUFFER_SIZE=67108864, which is what the GLM recipe does. "
-    "If another model is already loaded on that node, its reservation is what "
-    "left so little free."
+    "Check the budget in the message against what this launch was given: it "
+    "is gpu-memory-utilization x the node's total memory, minus the weights. "
+    "A budget of about a gigabyte on a 128 GB node means the utilization was "
+    "low — 0.15 there leaves 19 GB, and a 16 GB checkpoint takes nearly all "
+    "of it — so the answer may be to raise it rather than to touch the "
+    "loader. If another model is already loaded on that node, its reservation "
+    "is what left so little free."
 )
 
 # vLLM implements pipeline parallelism per architecture, and a model that does
