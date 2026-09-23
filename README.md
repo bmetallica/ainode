@@ -659,6 +659,33 @@ button or:
 curl -X POST http://<master>:8000/api/cluster/update-all   # genuine pull + swap on every node
 ```
 
+#### Updating from your own source, from the UI
+
+A cluster that **builds on the head** instead of pulling a published image
+updates differently: **Settings → Updates** runs `git pull` on the checkout and
+then `scripts/update-cluster.sh`, and the dashboard says when your fork's
+branch is ahead of the commit this image was built from (checked hourly, plus a
+**Check for updates** button). The peers it rolls are the SSH ids you enter
+there — `Spark2, Spark3` for the reference cluster.
+
+For this to work the container has to be able to see the checkout, so the
+installer mounts it at `/ainode-src` when `/opt/ainode` (or `AINODE_SOURCE_DIR`)
+is a real repository. An existing node gets that mount by **re-running the
+installer** — it is idempotent and keeps `config.json`:
+
+```bash
+cd /opt/ainode && git pull
+curl -fsSL https://raw.githubusercontent.com/bmetallica/ainode/main/scripts/install.sh | bash
+```
+
+`ainode service install` is not the way to do it: on the host `ainode` is a
+wrapper into the container, and the unit is written by the installer.
+
+Re-running the installer never needs the registry if this node already has an
+image: when the GHCR package is private or unpublished, it keeps the image
+recorded in `~/.ainode/image.env` and only re-renders the unit. Upgrading the
+image itself stays a separate, explicit step (`ainode update`).
+
 ---
 
 ## API
