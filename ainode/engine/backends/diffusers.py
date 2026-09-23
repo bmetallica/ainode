@@ -221,10 +221,9 @@ class DiffusersBackend(EngineBackend):
     def logs(self, n: int = 100) -> str:
         if not self._log_file.exists():
             return ""
-        try:
-            return "\n".join(self._log_file.read_text().splitlines()[-n:])
-        except OSError:
-            return ""
+        from ainode.engine.logs import read_log_tail
+
+        return read_log_tail(self._log_file, n)
 
     # -- load state, read by the card, the assistant and telemetry ----------
 
