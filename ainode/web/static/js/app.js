@@ -4284,6 +4284,22 @@ const AINode = {
         }).catch(function () {});
     }
 
+    // Which models the memory guard has stopped somewhere. On the same TTL
+    // as the rest: a card that says "On disk" about a model every launch
+    // refuses is telling the truth and answering the wrong question.
+    if (this._stale('blockedModels')) {
+      this.state.blockedModels = this.state.blockedModels || {};
+      fetch('/api/cluster/measurements').then(function (r) { return r.json(); })
+        .then(function (data) {
+          var map = {};
+          self._blockedModels(data).forEach(function (b) {
+            map[b.model] = (map[b.model] || 0) + b.stops;
+          });
+          self.state.blockedModels = map;
+          self.renderDownloads();
+        }).catch(function () {});
+    }
+
     // Fetch catalog from API (42+ models) — refreshed on the same TTL
     if (this._stale('catalog')) {
       this.state.catalog = this.state.catalog || [];
@@ -4377,6 +4393,12 @@ const AINode = {
       // download also satisfies — so a half-downloaded model looked ready and
       // failed minutes into a launch with something about safetensors.
       var partial = onDisk && model.complete === false;
+      var stops = (self.state.blockedModels || {})[model.hf_repo || model.id] || 0;
+      var blockedBadge = (!isLoaded && stops) ?
+        '<span class="model-badge failed" title="The memory guard stopped this ' +
+        'model ' + stops + ' time' + (stops === 1 ? '' : 's') + '. Launching it ' +
+        'the same way is refused — unlock it under Settings → Memory Guard.">' +
+        'Blocked</span>' : '';
       var statusBadge = isLoaded ?
         '<span class="model-badge loaded">Loaded</span>' :
         (partial ? '<span class="model-badge failed" title="' +
@@ -4421,7 +4443,7 @@ const AINode = {
         '<div class="download-card-info">' +
         '<div class="download-card-header">' +
         '<div class="download-card-name">' + self.esc(model.name || model.id) + '</div>' +
-        '<div class="download-card-badges">' + verBadge + modalityBadge + quantBadge + capabilityBadges + fitBadge + statusBadge + whereBadge + '</div>' +
+        '<div class="download-card-badges">' + verBadge + modalityBadge + quantBadge + capabilityBadges + fitBadge + statusBadge + blockedBadge + whereBadge + '</div>' +
         '</div>' +
         '<div class="download-card-repo">' + self.esc(model.hf_repo || model.id) + '</div>' +
         '<div class="download-card-desc">' + descParts.join(' &middot; ') + (model.desc ? '<br><span class="download-card-tagline">' + self.esc(model.desc) + '</span>' : '') + '</div>' +
@@ -6858,8 +6880,16 @@ const AINode = {
     if (!mount) return;
     mount.innerHTML = '<div class="config-empty">Loading…</div>';
     var self = this;
-    var data = await this.fetchJSON('/api/cluster/safety/memory');
+    var results = await Promise.all([
+      this.fetchJSON('/api/cluster/safety/memory'),
+      // What the guard has actually stopped, fleet-wide. The node that ran
+      // out is rarely the one you are looking at, and the record it wrote
+      // lives there.
+      this.fetchJSON('/api/cluster/measurements'),
+    ]);
+    var data = results[0];
     var rows = (data && data.nodes) || [];
+    var blocked = this._blockedModels(results[1]);
     if (!rows.length) {
       mount.innerHTML = '<div class="config-empty">No node reported a memory ' +
         'guard. A node running an older build has none.</div>';
@@ -6882,6 +6912,8 @@ const AINode = {
     html += '<button class="config-btn" data-mem-preset="generic">Generic preset (2 / 1 GB)</button>';
     html += '<span class="config-field-hint" style="align-self:center">applies to every node</span>';
     html += '</div></div>';
+
+    html += this._blockedModelsCard(blocked);
 
     rows.forEach(function (row) {
       var id = row.node_id;
@@ -6945,12 +6977,103 @@ const AINode = {
         });
       });
     });
+    mount.querySelectorAll('[data-unlock-model]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        self.unlockModel(btn.getAttribute('data-unlock-model'),
+                         btn.getAttribute('data-unlock-node'));
+      });
+    });
     mount.querySelectorAll('[data-mem-preset]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         self._saveMemoryGuard({ all: true,
                                 preset: btn.getAttribute('data-mem-preset') });
       });
     });
+  },
+
+  // Every model the guard has stopped somewhere, newest first.
+  // /api/cluster/measurements answers {models: {name: [entry per node]}} —
+  // one row per model PER NODE, because the guard that stopped it is the one
+  // on the node it ran on, and that is where the record to clear lives.
+  _blockedModels(cluster) {
+    var out = [];
+    var models = (cluster && cluster.models) || {};
+    Object.keys(models).forEach(function (model) {
+      (models[model] || []).forEach(function (m) {
+        if (!m.guard_stops) return;
+        out.push({
+          model: model,
+          nodeId: m.node_id || '',
+          nodeName: m.node_id || 'this node',
+          stops: m.guard_stops,
+          at: m.last_guard_stop || 0,
+          gmu: m.guard_stop_gmu || 0,
+          maxLen: m.guard_stop_max_model_len || 0,
+          nodes: m.guard_stop_nodes || 0,
+          args: m.guard_stop_args || [],
+        });
+      });
+    });
+    return out.sort(function (a, b) { return b.at - a.at; });
+  },
+
+  _blockedModelsCard(blocked) {
+    var self = this;
+    var html = '<div class="config-card">';
+    html += '<h3 class="config-card-title">Stopped by the guard</h3>';
+    if (!blocked.length) {
+      html += '<p class="config-card-desc">Nothing is blocked. A model the ' +
+        'guard has had to kill is refused the next time it is launched the ' +
+        'same way — it would appear here, with a button to lift that.</p>';
+      return html + '</div>';
+    }
+    html += '<p class="config-card-desc">These launches ran the node out of ' +
+      'memory and an engine had to be killed. Each is refused until it is ' +
+      'launched differently — fewer tokens, a lower utilization, more nodes, ' +
+      'or a flag the killed one did not carry. <strong>Unlock</strong> drops ' +
+      'that record: use it when the cause has been fixed by something the ' +
+      'record cannot see. The measurements are kept.</p>';
+    blocked.forEach(function (b) {
+      var when = b.at ? new Date(b.at * 1000).toLocaleString() : 'at an unknown time';
+      var asked = [];
+      if (b.gmu) asked.push('gpu-memory-utilization ' + b.gmu.toFixed(2));
+      if (b.maxLen) asked.push('max-model-len ' + b.maxLen.toLocaleString());
+      if (b.nodes) asked.push(b.nodes + ' node' + (b.nodes === 1 ? '' : 's'));
+      html += '<div class="config-row" style="align-items:flex-start">';
+      html += '<div><div><strong>' + self.esc(b.model) + '</strong>' +
+        '<span class="config-field-hint"> · ' + self.esc(b.nodeName) + '</span></div>' +
+        '<div class="config-field-hint">' + b.stops + ' stop' +
+        (b.stops === 1 ? '' : 's') + ', last ' + self.esc(when) +
+        (asked.length ? ' — ' + self.esc(asked.join(', ')) : '') + '</div></div>';
+      html += '<button class="config-btn" data-unlock-model="' +
+        self.esc(b.model) + '" data-unlock-node="' + self.esc(b.nodeId) +
+        '">Unlock</button>';
+      html += '</div>';
+    });
+    return html + '</div>';
+  },
+
+  async unlockModel(model, nodeId) {
+    if (!model) return;
+    if (!confirm('Unlock ' + model + '?\n\nThe guard stopped it because the ' +
+                 'node ran out of memory. Dropping that record does not change ' +
+                 'what the launch will ask for — if nothing else has changed, ' +
+                 'it will run out again.')) return;
+    try {
+      var resp = await fetch('/api/cluster/measurements/forget-stops', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: model, node_id: nodeId || undefined }),
+      });
+      var data = await resp.json().catch(function () { return {}; });
+      if (!resp.ok || data.error) {
+        this.toast(data.error || 'Could not unlock', 'error');
+        return;
+      }
+      this.toast('Unlocked ' + model, 'success');
+      this.renderConfigMemory();
+    } catch (err) {
+      this.toast('Error: ' + err.message, 'error');
+    }
   },
 
   async _saveMemoryGuard(body) {

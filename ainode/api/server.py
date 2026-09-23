@@ -181,6 +181,8 @@ def create_app(
     app.router.add_post("/api/cluster/role", handle_cluster_set_role)
     app.router.add_post("/api/cluster/id", handle_cluster_set_id)
     app.router.add_post("/api/cluster/load", handle_cluster_load)
+    app.router.add_post("/api/cluster/measurements/forget-stops",
+                        handle_cluster_forget_stops)
     # Clearing the compile cache: local, and node-targeted through the same
     # dispatch the load routes use, because the cache that matters is on the
     # node whose launch failed.
@@ -1153,7 +1155,11 @@ async def _cluster_dispatch(request: web.Request, path: str):
                 return getattr(self._o, k)
             async def json(self):
                 return self._b
-        if path.endswith("/compile-cache"):
+        if path.endswith("/forget-stops"):
+            from ainode.measure.api_routes import handle_forget_stops
+
+            handler = handle_forget_stops
+        elif path.endswith("/compile-cache"):
             handler = _clear_compile_cache
         elif path.endswith("/load"):
             handler = handle_model_load
@@ -1188,6 +1194,18 @@ async def _cluster_dispatch(request: web.Request, path: str):
 async def handle_cluster_load(request: web.Request) -> web.Response:
     """POST /api/cluster/load {node_id, model} — load a model on any node (F2)."""
     return await _cluster_dispatch(request, "/api/models/load")
+
+
+async def handle_cluster_forget_stops(request: web.Request) -> web.Response:
+    """POST /api/cluster/measurements/forget-stops {node_id, model}.
+
+    The guard that stopped a model is the guard on the node it ran on, and
+    the record it wrote lives there. A head that can list every node's
+    measurements but can only clear its own would make the operator open a
+    second UI to unblock a model — which is the same trap embedding
+    placement was in before it got a cluster route.
+    """
+    return await _cluster_dispatch(request, "/api/measurements/forget-stops")
 
 
 class _MatchInfoShim:
