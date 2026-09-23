@@ -382,6 +382,23 @@ _SIGNAL_NOTES = {
 }
 
 
+def _host_free_mb():
+    """The node's free memory right now, or None.
+
+    Read at the moment a launch dies, because that is the number every
+    memory-shaped failure is really about and the one nobody has. A budget
+    of "471216128 B" in an engine message is only interpretable next to what
+    the machine actually had free, and by the time anyone looks, the engine
+    that was holding it is gone.
+    """
+    try:
+        from ainode.safety.memory_guard import host_available_mb
+
+        return host_available_mb()
+    except Exception:
+        return None
+
+
 def _signal_note(rc) -> str:
     """The sentence for an exit code, or "" for an ordinary one."""
     try:
@@ -399,6 +416,11 @@ def _signal_note(rc) -> str:
     return _SIGNAL_NOTES.get(signal_number,
                              f" — killed by signal {signal_number}: something "
                              f"outside the engine stopped it.")
+
+
+#: Words that make a failure a memory failure. Narrow on purpose.
+_MEMORY_WORDS = ("memory", "buffer_size", "oom", "sigkill", "allocat",
+                 "kv cache", "budget")
 
 
 _FATAL_PATTERNS = [
@@ -503,6 +525,10 @@ class LoadPhaseTracker:
         """Say what is happening now. ``""`` clears it."""
         self.detail = (detail or "").strip()
 
+    #: The node's MemAvailable at the moment of failure, in MB. None until
+    #: something fails, and None on a platform whose /proc looks different.
+    free_mb_at_failure = None
+
     def fail(self, reason: str) -> None:
         """Mark the launch dead. Ignored once the engine is serving — the
         launcher exiting after a successful start is normal for a detached
@@ -521,6 +547,7 @@ class LoadPhaseTracker:
             return
         self.phase = PHASE_FAILED
         self.error = reason.strip()
+        self.free_mb_at_failure = _host_free_mb()
 
     def fail_exit(self, rc) -> None:
         """Mark the launch dead from a process exit code.
@@ -667,6 +694,25 @@ class LoadPhaseTracker:
         interesting = [ln for ln in self.tail if not _is_teardown(ln)]
         evidence = (self.offending_line or self.root_cause
                     or " | ".join(interesting[-3:] or self.tail[-3:]))
-        parts = [p for p in (evidence, self.fatal_hint) if p]
+        parts = [p for p in (evidence, self.fatal_hint, self._memory_note())
+                 if p]
         detail = " — ".join(parts)
         return f"{self.error}{(' — ' + detail) if detail else ''}"
+
+    def _memory_note(self) -> str:
+        """What the node had free when this launch died.
+
+        Only for failures that are plausibly about memory: on anything else
+        it is noise, and a number that turns out to be irrelevant teaches
+        people to ignore the ones that are not.
+        """
+        free = getattr(self, "free_mb_at_failure", None)
+        if free is None:
+            return ""
+        haystack = " ".join([self.error, self.offending_line or "",
+                             self.root_cause or ""]).lower()
+        if not any(word in haystack for word in _MEMORY_WORDS):
+            return ""
+        return (f"the node itself had {free / 1024:.1f} GB free when this "
+                f"failed, which is the figure every memory message here has "
+                f"to be read against")

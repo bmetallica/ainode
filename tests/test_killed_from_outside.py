@@ -184,3 +184,67 @@ class TestTheBudgetHintNamesTheUtilization:
                       "device memory budget (1168039936 B)\n")
         phase.fail_exit(1)
         assert "InstantTensor" in phase.failure_reason()
+
+
+class TestItSaysWhatTheNodeHadFree:
+    """The number every memory-shaped failure is really about, and the one
+    nobody has.
+
+    Three attempts on the same node reported budgets of 1.09 GiB, 1.49 GiB
+    and 449 MiB. Against what? By the time anyone looks, the engine that was
+    holding the memory is gone — so the reading has to be taken at the moment
+    of failure, not when the message is read.
+    """
+
+    def _phase(self, free_mb, line):
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        phase = LoadPhaseTracker()
+        phase.reset()
+        phase.observe(line)
+        phase.fail("the launcher exited (code 1)")
+        phase.free_mb_at_failure = free_mb
+        return phase
+
+    BUDGET = ("RuntimeError: buffer_size (5086090240 B) exceeds device "
+              "memory budget (471216128 B)\n")
+
+    def test_a_memory_failure_carries_the_reading(self):
+        reason = self._phase(1200.0, self.BUDGET).failure_reason()
+        assert "1.2 GB free" in reason
+
+    def test_an_unrelated_failure_does_not(self):
+        # A number that turns out to be irrelevant teaches people to ignore
+        # the ones that are not.
+        reason = self._phase(1200.0,
+                             "ValueError: unrecognized arguments: --nope\n"
+                             ).failure_reason()
+        assert "GB free" not in reason
+
+    def test_an_unreadable_meminfo_is_silence(self):
+        assert "GB free" not in self._phase(None, self.BUDGET).failure_reason()
+
+    def test_it_is_read_at_the_moment_of_failure(self):
+        import inspect
+
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        assert "self.free_mb_at_failure = _host_free_mb()" in \
+            inspect.getsource(LoadPhaseTracker.fail)
+
+    def test_the_evidence_still_comes_first(self):
+        # Evidence, then explanation, then the reading — the rule this
+        # message has followed since the hints were added.
+        reason = self._phase(1200.0, self.BUDGET).failure_reason()
+        assert reason.index("buffer_size") < reason.index("InstantTensor")
+        assert reason.index("InstantTensor") < reason.index("GB free")
+
+    def test_a_sigkill_counts_as_memory_shaped(self):
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        phase = LoadPhaseTracker()
+        phase.reset()
+        phase.observe("INFO loading weights\n")
+        phase.fail_exit(-9)
+        phase.free_mb_at_failure = 300.0
+        assert "0.3 GB free" in phase.failure_reason()
