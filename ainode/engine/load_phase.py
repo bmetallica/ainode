@@ -341,7 +341,9 @@ _INSTANTTENSOR_BUDGET_HINT = (
     "with no relation to what the machine has free: the same launch on the "
     "same node succeeds and fails with it hours apart. Tell them apart by "
     "raising the utilization once: if the budget does not move, it is the "
-    "second, and the loader is the thing to drop rather than to tune. If "
+    "second, and the loader is the thing to drop rather than to tune. That "
+    "figure is MemFree, not MemAvailable — page cache counts against it, so "
+    "reading a checkpoint off disk takes the room the next load asks for. If "
     "another model is already loaded on that node, its reservation is what "
     "left so little free."
 )

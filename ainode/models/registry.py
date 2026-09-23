@@ -460,9 +460,13 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # moves is the budget the loader compares against: 471216128,
             # 521129984, 678170624, 879509504, 953698304, 1067569152,
             # 1186148352, 1414617088, 1535328256, 1698646016 B across those
-            # failures. It is a runtime query, it bears no relation to what
-            # the machine has free, and when it lands above the buffer the
-            # load works.
+            # failures. It is what CUDA reports free, and on unified memory
+            # that is MemFree rather than MemAvailable: measured on an idle
+            # node at 27.18 GB against 116 GB available, with 91 GB of page
+            # cache between the two. Reading a checkpoint off disk fills that
+            # cache — so a load can take the room its own loader is about to
+            # ask for, and whether it fits depends on what the node has been
+            # doing. When the figure lands above the buffer, it works.
             #
             # The variables ARE read — with none of them the buffer is
             # 5086090240 B, with all five 2542796800 B, exactly half, which
@@ -566,7 +570,13 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         # and on a one-GPU-per-node Spark the split is planned from the node
         # selection instead.
         extra_vllm_args=[
-            "--load-format", "instanttensor",
+            # NOT --load-format instanttensor, though eugr's recipe uses it.
+            # See the Qwen3.8 entry: the loader's staging buffer is compared
+            # against a driver figure that tracks MemFree, so a node that has
+            # just read a checkpoint off disk has page cache where that
+            # figure looks for room. Same coin flip here, same engine image —
+            # the eugr backend serves every one of these on vllm-node.
+
             "--enable-prefix-caching",
             "--enable-auto-tool-choice",
             "--tool-call-parser", "gemma4",
@@ -863,7 +873,13 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         # its drafter belongs to the 26B-A4B and pairing it with this model
         # would fail in a way that reads like a broken model.
         extra_vllm_args=[
-            "--load-format", "instanttensor",
+            # NOT --load-format instanttensor, though eugr's recipe uses it.
+            # See the Qwen3.8 entry: the loader's staging buffer is compared
+            # against a driver figure that tracks MemFree, so a node that has
+            # just read a checkpoint off disk has page cache where that
+            # figure looks for room. Same coin flip here, same engine image —
+            # the eugr backend serves every one of these on vllm-node.
+
             "--enable-prefix-caching",
             "--enable-auto-tool-choice",
             "--tool-call-parser", "gemma4",
