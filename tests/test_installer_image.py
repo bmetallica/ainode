@@ -115,3 +115,68 @@ class TestMessagesRenderTheirLineBreaks:
     def test_the_pull_failure_points_at_the_recorded_image(self):
         failure = SOURCE.split("Could not pull")[1][:900]
         assert "image.env" in failure
+
+
+class TestBuildingWithoutBuildKit:
+    r"""The UI's update button builds the orchestrator image from inside the
+    orchestrator container, and that build died:
+
+        Step 16/28 : RUN --mount=type=cache,target=/root/.cache/pip ...
+        the --mount option requires BuildKit
+        [ainode] FAILED: scripts/update-cluster.sh exited with 1
+
+    `--mount` is a BuildKit directive and the legacy builder stops on it
+    rather than ignoring it. On a host this never comes up — docker-ce ships
+    buildx and uses it by default — but the container's docker-ce-cli was
+    installed with --no-install-recommends, and buildx is a *recommended*
+    package.
+
+    Both halves are needed. The image installs buildx so the next build has
+    it; the script copes without it, because a fix that only works on images
+    built after itself is no use to the node running the older one.
+    """
+
+    BUILD = (Path(__file__).resolve().parent.parent / "scripts" /
+             "build-ainode-image.sh").read_text()
+    DOCKERFILE = (Path(__file__).resolve().parent.parent / "scripts" /
+                  "Dockerfile.ainode").read_text()
+
+    def test_the_image_installs_buildx(self):
+        assert "docker-buildx-plugin" in self.DOCKERFILE
+
+    def test_the_script_checks_for_it(self):
+        assert "docker buildx version" in self.BUILD
+
+    def test_it_uses_buildkit_when_it_is_there(self):
+        assert "DOCKER_BUILDKIT=1" in self.BUILD
+
+    def test_it_strips_the_mounts_when_it_is_not(self):
+        assert "s/--mount=type=" in self.BUILD
+
+    def test_the_strip_leaves_a_valid_dockerfile(self):
+        # The flag goes, the RUN stays: `RUN --mount=... \` must not become
+        # a bare continuation with no command.
+        stripped = re.sub(r"--mount=type=[^ ]+ *", "", self.DOCKERFILE)
+        # The directive is gone from the instructions. The word may still
+        # appear in a comment explaining why, which the builder ignores.
+        assert "--mount=type=" not in stripped
+        for line in stripped.splitlines():
+            assert not line.strip().startswith("--")
+        # Every RUN still starts a command or a continuation.
+        assert "RUN \\\n" in stripped or "RUN " in stripped
+
+    def test_the_fallback_says_what_it_costs(self):
+        # Silently building differently is how two images that should be
+        # identical stop being identical.
+        assert "pip cache disabled" in self.BUILD
+
+    def test_the_temporary_dockerfile_is_cleaned_up(self):
+        assert "trap 'rm -f" in self.BUILD
+
+    def test_only_this_dockerfile_needs_the_dance(self):
+        # If another one grows a cache mount, this test says so before a
+        # build on a buildx-less node does.
+        scripts = Path(__file__).resolve().parent.parent / "scripts"
+        with_mounts = [f.name for f in scripts.glob("Dockerfile*")
+                       if "--mount=type=" in f.read_text()]
+        assert with_mounts == ["Dockerfile.ainode"]

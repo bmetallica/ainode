@@ -36,9 +36,42 @@ if [ -z "$EUGR_COMMIT" ]; then
     exit 1
 fi
 
+# BuildKit, or a Dockerfile that does not need it.
+#
+# Dockerfile.ainode uses `RUN --mount=type=cache` for pip's wheel cache. That
+# is a BuildKit directive, and the legacy builder does not ignore it — it
+# stops:
+#
+#     the --mount option requires BuildKit
+#
+# On a normal host this never comes up, because docker-ce ships buildx and
+# uses it by default. It came up when the UI's update button ran this script
+# from inside the AINode container, whose docker-ce-cli was installed with
+# --no-install-recommends and therefore without the buildx plugin. The image
+# now installs it, but a script that only works on images built after itself
+# is no use to the node running the older one.
+#
+# So: use BuildKit when it is there, and when it is not, build from a copy of
+# the Dockerfile with the cache mounts stripped. The result is the same image;
+# it just re-downloads wheels that pip would have had cached.
+DOCKERFILE="scripts/Dockerfile.ainode"
+CLEANUP=""
+if docker buildx version >/dev/null 2>&1; then
+    export DOCKER_BUILDKIT=1
+else
+    echo "!! no buildx plugin here — building without BuildKit (pip cache disabled)"
+    echo "   Install docker-buildx-plugin to get it back; the image this builds has it."
+    DOCKERFILE="$(mktemp /tmp/Dockerfile.ainode.XXXXXX)"
+    CLEANUP="$DOCKERFILE"
+    # Drop the flag, keep the RUN. Both spellings, because a line may carry
+    # more than one mount.
+    sed -E 's/--mount=type=[^ ]+ *//g' scripts/Dockerfile.ainode > "$DOCKERFILE"
+    trap 'rm -f "$CLEANUP"' EXIT
+fi
+
 echo "==> Building orchestrator image ainode:${TAG} (context: $REPO_ROOT)"
 echo "    eugr launcher pinned to ${EUGR_COMMIT:0:7}"
-docker build -f scripts/Dockerfile.ainode \
+docker build -f "$DOCKERFILE" \
     --build-arg "EUGR_COMMIT=${EUGR_COMMIT}" \
     --build-arg "AINODE_GIT_SHA=$(git rev-parse HEAD 2>/dev/null || echo unknown)" \
     -t "ainode:${TAG}" .
