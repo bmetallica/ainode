@@ -244,7 +244,7 @@ class EugrBackend(EngineBackend):
         env = self._launcher_env()
 
         logger.info("Starting solo vLLM via the launcher: %s", " ".join(cmd))
-        self._log_serve_command(launch_script)
+        self._log_serve_command(launch_script, self._log_file)
         self._process = subprocess.Popen(
             cmd,
             env=env,
@@ -304,6 +304,7 @@ class EugrBackend(EngineBackend):
                "--launch-script", str(launch_script)]
         env = self._launcher_env(shim_container_path=shim_container_path)
 
+        self._log_serve_command(launch_script, self._distributed_log)
         logger.info(
             "Starting distributed vLLM: %s across %d peers via eugr launcher",
             self._parallel_plan().label(),
@@ -1390,13 +1391,21 @@ class EugrBackend(EngineBackend):
         # ENGINE_MODELS_DIR there, whatever it is called on the host.
         return f"{ENGINE_MODELS_DIR}/{model.replace('/', '--')}", model
 
-    def _log_serve_command(self, launch_script: Path) -> None:
+    def _log_serve_command(self, launch_script: Path,
+                           log_file: Optional[Path] = None) -> None:
         """Record the `vllm serve` line this launch was built from.
 
         The engine's traceback says what went wrong with an argument; nothing
         said what the arguments were. An empty repo id, a flag with no value,
         a speculative config that lost its quoting — all of them are obvious
         next to the command and invisible without it.
+
+        Into the engine's own log as well as this process's, and behind a
+        banner. That log is append-only across every launch this node has
+        ever done: grepping it for "vllm serve" on a node that has served
+        models for eleven days answers with the first launch of the eleven,
+        which is how a failure from 09-12 came to be read as today's. The
+        banner gives `tail` and `grep -n` something to aim at.
         """
         try:
             text = launch_script.read_text()
@@ -1412,7 +1421,20 @@ class EugrBackend(EngineBackend):
             command.append(line.rstrip("\\").strip())
             if not line.endswith("\\"):
                 break
-        logger.info("serve command: %s", " ".join(c for c in command if c))
+        rendered = " ".join(c for c in command if c)
+        logger.info("serve command: %s", rendered)
+        if log_file is None:
+            return
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        banner = (f"\n[ainode] ===== launch {self.config.model or '<no model>'} "
+                  f"at {stamp} =====\n[ainode] serve command: {rendered}\n")
+        try:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(log_file, "a") as sink:
+                sink.write(banner)
+        except OSError:
+            logger.debug("could not write the launch banner to %s", log_file,
+                         exc_info=True)
 
     def _write_launch_script(self, plan: ParallelPlan, solo: bool = False) -> Path:
         """Emit a ``vllm serve`` script for eugr to execute inside the container.
