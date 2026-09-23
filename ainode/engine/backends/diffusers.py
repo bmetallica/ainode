@@ -232,6 +232,15 @@ class DiffusersBackend(EngineBackend):
     def ready(self) -> bool:
         return self._ready
 
+    def note_external_stop(self, reason: str) -> None:
+        """Something outside this backend stopped the engine, and why.
+
+        The host memory guard calls this before it kills. Without it the only
+        surviving account of the death is the launcher's exit code, which
+        says a signal arrived and nothing about who sent it.
+        """
+        self._phase.fail(reason)
+
     @property
     def load_phase(self) -> str:
         return self._phase.current(ready_latch=self._ready)

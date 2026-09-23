@@ -343,6 +343,59 @@ _NO_PIPELINE_HINT = (
     "number you picked."
 )
 
+#: Signals worth translating. A launch that ends on one of these ended
+#: because something else decided it should, and the engine's own log — which
+#: is what the card shows — reads as a perfectly healthy startup right up to
+#: the last line.
+_SIGNAL_NOTES = {
+    9: (
+        " — killed with SIGKILL, which no process can catch: something "
+        "outside the engine stopped it. On this hardware that is almost "
+        "always the kernel's OOM killer, because the GPU allocation and the "
+        "operating system share one pool, and the kernel starts killing when "
+        "that pool runs out. AINode's memory guard records its own stops, so "
+        "if this message is all you have, the kernel did it. Confirm with "
+        "`dmesg -T | grep -i \"killed process\"` on the node that died, and "
+        "launch again with a lower gpu-memory-utilization — the cap AINode "
+        "applies is computed from free memory, so unloading anything else "
+        "first raises it."
+    ),
+    15: (
+        " — SIGTERM: something asked it to stop. A `docker stop`, a "
+        "systemctl restart, or another launch replacing this one."
+    ),
+    11: (
+        " — SIGSEGV: the engine crashed in native code. That is a bug in the "
+        "kernel or backend it selected, not a configuration problem; the "
+        "lines above name which one it was using."
+    ),
+    6: (
+        " — SIGABRT: the engine aborted itself, usually from a failed "
+        "assertion in CUDA or NCCL. The last lines above are the ones that "
+        "matter."
+    ),
+}
+
+
+def _signal_note(rc) -> str:
+    """The sentence for an exit code, or "" for an ordinary one."""
+    try:
+        code = int(rc)
+    except (TypeError, ValueError):
+        return ""
+    # Popen reports a signal as a negative number; a shell reports the same
+    # death as 128 + n, and the launcher is a shell script.
+    if code < 0:
+        signal_number = -code
+    elif 128 < code < 160:
+        signal_number = code - 128
+    else:
+        return ""
+    return _SIGNAL_NOTES.get(signal_number,
+                             f" — killed by signal {signal_number}: something "
+                             f"outside the engine stopped it.")
+
+
 _FATAL_PATTERNS = [
     # Whatever a drafter's architecture is called, serving one alone dies
     # reaching through a speculative_config that is None —
@@ -448,11 +501,35 @@ class LoadPhaseTracker:
     def fail(self, reason: str) -> None:
         """Mark the launch dead. Ignored once the engine is serving — the
         launcher exiting after a successful start is normal for a detached
-        engine, and must not retract a working model."""
+        engine, and must not retract a working model.
+
+        The FIRST explanation wins. When something stops an engine from
+        outside — the host memory guard does exactly that — the launcher
+        exits a moment later, and "the launcher exited (code -9)" would
+        otherwise overwrite the one message that said who did it and why.
+        The exit is the consequence; the reason recorded before it is the
+        cause.
+        """
         if self.ready:
+            return
+        if self.phase == PHASE_FAILED and self.error:
             return
         self.phase = PHASE_FAILED
         self.error = reason.strip()
+
+    def fail_exit(self, rc) -> None:
+        """Mark the launch dead from a process exit code.
+
+        A negative code is a signal, and a signal is not a crash: something
+        outside the engine ended it. Saying "code -9" and stopping leaves the
+        operator with the least actionable message in the product — the log
+        above it is a normal, healthy startup, because the process never got
+        to say anything about its own death.
+        """
+        if rc is None:
+            self.fail("the launcher stopped producing output")
+            return
+        self.fail(f"the launcher exited (code {rc}){_signal_note(rc)}")
 
     def advance(self, phase: str) -> None:
         """Move to ``phase`` only if it is later than the current one.

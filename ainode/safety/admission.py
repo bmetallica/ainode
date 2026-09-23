@@ -19,6 +19,7 @@ launch needs is allowed to be right.
 from __future__ import annotations
 
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,12 @@ def check_admission(app, model: str, *, node_ids=None, strategy: str = "auto",
     if unreadable:
         return unreadable
 
+    killed = _guard_history_says(app, model, node_ids=node_ids,
+                                 gpu_memory_utilization=gpu_memory_utilization,
+                                 max_model_len=max_model_len)
+    if killed:
+        return killed
+
     guard = app.get("memory_guard")
     if guard is not None:
         try:
@@ -52,6 +59,61 @@ def check_admission(app, model: str, *, node_ids=None, strategy: str = "auto",
 
     return _planner_says(app, model, node_ids=node_ids, strategy=strategy,
                          max_model_len=max_model_len)
+
+
+def _guard_history_says(app, model: str, *, node_ids=None,
+                        gpu_memory_utilization=None,
+                        max_model_len: int = 0) -> str:
+    """Refuse a launch the guard has already had to stop, unless it asks for
+    less than the one that was stopped.
+
+    The hardest fact this node holds about a model. An estimate can be wrong
+    in either direction; a kill is proof that this node, configured that way,
+    could not hold it. Asking for less — fewer tokens, a smaller share of
+    memory, more nodes to spread it over — is a different question, and it is
+    allowed through to be answered by the arithmetic below.
+    """
+    from ainode.measure.recorder import guard_stopped_for
+
+    entry = guard_stopped_for(app, model)
+    if entry is None:
+        return ""
+
+    killed_gmu = float(entry.get("guard_stop_gmu") or 0)
+    killed_len = int(entry.get("guard_stop_max_model_len") or 0)
+    killed_nodes = int(entry.get("guard_stop_nodes") or 0)
+    wanted_nodes = len(list(node_ids or [])) or 1
+    if killed_nodes and wanted_nodes > killed_nodes:
+        return ""
+    try:
+        wanted_gmu = float(gpu_memory_utilization) if gpu_memory_utilization else 0.0
+    except (TypeError, ValueError):
+        wanted_gmu = 0.0
+    if killed_gmu and wanted_gmu and wanted_gmu < killed_gmu:
+        return ""
+    if killed_len and max_model_len and max_model_len < killed_len:
+        return ""
+
+    when = time.strftime("%Y-%m-%d %H:%M",
+                         time.localtime(float(entry.get("last_guard_stop") or 0)))
+    asked = []
+    if killed_gmu:
+        asked.append(f"gpu-memory-utilization {killed_gmu:.2f}")
+    if killed_len:
+        asked.append(f"max-model-len {killed_len:,}")
+    if killed_nodes:
+        asked.append(f"{killed_nodes} node(s)")
+    detail = ", ".join(asked) or "these settings"
+    times = int(entry.get("guard_stops") or 1)
+    return (
+        f"The host memory guard has already had to stop {model} on this node "
+        f"{'once' if times == 1 else f'{times} times'}, most recently on "
+        f"{when}, launched with {detail}. That is not an estimate — the node "
+        f"ran out of memory and an engine had to be killed to save it. "
+        f"Launch it with fewer tokens, a lower gpu-memory-utilization or more "
+        f"nodes and this refusal lifts by itself; \"force\": true overrides "
+        f"it outright."
+    )
 
 
 def _quantization_says(app, model: str) -> str:
@@ -243,28 +305,12 @@ def _image_says(app, manager, model: str, node_ids=None):
 def _budgets_with_reserve(app, node_ids=None):
     """Node budgets, minus the host reserve this node keeps.
 
-    The planner already holds back SYSTEM_RESERVE_GB per node. This tops that
-    up to whatever the operator set as the warning line — never double-counts
-    it — so the two numbers say the same thing: what the guard refuses to fall
-    below is what the planner refuses to plan into.
+    One implementation, shared with the launch dialog — they used to be two,
+    and the dialog's was the more optimistic of them.
     """
-    from ainode.planner.api_routes import node_budgets
-    from ainode.planner.compute import SYSTEM_RESERVE_GB
+    from ainode.planner.api_routes import budgets_with_guard_reserve
 
-    budgets = node_budgets(app, node_ids)
-    guard = app.get("memory_guard")
-    # The reading's warn line, not the configured one: it carries the cap
-    # against the machine's total memory, and the planner has to hold back
-    # what the guard will actually enforce.
-    try:
-        warn_gb = float(guard.read().warn_mb) / 1024 if guard is not None else 0.0
-    except Exception:
-        warn_gb = float(getattr(guard, "warn_mb", 0.0) or 0.0) / 1024
-    extra = max(0.0, warn_gb - SYSTEM_RESERVE_GB)
-    if extra:
-        for budget in budgets:
-            budget.free_gb = max(0.0, budget.free_gb - extra)
-    return budgets
+    return budgets_with_guard_reserve(app, node_ids)
 
 
 def _kv_dtype(recipe) -> str:

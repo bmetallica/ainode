@@ -157,8 +157,17 @@ class TestTheGuardIsVisible:
         assert payload["host_memory_readable"] is False
 
 
+def _nowhere_store(tmp_path):
+    """A measurement store under tmp_path. The guard writes down what it
+    stopped, and a test must not write that into the home directory of
+    whoever is running the suite."""
+    from ainode.measure.store import MeasurementStore
+
+    return MeasurementStore(tmp_path / "measurements.json")
+
+
 class TestTheStopIsAnnouncedImmediately:
-    def test_the_guard_calls_back_when_it_acts(self):
+    def test_the_guard_calls_back_when_it_acts(self, tmp_path):
         from ainode.safety.memory_guard import MemoryGuard
 
         seen = []
@@ -176,13 +185,14 @@ class TestTheStopIsAnnouncedImmediately:
             def instances(self):
                 return [_Instance()]
 
-        guard = MemoryGuard({"instances": _Manager()},
+        guard = MemoryGuard({"instances": _Manager(),
+                             "measurement_store": _nowhere_store(tmp_path)},
                             on_action=lambda action: seen.append(action))
         guard.act(_reading(available_mb=500))
         assert seen and seen[0]["model"] == "org/m"
         assert guard.stops == 1
 
-    def test_a_callback_that_raises_does_not_stop_the_guard(self):
+    def test_a_callback_that_raises_does_not_stop_the_guard(self, tmp_path):
         # The guard is the last line of defence; a broken broker must not be
         # able to disarm it.
         from ainode.safety.memory_guard import MemoryGuard
@@ -199,7 +209,9 @@ class TestTheStopIsAnnouncedImmediately:
             def instances(self):
                 return [_Instance()]
 
-        guard = MemoryGuard({"instances": _Manager()}, on_action=_boom)
+        guard = MemoryGuard({"instances": _Manager(),
+                             "measurement_store": _nowhere_store(tmp_path)},
+                            on_action=_boom)
         assert guard.act(_reading(available_mb=500)) == "m"
 
     def test_publishing_an_event_needs_no_broker_to_be_safe(self):

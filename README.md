@@ -93,6 +93,14 @@ distributed launch leaves no instance record, it kills the engine container
 directly. Launches also run off the event loop, so a loading node no longer
 disappears from the cluster.
 
+**Learning from a kill** — when the guard has to stop an engine, that is
+written against the model, not only into the log. The next launch of the same
+model asking for the same thing is refused with it — *the guard stopped this
+here on 23-09 at gpu-memory-utilization 0.85* — and asking for less, or for
+more nodes, lifts the refusal by itself. A launch that ends on a signal is
+translated too: `code -9` is SIGKILL, which no process can catch, so the
+engine's own log is a healthy startup right up to the last line.
+
 **Knowing what happened** — per-phase load timings, an **error assistant**
 that explains a failure using a model already running, per-instance containers
 and logs, and a **measurement store** that records what each launch actually

@@ -72,7 +72,12 @@ class _Manager:
 
 
 def _guard(tmp_path, available_mb, models=("org/a", "org/b"), **kw):
-    app = {"instances": _Manager(list(models))}
+    from ainode.measure.store import MeasurementStore
+
+    # Its own store: the guard writes what it stopped, and a test must not
+    # write that into whoever's ~/.ainode is running the suite.
+    app = {"instances": _Manager(list(models)),
+           "measurement_store": MeasurementStore(tmp_path / "measurements.json")}
     return MemoryGuard(app, meminfo=_meminfo(tmp_path, available_mb),
                        poll_seconds=0.01, **kw)
 
@@ -387,9 +392,13 @@ class TestTheMemberNodeCanDefendItself:
             return _Done()
 
         monkeypatch.setattr("subprocess.run", fake_run)
-        guard = MemoryGuard({"instances": None},
-                            meminfo=_meminfo(tmp_path, available_mb=900),
-                            critical_gb=4, warn_gb=8, poll_seconds=0.01)
+        from ainode.measure.store import MeasurementStore
+
+        guard = MemoryGuard(
+            {"instances": None,
+             "measurement_store": MeasurementStore(tmp_path / "m.json")},
+            meminfo=_meminfo(tmp_path, available_mb=900),
+            critical_gb=4, warn_gb=8, poll_seconds=0.01)
         return guard, calls
 
     def test_it_kills_the_engine_container(self, tmp_path, monkeypatch):

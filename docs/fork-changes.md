@@ -47,7 +47,7 @@ New packages, none of which exist upstream:
 | `ainode/profiles/` | "What the cluster should be serving", captured from what is running, applied to converge — each entry on the node it names, and a copy running anywhere else stopped — one of them the default at boot | Bringing three nodes back after a restart was a dozen manual steps |
 | `ainode/placement/` | One model, one node set, remembered | A cluster settles into an arrangement; re-picking it on every relaunch is re-configuring rather than running |
 | `ainode/planner/` | Reads the checkpoint's own `config.json` and the nodes' free memory and computes: does it fit, which axis, what `max-model-len`, how much KV, how many concurrent users — and shows its working | The alternative was a person with a calculator, once per model |
-| `ainode/safety/` | Host memory guard, the admission gate in front of both launch paths, and the cap that keeps `gpu_memory_utilization` inside what is free | Two nodes were lost to a launch that did not fit — and again to a model card's 0.97, which on unified memory is 124 GB of 128 |
+| `ainode/safety/` | Host memory guard, the admission gate in front of both launch paths, the cap that keeps `gpu_memory_utilization` inside what is free, and the refusal built from what the guard has already had to kill | Two nodes were lost to a launch that did not fit — and again to a model card's 0.97, which on unified memory is 124 GB of 128 |
 | `ainode/measure/` | Writes down what each launch actually cost and prefers a measurement to an estimate | Every number already existed; nobody was recording it |
 | `ainode/assist/` | Explains a failure using a model that is already running | A vLLM traceback assumes you already know this hardware |
 | `ainode/telemetry/` | MQTT: system, GPU, fabric, models, engine, safety, transfers, cluster, logs, events | A scrape needs the monitor to reach every node; a publish needs each node to reach one broker |
@@ -106,7 +106,7 @@ The large ones, by how much:
 orchestrator image, the image-generation engine, the registry cache, the
 cluster updater and a diagnostic.
 
-Tests: **88 new files**, 13 upstream files extended, 2733 tests. Two of them
+Tests: **88 new files**, 13 upstream files extended, 2765 tests. Two of them
 hold the documentation to the code rather than to good intentions:
 `test_fork_documentation.py` checks that every module and link this file and
 the README name exists and that every feature row claiming an endpoint matches
