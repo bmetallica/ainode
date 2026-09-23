@@ -47,9 +47,20 @@ Zwei Konsequenzen, beide umgesetzt:
   Sekunde gestorben war. Und die Meldung nennt jetzt beide Versionen und sagt,
   dass das Image das Problem ist, nicht das Modell.
 
+**Nachtrag, selber Tag:** mit `diffusers 0.40.0` — also *neuer* als die
+0.37.0.dev0 des Checkpoints — fehlt die Klasse immer noch. Sie ist in keinem
+Release. Die Modellkarte sagt es selbst:
+
+    pip install git+https://github.com/huggingface/diffusers
+
+Damit ist der Weg `DIFFUSERS_REF="git+https://github.com/huggingface/diffusers"`,
+und die Fehlermeldung unterscheidet jetzt beide Fälle: ist die installierte
+Version älter als die des Checkpoints, hilft ein Upgrade; ist sie neuer und
+die Klasse fehlt trotzdem, hilft kein weiteres Release, sondern nur git.
+
 Schritt 0 bleibt damit weiter offen: ob `QwenImage21Pipeline` auf
-aarch64/Blackwell *läuft*, ist ungemessen — bisher wissen wir nur, dass die
-installierte Bibliothek sie nicht kennt.
+aarch64/Blackwell *läuft*, ist ungemessen — bisher wissen wir nur, dass keine
+veröffentlichte Bibliothek sie kennt.
 
 | Schritt | PR | Was daraus wurde |
 |---|---|---|
