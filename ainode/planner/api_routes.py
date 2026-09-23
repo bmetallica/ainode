@@ -68,7 +68,7 @@ def budgets_with_guard_reserve(app, node_ids=None) -> list:
     One number now: what the guard will not let go below is what the planner
     will not plan into.
     """
-    from ainode.planner.compute import SYSTEM_RESERVE_GB
+    from ainode.planner.compute import SYSTEM_RESERVE_GB, plan_headroom_gb
 
     budgets = node_budgets(app, node_ids)
     guard = app.get("memory_guard")
@@ -80,9 +80,13 @@ def budgets_with_guard_reserve(app, node_ids=None) -> list:
     except Exception:
         warn_gb = float(getattr(guard, "warn_mb", 0.0) or 0.0) / 1024
     extra = max(0.0, warn_gb - SYSTEM_RESERVE_GB)
-    if extra:
-        for budget in budgets:
-            budget.free_gb = max(0.0, budget.free_gb - extra)
+    for budget in budgets:
+        # The guard's line, and then room to stand back from it. Planning up
+        # to the line puts a launch that went exactly to plan one page-cache
+        # fluctuation away from being killed — which is how two idle nodes
+        # filled up on a model that fitted on paper.
+        held_back = extra + plan_headroom_gb(budget.total_gb)
+        budget.free_gb = max(0.0, budget.free_gb - held_back)
     return budgets
 
 

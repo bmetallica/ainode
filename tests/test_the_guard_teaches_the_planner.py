@@ -62,12 +62,28 @@ class TestOneLineForBoth:
         app = {"cluster_state": _Cluster([_node("n1")]), "memory_guard": _Guard(20480)}
         assert budgets_with_guard_reserve(app)[0].free_gb < 105
 
-    def test_no_guard_changes_nothing(self):
+    def test_without_a_guard_only_the_headroom_is_held_back(self):
         from ainode.planner.api_routes import budgets_with_guard_reserve
+        from ainode.planner.compute import plan_headroom_gb
 
         app = {"cluster_state": _Cluster([_node("n1")])}
-        # (128000 - 8000) MB, in GB: nothing held back beyond the planner's own.
-        assert round(budgets_with_guard_reserve(app)[0].free_gb) == 117
+        budget = budgets_with_guard_reserve(app)[0]
+        assert round(budget.free_gb) == round(117.2 - plan_headroom_gb(125.0))
+
+    def test_the_headroom_is_not_the_guards_line(self):
+        # Two different things: the guard's line is where it starts acting,
+        # the headroom is the distance a plan keeps from it.
+        from ainode.planner.compute import plan_headroom_gb
+
+        assert 7.0 <= plan_headroom_gb(128.0) <= 8.0
+
+    def test_it_is_a_share_of_the_machine_not_a_constant(self):
+        # 8 GB is right on a Spark and absurd on a 16 GB CI box.
+        from ainode.planner.compute import plan_headroom_gb
+
+        assert plan_headroom_gb(16.0) <= 1.5
+        assert plan_headroom_gb(512.0) <= 8.0
+        assert plan_headroom_gb(0.0) >= 1.0
 
     def test_the_dialog_and_the_gate_ask_the_same_function(self):
         import inspect
@@ -229,3 +245,73 @@ class TestTheGuardWritesIt:
         assert entry.guard_stop_max_model_len == 65536
         assert entry.guard_stop_nodes == 2
         assert time.time() - entry.last_guard_stop < 10
+
+
+class TestThePlanDoesNotAimAtTheCliff:
+    """The whole chain, because every link of it was sound and the result
+    still killed a node.
+
+    The launch form is pre-filled with the planner's gpu_memory_utilization,
+    and the planner derived it from a claim that consumed every gigabyte down
+    to the guard's warning line. So a launch that went exactly to plan landed
+    the node ON the line where the guard starts refusing work — and the next
+    ordinary fluctuation took it under the line where the guard starts
+    killing.
+
+    Two idle 128 GB nodes, a 129 GB checkpoint at TP=2: 65 GB of weights per
+    node, which fits with room to spare. They filled up anyway.
+    """
+
+    def _budgets(self, free_gb=120.0, total_mb=128000, warn_mb=8192):
+        from ainode.planner.api_routes import budgets_with_guard_reserve
+
+        used = total_mb - free_gb * 1024
+        app = {"cluster_state": _Cluster([_node("n1", total_mb, used),
+                                          _node("n2", total_mb, used)]),
+               "memory_guard": _Guard(warn_mb)}
+        return budgets_with_guard_reserve(app)
+
+    def _plan(self, budgets):
+        from ainode.planner.compute import plan_for
+        from ainode.planner.facts import facts_from_config
+
+        facts = facts_from_config(
+            {"num_hidden_layers": 62, "num_attention_heads": 64,
+             "num_key_value_heads": 8, "hidden_size": 6144,
+             "max_position_embeddings": 196608, "torch_dtype": "bfloat16"},
+            "sparkarena/Minimax-M3", int(128.9e9))
+        return plan_for(facts, budgets, kv_cache_dtype="fp8")
+
+    def test_the_weights_do_fit_on_two_nodes(self):
+        # Saying so plainly: 129 GB across two nodes is 65 GB each, on nodes
+        # with 120 free. Nothing about this launch was too big.
+        plan = self._plan(self._budgets())
+        assert plan.fits
+        assert plan.tensor_parallel_size == 2
+        assert 60 <= plan.weights_per_node_gb <= 72
+
+    def test_what_it_plans_to_claim_leaves_the_guard_alone(self):
+        free_gb, warn_gb = 120.0, 8.0
+        budgets = self._budgets(free_gb=free_gb)
+        plan = self._plan(budgets)
+        total_gb = 128000 / 1024
+        claimed = plan.gpu_memory_utilization * total_gb
+        left = free_gb - claimed
+        # The number that matters: what is still free once the engine has
+        # taken its share. Before the headroom existed this was the warning
+        # line exactly — nothing between a plan going right and the guard
+        # acting.
+        assert left > warn_gb + 3, (
+            f"plan claims {claimed:.0f} GB of {free_gb:.0f} free, leaving "
+            f"{left:.0f} GB against a {warn_gb:.0f} GB guard line")
+
+    def test_a_tighter_guard_line_moves_the_plan_not_the_margin(self):
+        # Raising the reserve in Settings has to make the plan smaller, not
+        # make the margin disappear.
+        for warn_mb in (8192, 16384, 24576):
+            budgets = self._budgets(warn_mb=warn_mb)
+            plan = self._plan(budgets)
+            if not plan.fits:
+                continue
+            claimed = plan.gpu_memory_utilization * (128000 / 1024)
+            assert 120.0 - claimed > warn_mb / 1024

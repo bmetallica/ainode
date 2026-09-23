@@ -45,6 +45,41 @@ TP_REPLICATION = 1.05
 #: does not fail cleanly — it takes the node with it.
 SYSTEM_RESERVE_GB = 4.0
 
+#: Headroom the plan must leave ABOVE the memory guard's warning line, as a
+#: share of the node's total memory.
+#:
+#: This is the difference between a plan that survives and one that is
+#: technically correct. Until it existed, the planner sized the KV cache to
+#: consume everything down to the guard's warning line — so a launch that went
+#: exactly to plan landed the node ON the line where the guard starts refusing
+#: work, one ordinary fluctuation from the line where it starts killing. The
+#: fluctuations are not hypothetical: the orchestrator container holds two to
+#: three gigabytes of torch, docker moves images around, and reading a 130 GB
+#: checkpoint churns the page cache for minutes.
+#:
+#: Reported from the cluster, on a two-node launch of a model that fitted
+#: comfortably on paper:
+#:
+#:     die frage ist warum node 1 und 2 überhaupt überlaufen.
+#:     ich vermute das ist der planer schuld
+#:
+#: It was.
+PLAN_HEADROOM_SHARE = 0.06
+
+#: …bounded, because a share is wrong at both ends: 6% of a 16 GB CI box is a
+#: gigabyte that machine cannot spare, and 6% of a future 512 GB node is more
+#: than anything actually fluctuates by.
+PLAN_HEADROOM_MIN_GB = 1.0
+PLAN_HEADROOM_MAX_GB = 8.0
+
+
+def plan_headroom_gb(total_gb: float) -> float:
+    """What a plan must leave above the guard's line on a node this size."""
+    if total_gb <= 0:
+        return PLAN_HEADROOM_MIN_GB
+    return round(min(PLAN_HEADROOM_MAX_GB,
+                     max(PLAN_HEADROOM_MIN_GB, total_gb * PLAN_HEADROOM_SHARE)), 1)
+
 #: Tensor parallelism splits attention heads, and head counts are powers of
 #: two. TP=3 has no models behind it.
 TENSOR_SIZES = (1, 2, 4, 8)

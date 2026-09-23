@@ -249,7 +249,10 @@ class TestTheGateStillWorksEndToEnd:
             status = "online"
             gpu_memory_gb = 122.0
             gpu_memory_total_mb = 124928.0
-            gpu_memory_used_mb = 124928.0 - 8000.0
+            # 40 GB free: enough that the refusal has to be about the image —
+            # 33 GB of weights plus a 4096x4096 peak — rather than about a
+            # node with nothing left at all.
+            gpu_memory_used_mb = 124928.0 - 40000.0
 
         class _Cluster:
             def members(self):
