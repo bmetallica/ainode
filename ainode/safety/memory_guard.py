@@ -397,6 +397,7 @@ class MemoryGuard:
                     getattr(config, "gpu_memory_utilization", 0) or 0),
                 max_model_len=int(getattr(config, "max_model_len", 0) or 0),
                 nodes=1 + len(list(getattr(record, "peer_ips", []) or [])),
+                extra_args=list(getattr(config, "extra_vllm_args", None) or []),
             )
         except Exception:
             logger.debug("could not record the stop against %s", model,

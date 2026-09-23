@@ -455,6 +455,21 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         overrides["gpu_memory_utilization"] = recipe_gmu
     overrides = apply_tool_calling(model, overrides, str_field(body, "tool_calling"))
 
+    # What the architecture needs at this split. A mixture-of-experts whose
+    # experts are not sharded is replicated in full onto every rank — the
+    # weights then do not fit however short the context is, which is what a
+    # 129 GB checkpoint failing at max-model-len 3072 looks like. Merged like
+    # a recipe, so the caller still wins per flag and drop: still works.
+    from ainode.engine.serve_args import merge_vllm_args
+    from ainode.models.architecture import architecture_args
+
+    needed = architecture_args(request.app, model, 1 + len(chosen))
+    if needed:
+        overrides["extra_vllm_args"] = merge_vllm_args(
+            needed, overrides.get("extra_vllm_args"))
+        logger.info("%s: %s — the architecture needs it at %d nodes",
+                    model, " ".join(needed), 1 + len(chosen))
+
     # Every rank gets the same fraction, so the tightest node bounds the
     # launch. This is the distributed path's version of the cap the solo path
     # applies — and the one that matters more: a launch that takes two nodes

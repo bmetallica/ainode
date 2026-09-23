@@ -464,7 +464,7 @@ def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,
                                   kv_cache_dtype)
             return plan
     plan.notes = _explain(facts, plan, best, bytes_per_token, kv_cache_dtype)
-    plan.warnings.extend(_caveats(facts))
+    plan.warnings.extend(_caveats(facts, len(best.nodes)))
     return plan
 
 
@@ -519,8 +519,23 @@ def _explain(facts: ModelFacts, plan: Plan, best: _Candidate,
     return notes
 
 
-def _caveats(facts: ModelFacts) -> List[str]:
+def _caveats(facts: ModelFacts, nodes: int = 1) -> List[str]:
     out = []
+    if facts.is_moe and nodes > 1:
+        # The arithmetic above divides the weights by the rank count, which is
+        # only true when the experts are actually sharded. They are not, by
+        # default: tensor parallelism splits attention and the dense layers
+        # and replicates every expert onto every rank. AINode passes
+        # --enable-expert-parallel for a multi-node MoE for exactly this
+        # reason; a launch that drops it needs the WHOLE checkpoint per node,
+        # and the figures here are then wrong by the rank count.
+        out.append(
+            f"{facts.num_experts or 'The'} experts are sharded across the "
+            f"{nodes} nodes — this plan assumes --enable-expert-parallel, "
+            f"which AINode passes for a multi-node mixture-of-experts. "
+            f"Dropping it replicates every expert onto every rank, and the "
+            f"weights then need {facts.weights_gb:.0f} GB per node rather "
+            f"than {facts.weights_gb / nodes:.0f} GB.")
     if facts.is_hybrid:
         out.append(
             "This is a hybrid stack: only its full-attention layers cache per "

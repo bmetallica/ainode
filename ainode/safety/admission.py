@@ -79,6 +79,21 @@ def _guard_history_says(app, model: str, *, node_ids=None,
     if entry is None:
         return ""
 
+    # A launch that now carries a flag the killed one did not is a different
+    # launch. Expert parallelism is the case this exists for: without it a
+    # mixture-of-experts is replicated onto every rank, and the fix for that
+    # would otherwise be refused on the strength of the failure it fixes.
+    from ainode.models.architecture import architecture_args
+
+    recorded_args = set(entry.get("guard_stop_args") or [])
+    wanted_nodes_now = len(list(node_ids or [])) or 1
+    added = [flag for flag in architecture_args(app, model, wanted_nodes_now)
+             if flag not in recorded_args]
+    if added:
+        logger.info("%s: the guard stopped it without %s; this launch has it",
+                    model, " ".join(added))
+        return ""
+
     killed_gmu = float(entry.get("guard_stop_gmu") or 0)
     killed_len = int(entry.get("guard_stop_max_model_len") or 0)
     killed_nodes = int(entry.get("guard_stop_nodes") or 0)

@@ -80,6 +80,11 @@ class Measurement:
     guard_stop_gmu: float = 0.0
     guard_stop_max_model_len: int = 0
     guard_stop_nodes: int = 0
+    #: The engine flags it was killed with. A launch that now carries a flag
+    #: the dead one did not is a different launch, and the refusal built from
+    #: this record has to know that — otherwise the fix for an out-of-memory
+    #: is refused on the grounds of the out-of-memory it fixes.
+    guard_stop_args: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.model = str(self.model or "").strip()
@@ -186,7 +191,8 @@ class MeasurementStore:
                           node_id: str = "",
                           gpu_memory_utilization: float = 0.0,
                           max_model_len: int = 0,
-                          nodes: int = 0) -> Optional[Measurement]:
+                          nodes: int = 0,
+                          extra_args=None) -> Optional[Measurement]:
         """The memory guard stopped this model. Never raises.
 
         Recorded against the model rather than only in the guard's own log,
@@ -207,6 +213,7 @@ class MeasurementStore:
         entry.guard_stop_gmu = float(gpu_memory_utilization or 0)
         entry.guard_stop_max_model_len = int(max_model_len or 0)
         entry.guard_stop_nodes = int(nodes or 0)
+        entry.guard_stop_args = [str(a) for a in (extra_args or [])]
         entry.history.append({
             "at": round(entry.last_guard_stop, 1), "ok": False, "seconds": 0.0,
             "memory_gb": 0.0, "guard_stop": True,
