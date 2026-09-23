@@ -568,7 +568,8 @@ def _int_or_zero(value) -> int:
         return 0
 
 
-def append_solo_instance(app, model: str, gmu=None, *, overrides=None, persist: bool = True) -> dict:
+def append_solo_instance(app, model: str, gmu=None, *, overrides=None,
+                         persist: bool = True, force: bool = False) -> dict:
     """APPEND a solo instance through the InstanceManager — the shared core of the
     /api/models/load solo path AND the startup replay. Returns a plain dict (no
     HTTP). Each model gets its own container/port/config snapshot so several stack
@@ -639,6 +640,21 @@ def append_solo_instance(app, model: str, gmu=None, *, overrides=None, persist: 
             pass
         manager.remove(existing.record.instance_id)
 
+    # After the stop above, not before: reloading a model frees what it held,
+    # and a ceiling computed while the old instance was still resident would
+    # be a fraction of a machine that is about to have room again.
+    #
+    # gpu_memory_utilization is a share of TOTAL memory, and on unified memory
+    # the total includes everything the operating system is using. 0.97 there
+    # is not an aggressive setting, it is a node that stops responding. See
+    # ainode/safety/utilization.py.
+    from ainode.safety.utilization import cap_utilization
+
+    if gmu is None:
+        from ainode.core.config import NodeConfig
+        gmu = NodeConfig().gpu_memory_utilization
+    gmu, cap_note = cap_utilization(app, gmu, force=force)
+
     port = manager.allocate_port()
     name_token = "" if port == config.api_port else str(port)  # primary keeps legacy names
     instance_id = f"{config.node_id or 'head'}:{model}"
@@ -684,6 +700,12 @@ def append_solo_instance(app, model: str, gmu=None, *, overrides=None, persist: 
         _clear()
         return {"ok": False, "error": "Failed to launch engine", "status": 500}
 
+    if cap_note:
+        try:
+            backend.load_detail = cap_note
+        except Exception:
+            logger.debug("could not attach the cap note", exc_info=True)
+
     manager.add(InstanceRecord(
         instance_id=instance_id, model=model, head_node_id=config.node_id or "head",
         peer_ips=[], api_port=port, tensor_parallel_size=1, status="starting",
@@ -717,7 +739,7 @@ def append_solo_instance(app, model: str, gmu=None, *, overrides=None, persist: 
     if persist:
         save_instance_manifest(app)
     return {"ok": True, "model": model, "instance_id": instance_id,
-            "api_port": port, "stacked": not is_primary}
+            "api_port": port, "stacked": not is_primary, "note": cap_note}
 
 
 async def _wait_port_ready(port: int, timeout: float = 300.0) -> bool:
@@ -1146,18 +1168,22 @@ async def handle_model_load(request: web.Request) -> web.Response:
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
         None, functools.partial(append_solo_instance, request.app, model, gmu,
-                                overrides=overrides))
+                                overrides=overrides,
+                                force=bool(body.get("force"))))
     if not result.get("ok"):
         return web.json_response({"error": result.get("error")},
                                  status=result.get("status", 500))
-    return web.json_response({
+    payload = {
         "status": "launching",
         "model": result["model"],
         "instance_id": result["instance_id"],
         "api_port": result["api_port"],
         "stacked": result["stacked"],
         "distributed": False,
-    })
+    }
+    if result.get("note"):
+        payload["note"] = result["note"]
+    return web.json_response(payload)
 
 
 async def handle_model_unload(request: web.Request) -> web.Response:

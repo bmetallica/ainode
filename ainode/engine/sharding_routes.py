@@ -455,6 +455,27 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         overrides["gpu_memory_utilization"] = recipe_gmu
     overrides = apply_tool_calling(model, overrides, str_field(body, "tool_calling"))
 
+    # Every rank gets the same fraction, so the tightest node bounds the
+    # launch. This is the distributed path's version of the cap the solo path
+    # applies — and the one that matters more: a launch that takes two nodes
+    # down takes the cluster with it, and the guard on the member cannot even
+    # see an instance to stop. See ainode/safety/utilization.py.
+    from ainode.safety.utilization import cap_utilization
+
+    if overrides.get("gpu_memory_utilization") is None:
+        overrides["gpu_memory_utilization"] = config.gpu_memory_utilization
+    capped, cap_note = cap_utilization(
+        request.app, overrides.get("gpu_memory_utilization"),
+        node_ids=[config.node_id] + [n.node_id for n in chosen],
+        force=bool(body.get("force")))
+    if capped is not None:
+        overrides["gpu_memory_utilization"] = capped
+    if cap_note:
+        # Where the operator is looking, not only in the log: a launch that
+        # quietly asks for less than it was told to is a launch that will be
+        # blamed for the wrong thing.
+        plan_note = f"{plan_note} {cap_note}".strip() if plan_note else cap_note
+
     inst_config = replace(config, model=model, distributed_mode="head",
                           peer_ips=chosen_peers, peer_transfer_ips=peer_transfer_ips,
                           parallel_strategy=plan.strategy.value,

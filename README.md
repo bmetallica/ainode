@@ -79,12 +79,19 @@ users, showing its arithmetic; **profiles** ("what this node should be
 serving", captured from what is running and applied to converge); and
 **placement** ("this model runs on node X, permanently").
 
-**Not taking the node down** — a **host memory guard** in its own thread that
-refuses launches below a reserve and kills the newest engine before the kernel
-starves, plus an **admission gate** in front of both launch paths. On GB10 the
-GPU's memory *is* the host's memory, so an engine that over-allocates does not
-get a CUDA error — it takes the machine with it. Launches also run off the
-event loop, so a loading node no longer disappears from the cluster.
+**Not taking the node down** — on GB10 the GPU's memory *is* the host's
+memory, so an engine that over-allocates does not get a CUDA error; it starves
+the kernel and the node has to be power-cycled. Three things stand in the way,
+in this order: `gpu_memory_utilization` is **capped to what is actually free**
+on the tightest participating node (it is a share of *total* memory, so 0.97 —
+a figure plenty of model cards recommend — means 124 GB of 128 here); an
+**admission gate** sits in front of both launch paths; and a **host memory
+guard** in its own thread watches `/proc/meminfo`, refuses launches below a
+reserve, and stops an engine when memory falls below the line *or* falls
+towards it faster than the reserve would last. On a member node, where a
+distributed launch leaves no instance record, it kills the engine container
+directly. Launches also run off the event loop, so a loading node no longer
+disappears from the cluster.
 
 **Knowing what happened** — per-phase load timings, an **error assistant**
 that explains a failure using a model already running, per-instance containers
@@ -388,7 +395,8 @@ set the read token with `ainode config --hf-token hf_xxx`.
 | One-command diagnostic report (`scripts/diagnose.sh`) — read-only, secrets redacted, peers included | ✅ |
 | Image cache on the head — Hub pull-through + local registry, so an image is fetched once, not once per node | ✅ |
 | Launch planner — reads the checkpoint's `config.json` and each node's free memory; answers fit, axis, `max-model-len`, KV, concurrency, and shows its arithmetic | ✅ |
-| Host memory guard — own thread, `/proc/meminfo`, refuses launches below a reserve and kills the newest engine before the kernel starves; per-node settings with a DGX Spark preset | ✅ |
+| Host memory guard — own thread, `/proc/meminfo`, refuses launches below a reserve and stops an engine when memory drops below the line or falls towards it too fast; kills the engine container on a member node, which has no instance record; per-node settings with a DGX Spark preset | ✅ |
+| Utilization cap — `gpu_memory_utilization` lowered to what is free on the tightest participating node, because on unified memory it is a share of *total* memory and the guard cannot outrun a KV allocation | ✅ |
 | Admission gate in front of **both** launch paths, scoped to the node the instance will run on | ✅ |
 | Launches run off the event loop — a loading node no longer drops out of the cluster | ✅ |
 | Per-phase load timings — where a five-minute launch actually went | ✅ |
