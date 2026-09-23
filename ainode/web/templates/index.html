@@ -282,6 +282,17 @@
               <span>Trust remote code <span style="color:var(--text-muted)">— needed by some models; runs code from the repo</span></span>
             </label>
 
+            <!-- Every refusal in the product ends with `"force": true`, and
+                 until now that was an escape hatch you could only reach over
+                 the API. It belongs where the refusal is read. -->
+            <label class="launch-check">
+              <input type="checkbox" id="launch-force">
+              <span>Launch anyway <span style="color:var(--text-muted)">— skip the
+                admission checks and the memory cap. They are estimates and you may
+                know better; they are also what stops a launch taking the node
+                down.</span></span>
+            </label>
+
             <p class="launch-advanced-note">
               A model with a catalog recipe already carries its proven settings.
               Anything you set here overrides them, so leave a field empty unless

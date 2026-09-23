@@ -250,3 +250,47 @@ class TestThisNodesOwnFigureIsRead_Live:
         app = self._app(8000.0, 110000.0)
         app["metrics_collector"] = _Erroring()
         assert node_budgets(app)[0].free_gb > 100
+
+
+class TestForceIsInTheForm:
+    """Every refusal in the product ends with `"force": true`, and it was an
+    escape hatch you could only reach over the API — which is no use to the
+    person reading the refusal in a browser.
+    """
+
+    HTML = (__import__("pathlib").Path(__file__).resolve().parent.parent /
+            "ainode" / "web" / "templates" / "index.html").read_text()
+    APP_JS = (__import__("pathlib").Path(__file__).resolve().parent.parent /
+              "ainode" / "web" / "static" / "js" / "app.js").read_text()
+
+    def test_the_form_has_it(self):
+        assert 'id="launch-force"' in self.HTML
+
+    def test_it_says_what_it_skips_and_why_that_matters(self):
+        block = self.HTML.split('id="launch-force"')[1][:600]
+        assert "admission checks" in block
+        assert "taking the node" in " ".join(block.split())
+
+    def test_it_reaches_the_launch_body(self):
+        assert "advanced.force = true" in self.APP_JS
+
+    def test_it_does_not_survive_the_launch(self):
+        # A checkbox left ticked turns every later launch into an unchecked
+        # one, which is the opposite of deliberate.
+        assert "usedForce.checked = false" in self.APP_JS
+
+    def test_both_launch_paths_read_it(self):
+        import inspect
+
+        from ainode.engine import sharding_routes
+        from ainode.models import api_routes
+
+        for source in (inspect.getsource(sharding_routes.handle_sharding_launch),
+                       inspect.getsource(api_routes.handle_model_load)):
+            assert 'body.get("force")' in source
+
+    def test_force_skips_the_cap(self, monkeypatch):
+        from ainode.safety.utilization import cap_utilization
+
+        app = _app(monkeypatch, [_spark(1.0)])
+        assert cap_utilization(app, 0.9, force=True) == (0.9, "")

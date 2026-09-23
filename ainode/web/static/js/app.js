@@ -2456,6 +2456,11 @@ const AINode = {
     if (freeForm && freeForm.value.trim()) extraArgs += freeForm.value.trim();
     if (extraArgs.trim()) advanced.extra_vllm_args = extraArgs.trim();
 
+    // Deliberate, and never remembered: force is per launch. A checkbox that
+    // stayed ticked would turn every later launch into an unchecked one.
+    var forceBox = document.getElementById('launch-force');
+    if (forceBox && forceBox.checked) advanced.force = true;
+
     // Text and select fields: an empty one is omitted so the catalog recipe's value
     // survives. Sending "" would override a proven setting with nothing.
     var textField = function (id) {
@@ -2557,6 +2562,8 @@ const AINode = {
         // now starting, so it goes in front of the operator, not in a log.
         if (data.note) this.toast(data.note, 'info');
         this.toast('Launched: ' + model, 'success');
+        var usedForce = document.getElementById('launch-force');
+        if (usedForce) usedForce.checked = false;
         // A launch can pull the weights in from a peer, so what is on disk
         // here may have changed too.
         this.invalidate();
