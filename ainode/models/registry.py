@@ -447,20 +447,35 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             #   RuntimeError: buffer_size (2542796800 B) exceeds device
             #   memory budget (1067569152 B)
             #
-            # The variables ARE read: with none of them the buffer is
-            # 5086090240 B, with all five it is 2542796800 B — exactly half,
-            # which is what CONCURRENCY=1 does to it. What none of them does
-            # is bound it. BUFFER_SIZE=67108864 is not a ceiling on the total
-            # the loader asks the driver for; 64 MiB in, 2.4 GB out.
+            # It is a coin flip, and that is the reason — not that it cannot
+            # work. One node's log, one day, every launch of this model with
+            # the loader on:
             #
-            # And the budget it is compared against is the driver's own
-            # figure — 825161728, 862404608, 953698304, 1067569152,
-            # 1079867392 B across a week, on nodes with 28 to 116 GB free.
-            # About a gigabyte, whatever the machine has. So the loader
-            # cannot fit here, and this node's log shows it never once did:
-            # every instanttensor launch since 09-17 failed on this line.
-            # Dropping it costs seconds of load time; keeping it costs every
-            # launch.
+            #   07:08 ok   08:22 ok   09:26 ok
+            #   13:41 .. 14:48   thirteen failures
+            #   15:14 ok   15:25 ok   15:30 ok
+            #   19:29 .. 20:15   six failures
+            #
+            # Same flags, same checkpoint, same node with 116 GB free. What
+            # moves is the budget the loader compares against: 471216128,
+            # 521129984, 678170624, 879509504, 953698304, 1067569152,
+            # 1186148352, 1414617088, 1535328256, 1698646016 B across those
+            # failures. It is a runtime query, it bears no relation to what
+            # the machine has free, and when it lands above the buffer the
+            # load works.
+            #
+            # The variables ARE read — with none of them the buffer is
+            # 5086090240 B, with all five 2542796800 B, exactly half, which
+            # is CONCURRENCY=1 — but none of them BOUNDS it. BUFFER_SIZE is
+            # not a ceiling on what the loader asks for: 64 MiB in, 2.4 GB
+            # out. So it cannot be made to fit reliably, only to fit more
+            # often.
+            #
+            # A curated recipe is a promise that a launch works. A flag that
+            # works when a number the engine will not explain happens to land
+            # high enough is not that. Dropping it costs seconds of load
+            # time; keeping it costs a launch whenever the coin lands wrong,
+            # and this catalog cannot say when that is.
             #
             # And the GLM entry does not contradict this: it carries the same
             # five variables and serves with "--load-format auto", so the
