@@ -93,9 +93,11 @@ rank*, so a 129 GB MoE needs 129 GB per node however short the context is:
 AINode reads the expert count out of `config.json` and passes
 `--enable-expert-parallel` for any multi-node MoE, curated or
 self-downloaded. And a checkpoint that states `quant_algo` without
-`quant_method` — which is the key vLLM selects its quantization backend on —
-gets `--quantization` named for it, rather than being loaded as if it were
-unquantized and filling the node with experts at full width.
+`quant_method` — the key vLLM selects its quantization backend on — is
+refused with the reason and a one-key repair offered, rather than being loaded
+as if it were not quantized at all and filling the node with experts at full
+width. (A `--quantization` flag cannot fix that one: vLLM derives the method
+from the config and rejects an argument that disagrees with it.)
 
 **Not taking the node down** — on GB10 the GPU's memory *is* the host's
 memory, so an engine that over-allocates does not get a CUDA error; it starves

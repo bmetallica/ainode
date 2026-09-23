@@ -2543,6 +2543,13 @@ const AINode = {
           if (launchBtn) { launchBtn.disabled = false; launchBtn.textContent = 'LAUNCH'; }
           return this.launchModel();
         }
+        // A refusal a one-key repair lifts: the checkpoint's config states
+        // its quantization algorithm without naming the method vLLM selects
+        // on, so the engine would load it as if it were not quantized.
+        if (data.repairable && await this.offerToRepairTheConfig(data)) {
+          if (launchBtn) { launchBtn.disabled = false; launchBtn.textContent = 'LAUNCH'; }
+          return this.launchModel();
+        }
         this.toast(data.error, 'error');
       } else {
         // A planning note means the split is not the one that was asked for.
@@ -2583,6 +2590,32 @@ const AINode = {
       }
       this.toast('Cleared the guard record for ' + data.clearable, 'info');
       return true;
+    } catch (err) {
+      this.toast('Error: ' + err.message, 'error');
+      return false;
+    }
+  },
+
+  // True when the config was repaired and the launch is worth retrying.
+  async offerToRepairTheConfig(data) {
+    if (!confirm(data.error + '\n\n' +
+                 'Write that key into the checkpoint\'s config.json and try ' +
+                 'again?\n\nOne key is added; the original config is kept ' +
+                 'beside it as config.json.ainode-backup.')) return false;
+    try {
+      var resp = await fetch('/api/models/repair-quantization', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: data.repairable }),
+      });
+      var out = await resp.json().catch(function () { return {}; });
+      if (!resp.ok || out.error) {
+        this.toast(out.error || 'Could not repair the config', 'error');
+        return false;
+      }
+      this.toast(out.changed ? ('Repaired ' + data.repairable)
+                             : (out.detail || 'Nothing to repair'),
+                 out.changed ? 'success' : 'info');
+      return !!out.changed;
     } catch (err) {
       this.toast('Error: ' + err.message, 'error');
       return false;

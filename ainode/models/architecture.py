@@ -56,32 +56,19 @@ def facts_for(app, model: str):
     return facts if getattr(facts, "weight_bytes", 0) else facts
 
 
-def _quantization_args(app, model: str) -> List[str]:
-    """``--quantization`` when the checkpoint states its algorithm but not
-    the method vLLM selects on.
-
-    Passing it is better than refusing: if the guess is wrong the engine says
-    so at config parse, in seconds, which is a far better failure than an
-    hour of loading followed by a node that has to be power-cycled.
-    """
-    manager = app.get("model_manager") if hasattr(app, "get") else None
-    if manager is None or not model:
-        return []
-    try:
-        from ainode.models.quantization import missing_quant_method
-        from ainode.planner.facts import read_config
-
-        directories = manager.model_dirs_for_repo(model)
-    except Exception:
-        logger.debug("could not read %s from disk", model, exc_info=True)
-        return []
-    for directory in directories:
-        config = read_config(directory)
-        if not config:
-            continue
-        method = missing_quant_method(config)
-        return ["--quantization", method] if method else []
-    return []
+# There is no flag for this one.
+#
+# Passing --quantization modelopt_fp4 for a config with no quant_method was
+# the obvious move and it does not work:
+#
+#     Value error, Quantization method specified in the model config (None)
+#     does not match the quantization method specified in the `quantization`
+#     argument (modelopt_fp4).
+#
+# vLLM derives a method from the config first and then refuses an argument
+# that disagrees with it — and for a config without the key it derives None,
+# which disagrees with everything. The fix has to be the key itself; see
+# ainode/models/quantization.py and repair_quant_method().
 
 
 def architecture_args(app, model: str, node_count: int) -> List[str]:
@@ -92,13 +79,12 @@ def architecture_args(app, model: str, node_count: int) -> List[str]:
     reasons, not a rule. An operator who knows the model replicates its
     experts deliberately can still say so.
     """
-    args: List[str] = list(_quantization_args(app, model))
     if node_count <= 1:
-        return args
+        return []
     facts: Optional[object] = facts_for(app, model)
     if facts is None or not getattr(facts, "is_moe", False):
-        return args
-    return args + [EXPERT_PARALLEL]
+        return []
+    return [EXPERT_PARALLEL]
 
 
 def would_add(app, model: str, node_count: int) -> List[str]:

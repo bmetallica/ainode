@@ -235,7 +235,8 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
             {"error": str(refusal), "refused_by": "admission",
              # A refusal the operator can drop, rather than one they have to
              # argue with. The UI offers it as a button.
-             "clearable": getattr(refusal, "clearable", "")},
+             "clearable": getattr(refusal, "clearable", ""),
+             "repairable": getattr(refusal, "repairable_model", "")},
             status=507)
 
     if min_nodes <= 1:
