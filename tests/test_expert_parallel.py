@@ -159,3 +159,99 @@ class TestTheGuardsMemoryKnowsItIsADifferentLaunch:
         store = MeasurementStore(tmp_path / "m.json")
         store.record_guard_stop(self.MODEL, extra_args=["--kv-cache-dtype", "fp8"])
         assert store.get(self.MODEL).guard_stop_args == ["--kv-cache-dtype", "fp8"]
+
+
+class TestAQuantizationVLLMCannotFind:
+    """The checkpoint says what it is and not how to read it.
+
+    sparkarena/Minimax-M3-v0-NVFP4-REAP50 carries
+
+        "quant_algo": "NVFP4", "group_size": 16, "exclude_modules": [...]
+
+    and no ``quant_method`` — which is the key vLLM selects its quantization
+    backend on. Its answer to "I do not recognise this" is to treat the
+    layers as unquantized, and it said so in its own log:
+
+        Using FlashInfer CUTLASS Unquantized MoE backend
+
+    A 129 GB checkpoint read as unquantized is not a 129 GB checkpoint any
+    more, which is why the node filled up at max-model-len 3072 and why
+    --enable-expert-parallel on its own did not save it: expert parallelism
+    shards a much larger thing.
+    """
+
+    NVFP4 = {"quantization_config": {"quant_algo": "NVFP4", "group_size": 16,
+                                     "exclude_modules": ["lm_head"]}}
+
+    def test_it_names_the_method(self):
+        from ainode.models.quantization import missing_quant_method
+
+        assert missing_quant_method(self.NVFP4) == "modelopt_fp4"
+
+    def test_a_config_that_names_its_own_method_is_left_alone(self):
+        from ainode.models.quantization import missing_quant_method
+
+        assert missing_quant_method({"quantization_config": {
+            "quant_method": "compressed-tensors", "quant_algo": "NVFP4"}}) == ""
+
+    def test_an_unquantized_model_is_left_alone(self):
+        from ainode.models.quantization import missing_quant_method
+
+        assert missing_quant_method({"model_type": "qwen3"}) == ""
+
+    def test_an_algorithm_we_cannot_map_is_left_alone(self):
+        # Guessing a backend is worse than letting the engine decide.
+        from ainode.models.quantization import missing_quant_method
+
+        assert missing_quant_method(
+            {"quantization_config": {"quant_algo": "something-new"}}) == ""
+
+    def test_the_flag_is_added_even_on_one_node(self, tmp_path):
+        # Not a parallelism question: a single-node launch reads the same
+        # checkpoint the same way.
+        import json
+
+        from ainode.models.architecture import architecture_args
+
+        (tmp_path / "config.json").write_text(json.dumps(self.NVFP4))
+
+        class _Manager:
+            def model_dirs_for_repo(self, repo):
+                return [tmp_path]
+
+        assert architecture_args({"model_manager": _Manager()}, "x/m", 1) == \
+            ["--quantization", "modelopt_fp4"]
+
+    def test_both_flags_travel_together_on_two_nodes(self, tmp_path, monkeypatch):
+        import json
+
+        from ainode.models.architecture import EXPERT_PARALLEL, architecture_args
+
+        (tmp_path / "config.json").write_text(json.dumps(
+            {**self.NVFP4, "num_local_experts": 64}))
+
+        class _Manager:
+            models_dir = str(tmp_path)
+
+            def model_dirs_for_repo(self, repo):
+                return [tmp_path]
+
+        app = {"model_manager": _Manager()}
+        args = architecture_args(app, "x/m", 2)
+        assert args == ["--quantization", "modelopt_fp4", EXPERT_PARALLEL]
+
+    def test_the_solo_path_applies_it_too(self):
+        import inspect
+
+        from ainode.models import api_routes
+
+        source = inspect.getsource(api_routes.handle_model_load)
+        assert "architecture_args" in source
+
+    def test_the_caller_can_still_override_the_method(self):
+        from ainode.engine.serve_args import merge_vllm_args
+
+        merged = merge_vllm_args(["--quantization", "modelopt_fp4"],
+                                 ["--quantization", "compressed-tensors"])
+        assert merged.count("--quantization") == 1
+        assert "modelopt_fp4" not in merged

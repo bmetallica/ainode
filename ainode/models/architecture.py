@@ -56,6 +56,34 @@ def facts_for(app, model: str):
     return facts if getattr(facts, "weight_bytes", 0) else facts
 
 
+def _quantization_args(app, model: str) -> List[str]:
+    """``--quantization`` when the checkpoint states its algorithm but not
+    the method vLLM selects on.
+
+    Passing it is better than refusing: if the guess is wrong the engine says
+    so at config parse, in seconds, which is a far better failure than an
+    hour of loading followed by a node that has to be power-cycled.
+    """
+    manager = app.get("model_manager") if hasattr(app, "get") else None
+    if manager is None or not model:
+        return []
+    try:
+        from ainode.models.quantization import missing_quant_method
+        from ainode.planner.facts import read_config
+
+        directories = manager.model_dirs_for_repo(model)
+    except Exception:
+        logger.debug("could not read %s from disk", model, exc_info=True)
+        return []
+    for directory in directories:
+        config = read_config(directory)
+        if not config:
+            continue
+        method = missing_quant_method(config)
+        return ["--quantization", method] if method else []
+    return []
+
+
 def architecture_args(app, model: str, node_count: int) -> List[str]:
     """What this model needs at this split, beyond anyone's preferences.
 
@@ -64,12 +92,13 @@ def architecture_args(app, model: str, node_count: int) -> List[str]:
     reasons, not a rule. An operator who knows the model replicates its
     experts deliberately can still say so.
     """
+    args: List[str] = list(_quantization_args(app, model))
     if node_count <= 1:
-        return []
+        return args
     facts: Optional[object] = facts_for(app, model)
     if facts is None or not getattr(facts, "is_moe", False):
-        return []
-    return [EXPERT_PARALLEL]
+        return args
+    return args + [EXPERT_PARALLEL]
 
 
 def would_add(app, model: str, node_count: int) -> List[str]:
