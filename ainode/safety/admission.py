@@ -37,10 +37,20 @@ class AdmissionRefusal(str):
 
     clearable: str = ""
 
+    #: Set when the refusal is one a repair can lift — a checkpoint whose
+    #: config is missing a key, rather than a node that is short of memory.
+    repairable_model: str = ""
+
     @classmethod
     def clearing(cls, text: str, model: str) -> "AdmissionRefusal":
         refusal = cls(text)
         refusal.clearable = model
+        return refusal
+
+    @classmethod
+    def repairable(cls, text: str, model: str) -> "AdmissionRefusal":
+        refusal = cls(text)
+        refusal.repairable_model = model
         return refusal
 
 
@@ -208,8 +218,39 @@ def _quantization_says(app, model: str) -> str:
         servable, reason = quantization_verdict(config)
         if not servable:
             return reason
-        return ""
+        return _unnamed_method_says(app, model, config)
     return ""
+
+
+def _unnamed_method_says(app, model: str, config: dict) -> str:
+    """Refuse a checkpoint whose config states an algorithm and no method.
+
+    vLLM reads ``quant_method`` to choose its backend, and a config without
+    it is read as unquantized — which for a mixture-of-experts means every
+    expert at full width and a node that fills up at any context length. It
+    is not fixable with a flag: the engine derives a method from the config
+    first and rejects a ``--quantization`` that disagrees with it.
+    """
+    from ainode.models.quantization import missing_quant_method
+
+    method = missing_quant_method(config)
+    if not method:
+        return ""
+    quant = config.get("quantization_config") or {}
+    algo = str(quant.get("quant_algo") or "?")
+    return AdmissionRefusal.repairable((
+        f"{model}'s config.json states \"quant_algo\": \"{algo}\" and no "
+        f"\"quant_method\". vLLM chooses its quantization backend from the "
+        f"method, so without it this checkpoint is loaded as if it were not "
+        f"quantized at all — every expert at full width, which fills the node "
+        f"whatever the context length is. It cannot be fixed with a flag: the "
+        f"engine derives the method from the config and refuses a "
+        f"--quantization that disagrees with it.\n\n"
+        f"The repair is one key, written into the checkpoint's own config "
+        f"(the original is kept beside it):\n\n"
+        f"    curl -X POST localhost:3000/api/models/repair-quantization \\\n"
+        f"      -H 'Content-Type: application/json' -d '{{\"model\": \"{model}\"}}'"
+    ), model)
 
 
 def _planner_says(app, model: str, *, node_ids=None, strategy: str = "auto",

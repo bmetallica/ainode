@@ -29,13 +29,15 @@ a serve flag — the model card names the stack it was built against.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["quantization_verdict", "mixed_bit_widths"]
+__all__ = ["quantization_verdict", "mixed_bit_widths",
+           "missing_quant_method", "repair_quant_method"]
 
 #: What vLLM's own config classes accept as a global width. Kept here rather
 #: than imported: this runs on the orchestrator, which has no vLLM.
@@ -133,16 +135,38 @@ def quantization_verdict(config: Dict[str, Any]) -> Tuple[bool, str]:
 #: and the node filled up at any context length, with or without expert
 #: parallelism, because a 129 GB checkpoint read as unquantized is not a
 #: 129 GB checkpoint any more.
-QUANT_ALGO_METHODS = {
-    "nvfp4": "modelopt_fp4",
+#: What to write into ``quant_method`` so vLLM recognises the checkpoint.
+#:
+#: Not a serve flag. ``--quantization modelopt_fp4`` is refused outright:
+#:
+#:     Value error, Quantization method specified in the model config (None)
+#:     does not match the quantization method specified in the `quantization`
+#:     argument (modelopt_fp4).
+#:
+#: vLLM derives the method from the config and then rejects an argument that
+#: disagrees, and a config without the key derives None. The key itself is
+#: the only thing that works — and vLLM's own ModelOpt reader is written for
+#: exactly this layout, it just gates on the name first::
+#:
+#:     if not hf_quant_cfg.get("quant_method", "").lower().startswith("modelopt"):
+#:         return None
+#:     ...
+#:     # Compressed-tensors style format (config.json quantization_config):
+#:     # {"quant_algo": "...", "quant_method": "modelopt"}
+#:
+#: It even handles this checkpoint's ``kv_cache_scheme`` dict, which the
+#: legacy hf_quant_config.json layout does not have. Everything is there
+#: except one string.
+QUANT_ALGO_OWNERS = {
+    "nvfp4": "modelopt",
     "fp8": "modelopt",
-    "mxfp8": "modelopt_mxfp8",
+    "mxfp8": "modelopt",
     "w4a8_awq": "modelopt",
 }
 
 
 def missing_quant_method(config: Dict[str, Any]) -> str:
-    """The vLLM ``--quantization`` value this checkpoint fails to ask for.
+    """The ``quant_method`` this checkpoint's config fails to state.
 
     "" when the config names its method properly, when there is no
     quantization, or when the algorithm is one we have no mapping for —
@@ -156,7 +180,7 @@ def missing_quant_method(config: Dict[str, Any]) -> str:
     if str(quant.get("quant_method") or "").strip():
         return ""
     algo = str(quant.get("quant_algo") or "").strip().lower()
-    return QUANT_ALGO_METHODS.get(algo, "")
+    return QUANT_ALGO_OWNERS.get(algo, "")
 
 
 #: Hugging Face repo names that say "mixed-bit" out loud. Only used to say so
@@ -172,3 +196,58 @@ def name_suggests_mixed_bits(repo: str) -> bool:
     name, not a config — so it is only ever a warning.
     """
     return bool(_MIXED_NAME.search(repo or ""))
+
+
+#: Kept beside the file it repairs, so the change is visible and reversible
+#: with `mv`.
+BACKUP_SUFFIX = ".ainode-backup"
+
+
+def repair_quant_method(directory) -> Tuple[bool, str]:
+    """Write the missing ``quant_method`` into a checkpoint's config.json.
+
+    (changed, message). Never raises.
+
+    Editing a downloaded checkpoint is not something to do quietly, so this
+    is an explicit action rather than a step of every launch: it keeps the
+    original next to the file as ``config.json.ainode-backup``, and it writes
+    exactly one key. What it fixes is the model being loaded as if it were
+    unquantized — every expert at full width, and a node that fills up at any
+    context length.
+    """
+    from pathlib import Path
+
+    from ainode.planner.facts import snapshot_dir
+
+    resolved = snapshot_dir(Path(directory))
+    if resolved is None:
+        return False, "no config.json here"
+    path = resolved / "config.json"
+    try:
+        config = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        return False, f"could not read {path}: {exc}"
+
+    method = missing_quant_method(config)
+    if not method:
+        return False, ("this checkpoint's config already names its "
+                       "quantization method, or states no quantization")
+
+    quant = dict(config.get("quantization_config") or {})
+    algo = str(quant.get("quant_algo") or "")
+    quant["quant_method"] = method
+    config["quantization_config"] = quant
+    try:
+        backup = path.with_suffix(path.suffix + BACKUP_SUFFIX)
+        if not backup.exists():
+            backup.write_text(json.dumps(json.loads(path.read_text()), indent=2))
+        tmp = path.with_suffix(".json.ainode-tmp")
+        tmp.write_text(json.dumps(config, indent=2))
+        tmp.replace(path)
+    except OSError as exc:
+        return False, f"could not write {path}: {exc}"
+    return True, (
+        f'added "quant_method": "{method}" to quantization_config, beside the '
+        f'"quant_algo": "{algo}" that was already there. vLLM reads the '
+        f'method first and treated this model as unquantized without it. The '
+        f'original is at {backup.name}.')

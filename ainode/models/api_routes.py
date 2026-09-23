@@ -62,6 +62,8 @@ def register_model_routes(app: web.Application, manager: Optional[ModelManager] 
     app.router.add_get("/api/models/downloaded", handle_list_downloaded)
     app.router.add_post("/api/models/download-repo", handle_download_repo)
     app.router.add_post("/api/models/download-cancel", handle_cancel_download)
+    app.router.add_post("/api/models/repair-quantization",
+                        handle_repair_quantization)
     app.router.add_post("/api/models/download-pause", handle_pause_download)
     app.router.add_post("/api/models/download-resume", handle_resume_download)
     app.router.add_get("/api/models/download/status", handle_download_status)
@@ -1072,7 +1074,8 @@ async def handle_model_load(request: web.Request) -> web.Response:
     if refusal:
         return web.json_response(
             {"error": str(refusal), "refused_by": "admission",
-             "clearable": getattr(refusal, "clearable", "")},
+             "clearable": getattr(refusal, "clearable", ""),
+             "repairable": getattr(refusal, "repairable_model", "")},
             status=507)
 
     overrides, gmu = apply_catalog_recipe(model, overrides, gmu)
@@ -1542,6 +1545,46 @@ def _get_dir_bytes(path: Path) -> int:
 
 class _DownloadCancelled(Exception):
     pass
+
+
+async def handle_repair_quantization(request: web.Request) -> web.Response:
+    """POST /api/models/repair-quantization {model} — write the missing key.
+
+    An explicit action, not a step of every launch: this edits a downloaded
+    checkpoint, which is not something to do quietly. It writes one key into
+    quantization_config — the ``quant_method`` vLLM selects its backend on,
+    which some checkpoints state only as ``quant_algo`` — and keeps the
+    original beside it.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    model = str_field(body, "model", "hf_repo").strip()
+    if not model:
+        return web.json_response({"error": "model required"}, status=400)
+
+    manager: ModelManager = request.app["model_manager"]
+    from ainode.models.quantization import repair_quant_method
+
+    try:
+        directories = manager.model_dirs_for_repo(model)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+    if not directories:
+        return web.json_response(
+            {"error": f"{model} is not on this node's disk"}, status=404)
+
+    for directory in directories:
+        changed, message = repair_quant_method(directory)
+        if changed:
+            logger.info("%s: %s", model, message)
+            _forget_size(manager, directory)
+            return web.json_response({"ok": True, "model": model,
+                                      "changed": True, "detail": message})
+    return web.json_response({"ok": True, "model": model, "changed": False,
+                              "detail": message})
 
 
 async def handle_pause_download(request: web.Request) -> web.Response:

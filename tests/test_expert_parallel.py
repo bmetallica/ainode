@@ -168,25 +168,35 @@ class TestAQuantizationVLLMCannotFind:
 
         "quant_algo": "NVFP4", "group_size": 16, "exclude_modules": [...]
 
-    and no ``quant_method`` — which is the key vLLM selects its quantization
-    backend on. Its answer to "I do not recognise this" is to treat the
-    layers as unquantized, and it said so in its own log:
+    and no ``quant_method`` — the key vLLM selects its quantization backend
+    on. Its answer to "I do not recognise this" is to treat the layers as
+    unquantized, and it said so in its own log:
 
         Using FlashInfer CUTLASS Unquantized MoE backend
 
     A 129 GB checkpoint read as unquantized is not a 129 GB checkpoint any
     more, which is why the node filled up at max-model-len 3072 and why
-    --enable-expert-parallel on its own did not save it: expert parallelism
-    shards a much larger thing.
+    --enable-expert-parallel on its own did not save it.
+
+    The obvious fix does not work. Reported from the cluster:
+
+        Value error, Quantization method specified in the model config (None)
+        does not match the quantization method specified in the
+        `quantization` argument (modelopt_fp4).
+
+    vLLM derives a method from the config first and rejects an argument that
+    disagrees with it, and a config without the key derives None. So the key
+    is the fix — and vLLM's own ModelOpt reader is written for exactly this
+    layout, gated on the name it does not find.
     """
 
     NVFP4 = {"quantization_config": {"quant_algo": "NVFP4", "group_size": 16,
                                      "exclude_modules": ["lm_head"]}}
 
-    def test_it_names_the_method(self):
+    def test_it_names_the_method_to_write(self):
         from ainode.models.quantization import missing_quant_method
 
-        assert missing_quant_method(self.NVFP4) == "modelopt_fp4"
+        assert missing_quant_method(self.NVFP4) == "modelopt"
 
     def test_a_config_that_names_its_own_method_is_left_alone(self):
         from ainode.models.quantization import missing_quant_method
@@ -206,52 +216,170 @@ class TestAQuantizationVLLMCannotFind:
         assert missing_quant_method(
             {"quantization_config": {"quant_algo": "something-new"}}) == ""
 
-    def test_the_flag_is_added_even_on_one_node(self, tmp_path):
-        # Not a parallelism question: a single-node launch reads the same
-        # checkpoint the same way.
-        import json
-
-        from ainode.models.architecture import architecture_args
-
-        (tmp_path / "config.json").write_text(json.dumps(self.NVFP4))
-
-        class _Manager:
-            def model_dirs_for_repo(self, repo):
-                return [tmp_path]
-
-        assert architecture_args({"model_manager": _Manager()}, "x/m", 1) == \
-            ["--quantization", "modelopt_fp4"]
-
-    def test_both_flags_travel_together_on_two_nodes(self, tmp_path, monkeypatch):
-        import json
-
-        from ainode.models.architecture import EXPERT_PARALLEL, architecture_args
-
-        (tmp_path / "config.json").write_text(json.dumps(
-            {**self.NVFP4, "num_local_experts": 64}))
-
-        class _Manager:
-            models_dir = str(tmp_path)
-
-            def model_dirs_for_repo(self, repo):
-                return [tmp_path]
-
-        app = {"model_manager": _Manager()}
-        args = architecture_args(app, "x/m", 2)
-        assert args == ["--quantization", "modelopt_fp4", EXPERT_PARALLEL]
-
-    def test_the_solo_path_applies_it_too(self):
+    def test_no_flag_is_passed_for_it(self):
+        # The flag is refused by the engine; only the key works.
         import inspect
 
+        from ainode.models import architecture
+
+        assert "--quantization" not in inspect.getsource(
+            architecture.architecture_args)
+
+
+class TestRepairingTheConfig:
+    NVFP4 = TestAQuantizationVLLMCannotFind.NVFP4
+
+    def _checkpoint(self, tmp_path, config=None):
+        import json
+
+        (tmp_path / "config.json").write_text(
+            json.dumps(config if config is not None else self.NVFP4))
+        return tmp_path
+
+    def test_it_writes_the_key(self, tmp_path):
+        import json
+
+        from ainode.models.quantization import repair_quant_method
+
+        changed, message = repair_quant_method(self._checkpoint(tmp_path))
+        assert changed is True
+        written = json.loads((tmp_path / "config.json").read_text())
+        assert written["quantization_config"]["quant_method"] == "modelopt"
+        assert "quant_method" in message
+
+    def test_the_rest_of_the_config_survives(self, tmp_path):
+        import json
+
+        from ainode.models.quantization import repair_quant_method
+
+        directory = self._checkpoint(tmp_path, {
+            **self.NVFP4, "model_type": "minimax_m3_vl", "num_hidden_layers": 60})
+        repair_quant_method(directory)
+        written = json.loads((directory / "config.json").read_text())
+        assert written["model_type"] == "minimax_m3_vl"
+        assert written["quantization_config"]["group_size"] == 16
+        assert written["quantization_config"]["exclude_modules"] == ["lm_head"]
+
+    def test_the_original_is_kept(self, tmp_path):
+        import json
+
+        from ainode.models.quantization import repair_quant_method
+
+        repair_quant_method(self._checkpoint(tmp_path))
+        backup = tmp_path / "config.json.ainode-backup"
+        assert backup.is_file()
+        assert "quant_method" not in json.loads(
+            backup.read_text())["quantization_config"]
+
+    def test_repairing_twice_keeps_the_first_backup(self, tmp_path):
+        import json
+
+        from ainode.models.quantization import repair_quant_method
+
+        directory = self._checkpoint(tmp_path)
+        repair_quant_method(directory)
+        first = (tmp_path / "config.json.ainode-backup").read_text()
+        changed, _ = repair_quant_method(directory)
+        assert changed is False
+        assert (tmp_path / "config.json.ainode-backup").read_text() == first
+        assert "quant_method" not in json.loads(first)["quantization_config"]
+
+    def test_a_checkpoint_that_needs_nothing_is_untouched(self, tmp_path):
+        from ainode.models.quantization import repair_quant_method
+
+        directory = self._checkpoint(tmp_path, {"model_type": "qwen3"})
+        changed, message = repair_quant_method(directory)
+        assert changed is False
+        assert "already names" in message
+        assert not (tmp_path / "config.json.ainode-backup").exists()
+
+    def test_a_directory_with_no_config_says_so(self, tmp_path):
+        from ainode.models.quantization import repair_quant_method
+
+        assert repair_quant_method(tmp_path)[0] is False
+
+    def test_the_route_exists(self):
+        from ainode.api.server import create_app
+        from ainode.core.config import NodeConfig
+
+        app = create_app(config=NodeConfig(node_id="n1"), engine=None)
+        paths = {getattr(r.resource, "canonical", "") for r in app.router.routes()}
+        assert "/api/models/repair-quantization" in paths
+
+
+class TestTheGateSaysSoBeforeTheLaunch:
+    def _app(self, tmp_path):
+        import json
+
+        (tmp_path / "config.json").write_text(json.dumps(
+            TestAQuantizationVLLMCannotFind.NVFP4))
+
+        class _Manager:
+            def model_dirs_for_repo(self, repo):
+                return [tmp_path]
+
+        return {"model_manager": _Manager()}
+
+    def test_it_refuses_with_the_reason(self, tmp_path):
+        from ainode.safety.admission import check_admission
+
+        refusal = check_admission(self._app(tmp_path), "x/nvfp4")
+        assert "quant_method" in refusal
+        assert "as if it were not quantized" in refusal
+
+    def test_it_says_a_flag_will_not_do(self, tmp_path):
+        # Because that is the first thing anyone tries, and the engine
+        # rejects it in a way that reads like our mistake.
+        from ainode.safety.admission import check_admission
+
+        assert "--quantization that disagrees" in check_admission(
+            self._app(tmp_path), "x/nvfp4")
+
+    def test_the_refusal_is_marked_repairable(self, tmp_path):
+        from ainode.safety.admission import check_admission
+
+        refusal = check_admission(self._app(tmp_path), "x/nvfp4")
+        assert getattr(refusal, "repairable_model", "") == "x/nvfp4"
+
+    def test_a_proper_config_passes(self, tmp_path):
+        import json
+
+        from ainode.safety.admission import check_admission
+
+        (tmp_path / "config.json").write_text(json.dumps({
+            "quantization_config": {"quant_method": "modelopt",
+                                    "quant_algo": "NVFP4"}}))
+
+        class _Manager:
+            def model_dirs_for_repo(self, repo):
+                return [tmp_path]
+
+        assert check_admission({"model_manager": _Manager()}, "x/ok") == ""
+
+    def test_both_routes_carry_the_marker(self):
+        import inspect
+
+        from ainode.engine import sharding_routes
         from ainode.models import api_routes
 
-        source = inspect.getsource(api_routes.handle_model_load)
-        assert "architecture_args" in source
+        for source in (inspect.getsource(sharding_routes.handle_sharding_launch),
+                       inspect.getsource(api_routes.handle_model_load)):
+            assert '"repairable"' in source
 
-    def test_the_caller_can_still_override_the_method(self):
-        from ainode.engine.serve_args import merge_vllm_args
 
-        merged = merge_vllm_args(["--quantization", "modelopt_fp4"],
-                                 ["--quantization", "compressed-tensors"])
-        assert merged.count("--quantization") == 1
-        assert "modelopt_fp4" not in merged
+class TestTheUIOffersTheRepair:
+    APP_JS = (__import__("pathlib").Path(__file__).resolve().parent.parent /
+              "ainode" / "web" / "static" / "js" / "app.js").read_text()
+
+    def test_the_launch_offers_it(self):
+        assert "offerToRepairTheConfig" in self.APP_JS
+        assert "/api/models/repair-quantization" in self.APP_JS
+
+    def test_it_says_what_is_written_and_what_is_kept(self):
+        body = self.APP_JS.split("async offerToRepairTheConfig")[1][:900]
+        assert "One key is added" in body
+        assert "config.json.ainode-backup" in body
+
+    def test_it_retries_the_launch_only_when_something_changed(self):
+        body = self.APP_JS.split("async offerToRepairTheConfig")[1][:1400]
+        assert "return !!out.changed;" in body
