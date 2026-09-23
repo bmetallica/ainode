@@ -972,7 +972,22 @@ async def handle_status(request: web.Request) -> web.Response:
         "cluster_role": effective_role,
         "cluster_id": getattr(config, "cluster_id", "default"),
         "master_node_id": master.node_id if master else None,
+        # A source update in flight. On this endpoint because every page polls
+        # it: an update takes twenty minutes and ends by restarting this node,
+        # and a browser that was reloaded in the middle of one had no way to
+        # find out it was still happening.
+        "update_running": _update_running(request.app),
     })
+
+
+def _update_running(app) -> bool:
+    runner = app.get("update_runner")
+    if runner is None:
+        return False
+    try:
+        return bool(runner.job.get("running"))
+    except Exception:
+        return False
 
 async def handle_nodes(request: web.Request) -> web.Response:
     """Return the list of known cluster nodes."""

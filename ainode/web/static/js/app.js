@@ -555,6 +555,10 @@ const AINode = {
     // chat dropdown + INSTANCES panel see models on ALL nodes, not just local.
     this.state.fleetModels = ((results[4] && results[4].data) || []).map(function (m) { return m.id; });
 
+    // An update in flight is a property of the node, not of the tab that
+    // started it: /api/status carries it, and every page polls that.
+    this.state.updateRunning = !!(results[0] && results[0].update_running);
+    this.renderUpdateBanner();
     this.updateTopBar();
     this.updateClusterHero();
     this.updateChatModelSelect();
@@ -6969,7 +6973,28 @@ const AINode = {
     });
     var run = document.getElementById('upd-run');
     if (run) run.addEventListener('click', function () { self.runSourceUpdate(); });
-    if (this._updateJobPolling) this.pollUpdateJob();
+    // Ask the server whether one is running, rather than trusting a flag
+    // this tab happens to hold: a reload during a twenty-minute update used
+    // to leave the panel looking idle while the build went on without it.
+    this.resumeUpdateJob();
+  },
+
+  // Show the output of a running — or just-finished — update, whether or not
+  // this tab is the one that started it.
+  async resumeUpdateJob() {
+    var job = await this.fetchJSON('/api/update/status');
+    if (!job || !job.status || job.status === 'idle') return;
+    var card = document.getElementById('upd-log-card');
+    if (card) card.style.display = '';
+    var log = document.getElementById('upd-log');
+    if (log) {
+      log.textContent = (job.lines || []).join('\n');
+      log.scrollTop = log.scrollHeight;
+    }
+    if (job.running && !this._updateJobPolling) {
+      this._updateJobPolling = true;
+      this.pollUpdateJob();
+    }
   },
 
   updateStatusLine(state, settings) {
@@ -7008,18 +7033,30 @@ const AINode = {
     var state = this.state.updateState;
     var mount = document.getElementById('update-banner');
     if (!mount) return;
-    if (!state || !state.update_available) {
+    // A running update outranks the offer of one. It takes twenty minutes and
+    // ends by restarting every node; "3 commits behind" is not the thing to
+    // be saying while that happens — and a browser reloaded in the middle of
+    // one had nothing at all to tell it the build was still going.
+    if (this.state.updateRunning) {
+      mount.style.display = '';
+      mount.innerHTML =
+        '<span>⟳ <strong>Update running</strong> — every node restarts when ' +
+        'it finishes, this one last</span>' +
+        '<button class="btn-ghost server-btn-sm" id="update-banner-go">' +
+        'Output</button>';
+    } else if (!state || !state.update_available) {
       mount.innerHTML = '';
       mount.style.display = 'none';
       return;
+    } else {
+      mount.style.display = '';
+      mount.innerHTML =
+        '<span>⬆ <strong>' + state.behind + ' commit' +
+        (state.behind === 1 ? '' : 's') + '</strong> behind ' +
+        this.esc(state.repo || '') + '@' + this.esc(state.branch || 'main') +
+        '</span><button class="btn-ghost server-btn-sm" id="update-banner-go">' +
+        'Updates</button>';
     }
-    mount.style.display = '';
-    mount.innerHTML =
-      '<span>⬆ <strong>' + state.behind + ' commit' +
-      (state.behind === 1 ? '' : 's') + '</strong> behind ' +
-      this.esc(state.repo || '') + '@' + this.esc(state.branch || 'main') +
-      '</span><button class="btn-ghost server-btn-sm" id="update-banner-go">' +
-      'Updates</button>';
     var self = this;
     var go = document.getElementById('update-banner-go');
     if (go) {
