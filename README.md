@@ -114,8 +114,11 @@ disappears from the cluster.
 **Learning from a kill** — when the guard has to stop an engine, that is
 written against the model, not only into the log. The next launch of the same
 model asking for the same thing is refused with it — *the guard stopped this
-here on 23-09 at gpu-memory-utilization 0.85* — and asking for less, or for
-more nodes, lifts the refusal by itself. A launch that ends on a signal is
+here on 23-09 at gpu-memory-utilization 0.85* — and asking for less, for more
+nodes, or with a flag the killed launch did not carry lifts the refusal by
+itself. When the cause was fixed by something the record cannot see, the
+refusal offers to drop it (`POST /api/measurements/forget-stops`), keeping the
+measurements, which are still true. A launch that ends on a signal is
 translated too: `code -9` is SIGKILL, which no process can catch, so the
 engine's own log is a healthy startup right up to the last line.
 

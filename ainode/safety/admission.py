@@ -27,7 +27,21 @@ __all__ = ["check_admission", "AdmissionRefusal"]
 
 
 class AdmissionRefusal(str):
-    """A refusal message. Falsy when there is nothing to refuse."""
+    """A refusal message. Falsy when there is nothing to refuse.
+
+    A string, because every caller treats it as one. ``clearable`` is set
+    when the refusal rests on a record the operator can drop — the guard's
+    memory of a kill — so a route can offer that instead of leaving them to
+    find the endpoint in a paragraph of prose.
+    """
+
+    clearable: str = ""
+
+    @classmethod
+    def clearing(cls, text: str, model: str) -> "AdmissionRefusal":
+        refusal = cls(text)
+        refusal.clearable = model
+        return refusal
 
 
 def check_admission(app, model: str, *, node_ids=None, strategy: str = "auto",
@@ -124,15 +138,18 @@ def _guard_history_says(app, model: str, *, node_ids=None,
         asked.append(f"{killed_nodes} node(s)")
     detail = ", ".join(asked) or "these settings"
     times = int(entry.get("guard_stops") or 1)
-    return (
+    return AdmissionRefusal.clearing((
         f"The host memory guard has already had to stop {model} on this node "
         f"{'once' if times == 1 else f'{times} times'}, most recently on "
         f"{when}, launched with {detail}. That is not an estimate — the node "
         f"ran out of memory and an engine had to be killed to save it. "
         f"Launch it with fewer tokens, a lower gpu-memory-utilization or more "
         f"nodes and this refusal lifts by itself; \"force\": true overrides "
-        f"it outright."
-    )
+        f"it outright. If what caused it has been fixed since — a flag added, "
+        f"an engine image rebuilt — clear the record and start again:\n\n"
+        f"    curl -X POST localhost:3000/api/measurements/forget-stops \\\n"
+        f"      -H 'Content-Type: application/json' -d '{{\"model\": \"{model}\"}}'"
+    ), model)
 
 
 def _completeness_says(app, model: str) -> str:

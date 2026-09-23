@@ -2535,6 +2535,14 @@ const AINode = {
       });
       var data = await resp.json();
       if (data.error) {
+        // A refusal that rests on the guard's memory of an earlier kill can
+        // be dropped — what made that launch impossible is usually fixed by
+        // something the record cannot see. Offer it here rather than leaving
+        // the endpoint buried in a paragraph of the message.
+        if (data.clearable && await this.offerToClearTheRecord(data)) {
+          if (launchBtn) { launchBtn.disabled = false; launchBtn.textContent = 'LAUNCH'; }
+          return this.launchModel();
+        }
         this.toast(data.error, 'error');
       } else {
         // A planning note means the split is not the one that was asked for.
@@ -2555,6 +2563,30 @@ const AINode = {
     }
 
     if (launchBtn) { launchBtn.disabled = false; launchBtn.textContent = 'LAUNCH'; }
+  },
+
+  // True when the record was cleared and the launch is worth retrying.
+  async offerToClearTheRecord(data) {
+    if (!confirm(data.error + '\n\n' +
+                 'Clear that record and try this launch again?\n\n' +
+                 'The measurements for ' + data.clearable + ' are kept — only ' +
+                 'the guard\'s memory of the kills is dropped.')) return false;
+    try {
+      var resp = await fetch('/api/measurements/forget-stops', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: data.clearable }),
+      });
+      var out = await resp.json().catch(function () { return {}; });
+      if (!resp.ok || out.error) {
+        this.toast(out.error || 'Could not clear the record', 'error');
+        return false;
+      }
+      this.toast('Cleared the guard record for ' + data.clearable, 'info');
+      return true;
+    } catch (err) {
+      this.toast('Error: ' + err.message, 'error');
+      return false;
+    }
   },
 
   // ========================================================================
