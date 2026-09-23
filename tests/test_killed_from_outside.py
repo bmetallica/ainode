@@ -163,9 +163,21 @@ class TestTheBudgetHintNamesTheUtilization:
     def test_it_says_where_the_budget_comes_from(self):
         assert "gpu-memory-utilization x the node's total memory" in self._hint()
 
+    def test_it_names_the_other_budget_too(self):
+        # Two different numbers wear that name, and only one of them moves
+        # with the utilization. Observed on an empty node: 116 GB free, a
+        # budget of 449 MB, and raising the utilization changed nothing.
+        hint = self._hint()
+        assert "what the driver reports free" in hint
+        assert "page cache" in hint
+
+    def test_it_gives_a_way_to_tell_them_apart(self):
+        # One experiment, stated as one: raise it once and look.
+        assert "if the budget does not move" in self._hint()
+
     def test_it_does_the_arithmetic_for_the_reader(self):
         # A number in the message is worth a paragraph of explanation.
-        assert "0.15 there leaves 19 GB" in self._hint()
+        assert "0.15 of 128 GB leaves 19 GB" in self._hint()
 
     def test_it_still_offers_the_loader_knobs(self):
         hint = self._hint()
