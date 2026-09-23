@@ -685,3 +685,65 @@ class TestGitAndTheCheckoutsOwner:
         source = inspect.getsource(UpdateRunner._run)
         assert "as_owner=True" in source
         assert source.index("as_owner=True") < source.index("update-cluster.sh")
+
+
+class TestTheCommitSurvivesTheBuild:
+    """After an update that otherwise succeeded, the node said:
+
+        "this image does not record the commit it was built from, so it
+         cannot be compared — the next update fixes that"
+
+    `git rev-parse HEAD` in build-ainode-image.sh runs as root against a
+    checkout owned by the operator. Git's ownership check refused it, the
+    `|| echo unknown` swallowed the failure, and the image was built without
+    the one field the update check needs — so it could never report itself
+    out of date again.
+    """
+
+    BUILD = (Path(__file__).resolve().parent.parent / "scripts" /
+             "build-ainode-image.sh").read_text()
+
+    def test_every_step_gets_the_safe_directory_exception(self, tmp_path):
+        # Not only the step that calls git directly: the build script calls
+        # it too, for the SHA it stamps into the image.
+        import inspect
+
+        from ainode.update.runner import UpdateRunner
+
+        source = inspect.getsource(UpdateRunner._step)
+        assert "_git_safe_env" in source
+        # Before the as_owner branch, so it applies to both kinds of step.
+        assert source.index("_git_safe_env") < source.index("if as_owner")
+
+    def test_the_exception_names_the_checkout(self, tmp_path):
+        from ainode.update.runner import _git_safe_env
+
+        env = _git_safe_env(tmp_path, {})
+        assert env["GIT_CONFIG_KEY_0"] == "safe.directory"
+        assert env["GIT_CONFIG_VALUE_0"] == str(tmp_path)
+
+    def test_it_appends_rather_than_clobbers(self, tmp_path):
+        from ainode.update.runner import _git_safe_env
+
+        env = _git_safe_env(tmp_path, {
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.name",
+            "GIT_CONFIG_VALUE_0": "someone"})
+        assert env["GIT_CONFIG_COUNT"] == "2"
+        assert env["GIT_CONFIG_KEY_1"] == "safe.directory"
+
+    def test_the_build_script_says_when_it_loses_the_sha(self):
+        # Silently baking "unknown" is how this went unnoticed for a release.
+        assert "could not read the commit for this build" in self.BUILD
+        assert "safe.directory" in self.BUILD
+
+    def test_it_still_builds_without_one(self):
+        # A missing SHA costs the update check, not the image.
+        block = self.BUILD.split('GIT_SHA="$(git rev-parse')[1][:600]
+        assert 'GIT_SHA="unknown"' in block
+        assert "exit 1" not in block
+
+    def test_the_sha_reaches_the_build_arg(self):
+        assert '--build-arg "AINODE_GIT_SHA=${GIT_SHA}"' in self.BUILD
+
+    def test_the_build_prints_what_it_stamped(self):
+        assert "source at ${GIT_SHA:0:7}" in self.BUILD

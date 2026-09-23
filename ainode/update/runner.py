@@ -89,6 +89,38 @@ def _head_sha(directory) -> str:
     return (out.stdout or "").strip() if out.returncode == 0 else ""
 
 
+def _git_safe_env(directory, env: dict) -> dict:
+    """``env`` plus the safe.directory exception for this checkout.
+
+    Needed by EVERY step, not only the ones that call git directly. The build
+    script runs `git rev-parse HEAD` to stamp the image with the commit it was
+    built from — as root, in a repository owned by the operator — and without
+    this it fails the ownership check, falls back to its `|| echo unknown`,
+    and bakes an image that cannot say where it came from:
+
+        "this image does not record the commit it was built from, so it
+         cannot be compared"
+
+    Observed on the cluster after an update that otherwise succeeded. The
+    update check was then permanently unable to answer, which is the one
+    thing the SHA exists for.
+
+    Through GIT_CONFIG_* rather than `git config --global`: a setting written
+    into /root/.gitconfig would outlive this update and apply to every
+    repository this container ever touches.
+    """
+    env = dict(env)
+    count = 0
+    try:
+        count = int(env.get("GIT_CONFIG_COUNT") or 0)
+    except ValueError:
+        count = 0
+    env[f"GIT_CONFIG_KEY_{count}"] = "safe.directory"
+    env[f"GIT_CONFIG_VALUE_{count}"] = str(directory)
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
+    return env
+
+
 def _owner_of(directory: Path, env: dict):
     """(Popen kwargs, env) for running git against a checkout we do not own.
 
@@ -112,18 +144,7 @@ def _owner_of(directory: Path, env: dict):
     global config file, for the case where dropping privileges is not
     possible: not running as root, or a platform without it.
     """
-    env = dict(env)
-    # Through GIT_CONFIG_* rather than `git config --global`: a setting
-    # written into /root/.gitconfig outlives this update and applies to every
-    # repository this container ever touches.
-    count = 0
-    try:
-        count = int(env.get("GIT_CONFIG_COUNT") or 0)
-    except ValueError:
-        count = 0
-    env[f"GIT_CONFIG_KEY_{count}"] = "safe.directory"
-    env[f"GIT_CONFIG_VALUE_{count}"] = str(directory)
-    env["GIT_CONFIG_COUNT"] = str(count + 1)
+    env = _git_safe_env(directory, env)
 
     kwargs: dict = {}
     try:
@@ -332,7 +353,9 @@ class UpdateRunner:
     def _step(self, command: List[str], cwd: Path, *,
               as_owner: bool = False) -> None:
         self._say(f"[ainode] $ {' '.join(command)}")
-        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        # safe.directory for every step, because the build script calls git
+        # too — for the commit it stamps into the image.
+        env = _git_safe_env(cwd, {**os.environ, "GIT_TERMINAL_PROMPT": "0"})
         kwargs: dict = {}
         if as_owner:
             kwargs, env = _owner_of(cwd, env)

@@ -69,11 +69,33 @@ else
     trap 'rm -f "$CLEANUP"' EXIT
 fi
 
+# The commit this image is built from. It is what the update check compares
+# against the fork's branch, so an image that cannot say where it came from
+# can never report itself out of date:
+#
+#     "this image does not record the commit it was built from, so it cannot
+#      be compared"
+#
+# That happened, after an update that otherwise succeeded. `git rev-parse`
+# ran as root against a checkout owned by the operator, failed git's
+# ownership check, and the `|| echo unknown` swallowed it. Say it out loud
+# instead: the build is still worth having, but silently losing the one field
+# the update check needs is not something to discover a release later.
+GIT_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+if [ -z "$GIT_SHA" ]; then
+    GIT_SHA="unknown"
+    echo "!! could not read the commit for this build (git rev-parse failed here)."
+    echo "   The image will not know which commit it came from, so the update"
+    echo "   check cannot compare it against the branch. If this is a checkout"
+    echo "   owned by another user, that is git's ownership check:"
+    echo "     git config --global --add safe.directory $REPO_ROOT"
+fi
+
 echo "==> Building orchestrator image ainode:${TAG} (context: $REPO_ROOT)"
-echo "    eugr launcher pinned to ${EUGR_COMMIT:0:7}"
+echo "    eugr launcher pinned to ${EUGR_COMMIT:0:7}, source at ${GIT_SHA:0:7}"
 docker build -f "$DOCKERFILE" \
     --build-arg "EUGR_COMMIT=${EUGR_COMMIT}" \
-    --build-arg "AINODE_GIT_SHA=$(git rev-parse HEAD 2>/dev/null || echo unknown)" \
+    --build-arg "AINODE_GIT_SHA=${GIT_SHA}" \
     -t "ainode:${TAG}" .
 
 # Also tag :dev when building the release version — the installer examples and
