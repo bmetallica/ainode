@@ -688,6 +688,11 @@ def append_solo_instance(app, model: str, gmu=None, *, overrides=None,
     gmu, cap_note = cap_utilization(
         app, gmu, node_ids=[config.node_id] if config.node_id else None,
         force=force)
+    if gmu is None:
+        # No value worth launching at. Said here rather than discovered by
+        # the engine during the load.
+        logger.warning("refusing to launch %s here: %s", model, cap_note)
+        return {"ok": False, "status": 507, "error": cap_note}
 
     port = manager.allocate_port()
     name_token = "" if port == config.api_port else str(port)  # primary keeps legacy names
