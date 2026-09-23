@@ -59,6 +59,7 @@ from ainode.engine.distribute import (
     hf_cache_dir_name,
 )
 from ainode.engine.parallelism import ParallelPlan, Strategy
+from ainode.engine.logs import read_log_tail
 from ainode.engine.serve_args import (
     effective_kv_cache_dtype,
     local_model_dir,
@@ -555,11 +556,7 @@ class EugrBackend(EngineBackend):
         log = self._distributed_log if self.config.distributed_mode == "head" else self._log_file
         if not log.exists():
             return ""
-        try:
-            lines = log.read_text().splitlines()
-        except OSError:
-            return ""
-        return "\n".join(lines[-n:])
+        return read_log_tail(log, n)
 
     # ------------------------------------------------------------------
     # Compatibility properties (VLLMEngine parity)
