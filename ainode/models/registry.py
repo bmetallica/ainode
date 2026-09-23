@@ -443,18 +443,24 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             #   recipe environment: INSTANTTENSOR_BACKEND=BUFFERED,
             #   INSTANTTENSOR_BUFFER_SIZE=67108864, INSTANTTENSOR_CHUNK_SIZE=...
             #
-            # — and the loader still asked for the same 2542796800 B it asks
-            # for with no settings at all, on a node with 116 GB free:
-            #
             #   instanttensor/_impl.py:811 in _finalize_buffer_size
             #   RuntimeError: buffer_size (2542796800 B) exceeds device
             #   memory budget (1067569152 B)
             #
-            # An unchanged number across every configuration is a setting
-            # that is not read. The budget it is compared against is the
-            # driver's own figure, about a gigabyte on this hardware whatever
-            # the machine has free, so the loader can never fit. Dropping it
-            # costs seconds of load time; keeping it costs every launch.
+            # The variables ARE read: with none of them the buffer is
+            # 5086090240 B, with all five it is 2542796800 B — exactly half,
+            # which is what CONCURRENCY=1 does to it. What none of them does
+            # is bound it. BUFFER_SIZE=67108864 is not a ceiling on the total
+            # the loader asks the driver for; 64 MiB in, 2.4 GB out.
+            #
+            # And the budget it is compared against is the driver's own
+            # figure — 825161728, 862404608, 953698304, 1067569152,
+            # 1079867392 B across a week, on nodes with 28 to 116 GB free.
+            # About a gigabyte, whatever the machine has. So the loader
+            # cannot fit here, and this node's log shows it never once did:
+            # every instanttensor launch since 09-17 failed on this line.
+            # Dropping it costs seconds of load time; keeping it costs every
+            # launch.
             #
             # And the GLM entry does not contradict this: it carries the same
             # five variables and serves with "--load-format auto", so the
