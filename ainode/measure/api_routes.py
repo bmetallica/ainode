@@ -17,6 +17,7 @@ __all__ = ["register_measurement_routes"]
 
 def register_measurement_routes(app: web.Application) -> None:
     app.router.add_get("/api/measurements", handle_local)
+    app.router.add_post("/api/measurements/forget-stops", handle_forget_stops)
     app.router.add_delete("/api/measurements/{model:.+}", handle_forget)
     app.router.add_get("/api/cluster/measurements", handle_cluster)
 
@@ -49,6 +50,29 @@ async def handle_forget(request: web.Request) -> web.Response:
     model = request.match_info.get("model", "")
     return web.json_response({
         "ok": True, "forgotten": _store(request.app).forget(model)})
+
+
+async def handle_forget_stops(request: web.Request) -> web.Response:
+    """POST /api/measurements/forget-stops {model} — clear the guard's record.
+
+    The refusal built from a kill is the right default and the wrong
+    permanent state. What made the launch impossible is usually fixed by
+    something this store cannot see, so there has to be a way to say "that
+    was then" without deleting the measurements, which are still true.
+
+    A POST with the model in the body rather than in the path: a repo id
+    contains a slash, and this route would otherwise have to fight the one
+    below it for the same URL.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    model = str((body or {}).get("model") or "").strip()
+    if not model:
+        return web.json_response({"error": "model required"}, status=400)
+    cleared = _store(request.app).forget_guard_stops(model)
+    return web.json_response({"ok": True, "model": model, "cleared": cleared})
 
 
 async def handle_cluster(request: web.Request) -> web.Response:

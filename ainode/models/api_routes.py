@@ -1070,8 +1070,10 @@ async def handle_model_load(request: web.Request) -> web.Response:
         gpu_memory_utilization=gmu,
         force=bool(body.get("force")))
     if refusal:
-        return web.json_response({"error": refusal, "refused_by": "admission"},
-                                 status=507)
+        return web.json_response(
+            {"error": str(refusal), "refused_by": "admission",
+             "clearable": getattr(refusal, "clearable", "")},
+            status=507)
 
     overrides, gmu = apply_catalog_recipe(model, overrides, gmu)
     # A diffusion pipeline the operator downloaded themselves is in no

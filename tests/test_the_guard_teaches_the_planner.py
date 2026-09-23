@@ -17,6 +17,7 @@ it rather than discovered the same way.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 from ainode.measure.store import MeasurementStore
 
@@ -315,3 +316,102 @@ class TestThePlanDoesNotAimAtTheCliff:
                 continue
             claimed = plan.gpu_memory_utilization * (128000 / 1024)
             assert 120.0 - claimed > warn_mb / 1024
+
+
+class TestTheRecordCanBeDropped:
+    """The refusal is the right default and the wrong permanent state.
+
+        ih wollte jetzt nochmal versuchen das minimax3 zu laden bekomme aber
+        ständig diese bzw. ähnliche meldungen … kann ich das irgendwie
+        zurücksetzen?
+
+    What made a launch impossible is usually fixed by something the record
+    cannot see — a flag added, an image rebuilt, a model unloaded elsewhere.
+    """
+
+    MODEL = "sparkarena/Minimax-M3-v0-NVFP4-REAP50"
+
+    def _store(self, tmp_path):
+        store = MeasurementStore(tmp_path / "measurements.json")
+        store.record_launch(self.MODEL, ok=True, memory_gb=61.0, load_seconds=210.0)
+        store.record_guard_stop(self.MODEL, gpu_memory_utilization=0.82,
+                                max_model_len=3072, nodes=2)
+        return store
+
+    def test_clearing_lifts_the_refusal(self, tmp_path):
+        from ainode.safety.admission import check_admission
+
+        store = self._store(tmp_path)
+        app = {"measurement_store": store, "model_manager": None}
+        assert "already had to stop" in check_admission(
+            app, self.MODEL, node_ids=["n1", "n2"], gpu_memory_utilization=0.82)
+
+        assert store.forget_guard_stops(self.MODEL) is True
+        assert check_admission(app, self.MODEL, node_ids=["n1", "n2"],
+                               gpu_memory_utilization=0.82) == ""
+
+    def test_the_measurements_survive_it(self, tmp_path):
+        # They are still true: the model did load, and it did cost that.
+        store = self._store(tmp_path)
+        store.forget_guard_stops(self.MODEL)
+        entry = store.get(self.MODEL)
+        assert entry.memory_gb == 61.0
+        assert entry.load_seconds == 210.0
+        assert entry.guard_stops == 0
+
+    def test_the_kills_leave_the_history_too(self, tmp_path):
+        store = self._store(tmp_path)
+        store.forget_guard_stops(self.MODEL)
+        assert not any(h.get("guard_stop")
+                       for h in store.get(self.MODEL).history)
+
+    def test_clearing_nothing_says_so(self, tmp_path):
+        store = MeasurementStore(tmp_path / "m.json")
+        assert store.forget_guard_stops("org/never-stopped") is False
+
+    def test_the_refusal_names_the_way_out(self, tmp_path):
+        from ainode.safety.admission import check_admission
+
+        app = {"measurement_store": self._store(tmp_path), "model_manager": None}
+        refusal = check_admission(app, self.MODEL, node_ids=["n1", "n2"],
+                                  gpu_memory_utilization=0.82)
+        assert "forget-stops" in refusal
+        assert self.MODEL in refusal
+
+    def test_the_refusal_is_marked_clearable(self, tmp_path):
+        from ainode.safety.admission import check_admission
+
+        app = {"measurement_store": self._store(tmp_path), "model_manager": None}
+        refusal = check_admission(app, self.MODEL, node_ids=["n1", "n2"],
+                                  gpu_memory_utilization=0.82)
+        assert getattr(refusal, "clearable", "") == self.MODEL
+
+    def test_another_refusal_is_not(self, tmp_path):
+        # Only a record the operator can drop gets the button.
+        from ainode.safety.admission import AdmissionRefusal
+
+        assert getattr(AdmissionRefusal("no room"), "clearable", "") == ""
+
+    def test_both_routes_pass_it_on(self):
+        import inspect
+
+        from ainode.engine import sharding_routes
+        from ainode.models import api_routes
+
+        for source in (inspect.getsource(sharding_routes.handle_sharding_launch),
+                       inspect.getsource(api_routes.handle_model_load)):
+            assert '"clearable"' in source
+
+    def test_the_ui_offers_it(self):
+        app_js = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
+                  "static" / "js" / "app.js").read_text()
+        assert "offerToClearTheRecord" in app_js
+        assert "/api/measurements/forget-stops" in app_js
+
+    def test_the_endpoint_is_registered(self):
+        from ainode.api.server import create_app
+        from ainode.core.config import NodeConfig
+
+        app = create_app(config=NodeConfig(node_id="n1"), engine=None)
+        paths = {getattr(r.resource, "canonical", "") for r in app.router.routes()}
+        assert "/api/measurements/forget-stops" in paths

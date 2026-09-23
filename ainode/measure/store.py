@@ -223,6 +223,32 @@ class MeasurementStore:
         self._write(current)
         return entry
 
+    def forget_guard_stops(self, model: str) -> bool:
+        """Drop the record of the guard stopping this model. Keep the rest.
+
+        The refusal built from that record is the right default and the wrong
+        permanent state: the thing that made a launch impossible is usually
+        fixed by something this store cannot see — a flag added, a model
+        unloaded, an engine image rebuilt. Deleting the whole measurement
+        would work and would also throw away the load timings and the memory
+        figure, which are still true.
+        """
+        current = self.load()
+        entry = current.get(model)
+        if entry is None or not entry.guard_stops:
+            return False
+        entry.guard_stops = 0
+        entry.last_guard_stop = 0.0
+        entry.guard_stop_free_gb = 0.0
+        entry.guard_stop_gmu = 0.0
+        entry.guard_stop_max_model_len = 0
+        entry.guard_stop_nodes = 0
+        entry.guard_stop_args = []
+        entry.history = [h for h in entry.history if not h.get("guard_stop")]
+        current[model] = entry
+        self._write(current)
+        return True
+
     def record_speed(self, model: str, *, tokens_per_second: float = 0.0,
                      seconds_per_image: float = 0.0) -> None:
         """How fast it answers, measured while it served."""
