@@ -68,7 +68,10 @@ class TestTheGateAsksAboutTheRightNode:
         # The defect: the roomiest node in the cluster answered for a load
         # that was going somewhere else entirely.
         self._weights(monkeypatch)
-        app = _app([_node("n1", 100), _node("n2", 10)])
+        # 25 GB free on n2: short for a 33 GB pipeline, but not so short that
+        # the answer becomes "this node has nothing" — the point is that n1's
+        # 100 GB does not answer for a load going to n2.
+        app = _app([_node("n1", 100), _node("n2", 25)])
         refusal = check_admission(app, "someone/img", node_ids=["n2"])
         assert refusal and "40 GB needed" in refusal
 

@@ -88,7 +88,10 @@ a figure plenty of model cards recommend — means 124 GB of 128 here); an
 **admission gate** sits in front of both launch paths; and a **host memory
 guard** in its own thread watches `/proc/meminfo`, refuses launches below a
 reserve, and stops an engine when memory falls below the line *or* falls
-towards it faster than the reserve would last. On a member node, where a
+towards it faster than the reserve would last. The planner stops **short** of
+that line rather than filling up to it — it used to size the KV cache to
+consume every gigabyte down to the guard's reserve, which made a launch that
+went exactly to plan one page-cache fluctuation from being killed. On a member node, where a
 distributed launch leaves no instance record, it kills the engine container
 directly. Launches also run off the event loop, so a loading node no longer
 disappears from the cluster.
@@ -405,6 +408,7 @@ set the read token with `ainode config --hf-token hf_xxx`.
 | Launch planner — reads the checkpoint's `config.json` and each node's free memory; answers fit, axis, `max-model-len`, KV, concurrency, and shows its arithmetic | ✅ |
 | Host memory guard — own thread, `/proc/meminfo`, refuses launches below a reserve and stops an engine when memory drops below the line or falls towards it too fast; kills the engine container on a member node, which has no instance record; per-node settings with a DGX Spark preset | ✅ |
 | Utilization cap — `gpu_memory_utilization` lowered to what is free on the tightest participating node, because on unified memory it is a share of *total* memory and the guard cannot outrun a KV allocation | ✅ |
+| Planning headroom — the plan stops short of the guard's line instead of filling up to it, so a launch that goes exactly to plan is not one fluctuation from being killed | ✅ |
 | Admission gate in front of **both** launch paths, scoped to the node the instance will run on | ✅ |
 | Launches run off the event loop — a loading node no longer drops out of the cluster | ✅ |
 | Per-phase load timings — where a five-minute launch actually went | ✅ |
