@@ -188,6 +188,31 @@ class Recorder:
         return (value / 1024) if value else 0.0
 
 
+def guard_stopped_for(app, model: str) -> Optional[dict]:
+    """The record of the guard stopping this model, if it is the last word.
+
+    Separate from :func:`measured_for`, which answers only for models that
+    have actually served — a model that has never come up here has no
+    measurement, and being killed by the guard is precisely the case where
+    there is something to say about a model that never served.
+
+    None once the model has run successfully since: whatever was in the way
+    is evidently no longer there.
+    """
+    try:
+        from ainode.measure.store import MeasurementStore
+
+        store = app.get("measurement_store") or MeasurementStore()
+        entry = store.get(model)
+    except Exception:
+        return None
+    if entry is None or not entry.guard_stops:
+        return None
+    if entry.last_ok and entry.last_ok > entry.last_guard_stop:
+        return None
+    return entry.to_dict()
+
+
 def measured_for(app, model: str) -> Optional[dict]:
     """The measurement for one model on this node, or None."""
     try:

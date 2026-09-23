@@ -1531,6 +1531,15 @@ vllm serve {shlex.quote(serve_target or self.config.model)} \\
         """Why the last launch died, or "". Quotes the engine's own last lines."""
         return self._phase.failure_reason()
 
+    def note_external_stop(self, reason: str) -> None:
+        """Something outside this backend stopped the engine, and why.
+
+        The host memory guard calls this before it kills. Without it the only
+        surviving account of the death is the launcher's exit code, which
+        says a signal arrived and nothing about who sent it.
+        """
+        self._phase.fail(reason)
+
     def _stream_logs(self, process: subprocess.Popen, target: Path) -> None:
         """Tee subprocess stdout to a log file, tracking readiness and phase."""
         if not process.stdout:
@@ -1557,10 +1566,7 @@ vllm serve {shlex.quote(serve_target or self.config.model)} \\
                 rc = process.wait(timeout=10)
             except Exception:
                 rc = None
-            self._phase.fail(
-                f"the launcher exited (code {rc})" if rc is not None
-                else "the launcher stopped producing output"
-            )
+            self._phase.fail_exit(rc)
             logger.error("Launch failed: %s", self._phase.failure_reason())
 
 

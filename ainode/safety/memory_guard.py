@@ -337,6 +337,18 @@ class MemoryGuard:
         )
         logger.error("%s — stopping %s", reason, model or "the newest instance")
         backend = getattr(instance, "backend", None)
+        # Tell the backend first, while it is still running. Its log stream
+        # ends a moment after the kill and the launcher's exit code is the
+        # only thing left to explain the death — "the launcher exited (code
+        # -9)", which is true, uninformative, and used to overwrite this
+        # message on the next sync. The first explanation wins now, and this
+        # is it.
+        note = getattr(backend, "note_external_stop", None)
+        if callable(note):
+            try:
+                note(reason)
+            except Exception:
+                logger.debug("could not tell the backend why", exc_info=True)
         # kill, not stop: a graceful shutdown takes ten seconds or more, and a
         # node this close to the edge does not have ten seconds.
         for method in ("kill", "stop"):
@@ -356,7 +368,39 @@ class MemoryGuard:
             except Exception:
                 logger.debug("could not mark the record", exc_info=True)
         self._record(reading, model, reason)
+        self._remember(model, instance, reading)
         return model or None
+
+    def _remember(self, model: str, instance, reading: MemoryReading) -> None:
+        """Write the stop down against the model, not only in the log.
+
+        The next launch of the same model, asking for the same thing, should
+        not have to be discovered the same way. A refusal that says "this was
+        killed here, at this utilization, on this date" is evidence rather
+        than an estimate — and it is the only kind of evidence available for
+        a model that has never successfully served.
+        """
+        if not model:
+            return
+        config = getattr(getattr(instance, "backend", None), "config", None)
+        record = getattr(instance, "record", None)
+        try:
+            from ainode.measure.store import MeasurementStore
+
+            store = (self._app.get("measurement_store")
+                     if self._app is not None else None) or MeasurementStore()
+            store.record_guard_stop(
+                model,
+                free_gb=round(reading.available_mb / 1024, 1),
+                node_id=str(getattr(self._app.get("config"), "node_id", "") or ""),
+                gpu_memory_utilization=float(
+                    getattr(config, "gpu_memory_utilization", 0) or 0),
+                max_model_len=int(getattr(config, "max_model_len", 0) or 0),
+                nodes=1 + len(list(getattr(record, "peer_ips", []) or [])),
+            )
+        except Exception:
+            logger.debug("could not record the stop against %s", model,
+                         exc_info=True)
 
     def _record(self, reading: MemoryReading, model: str, reason: str) -> None:
         action = {

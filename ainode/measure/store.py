@@ -68,6 +68,18 @@ class Measurement:
     seconds_per_image: float = 0.0
     #: The last few loads, newest last: [{at, seconds, memory_gb, ok}].
     history: List[dict] = field(default_factory=list)
+    #: GB of host memory that were free when the guard stopped this model,
+    #: and when. A load that had to be killed is the hardest fact this store
+    #: holds: not an estimate of what the model needs, but proof that this
+    #: node, configured this way, could not give it.
+    guard_stops: int = 0
+    last_guard_stop: float = 0.0
+    guard_stop_free_gb: float = 0.0
+    #: What the killed launch was asking for, so the next one can be compared
+    #: against it rather than merely warned about.
+    guard_stop_gmu: float = 0.0
+    guard_stop_max_model_len: int = 0
+    guard_stop_nodes: int = 0
 
     def __post_init__(self) -> None:
         self.model = str(self.model or "").strip()
@@ -164,6 +176,40 @@ class MeasurementStore:
             "at": round(time.time(), 1), "ok": bool(ok),
             "seconds": round(float(load_seconds or 0), 1),
             "memory_gb": round(float(memory_gb or 0), 1),
+        })
+        del entry.history[:-HISTORY]
+        current[entry.model] = entry
+        self._write(current)
+        return entry
+
+    def record_guard_stop(self, model: str, *, free_gb: float = 0.0,
+                          node_id: str = "",
+                          gpu_memory_utilization: float = 0.0,
+                          max_model_len: int = 0,
+                          nodes: int = 0) -> Optional[Measurement]:
+        """The memory guard stopped this model. Never raises.
+
+        Recorded against the model rather than only in the guard's own log,
+        because the next launch has to know. A refusal that says "this was
+        killed here on Tuesday" is a different kind of argument from an
+        estimate, and it is one the operator can check.
+        """
+        current = self.load()
+        entry = current.get(model) or Measurement(model=model)
+        entry.node_id = node_id or entry.node_id
+        entry.failures += 1
+        entry.guard_stops += 1
+        # Unrounded: "has it run successfully since?" compares this against
+        # last_ok, and rounding to a tenth can move it PAST a launch recorded
+        # a few milliseconds later.
+        entry.last_guard_stop = time.time()
+        entry.guard_stop_free_gb = round(float(free_gb or 0), 1)
+        entry.guard_stop_gmu = float(gpu_memory_utilization or 0)
+        entry.guard_stop_max_model_len = int(max_model_len or 0)
+        entry.guard_stop_nodes = int(nodes or 0)
+        entry.history.append({
+            "at": round(entry.last_guard_stop, 1), "ok": False, "seconds": 0.0,
+            "memory_gb": 0.0, "guard_stop": True,
         })
         del entry.history[:-HISTORY]
         current[entry.model] = entry

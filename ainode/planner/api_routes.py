@@ -54,6 +54,38 @@ def node_budgets(app, node_ids=None) -> list:
     return out
 
 
+def budgets_with_guard_reserve(app, node_ids=None) -> list:
+    """Node budgets with the memory guard's line held back, not just the
+    planner's own reserve.
+
+    These were two numbers. The planner held back SYSTEM_RESERVE_GB and the
+    guard refused launches below its warning line, and when the operator
+    raised the guard's reserve — which the UI invites — the planner went on
+    planning into memory the guard would not allow anyone to touch. The
+    dialog said a model fitted, the gate refused it, and on the launch that
+    slipped between them the node died.
+
+    One number now: what the guard will not let go below is what the planner
+    will not plan into.
+    """
+    from ainode.planner.compute import SYSTEM_RESERVE_GB
+
+    budgets = node_budgets(app, node_ids)
+    guard = app.get("memory_guard")
+    # The reading's warn line, not the configured one: it carries the cap
+    # against the machine's total memory, and the planner has to hold back
+    # what the guard will actually enforce.
+    try:
+        warn_gb = float(guard.read().warn_mb) / 1024 if guard is not None else 0.0
+    except Exception:
+        warn_gb = float(getattr(guard, "warn_mb", 0.0) or 0.0) / 1024
+    extra = max(0.0, warn_gb - SYSTEM_RESERVE_GB)
+    if extra:
+        for budget in budgets:
+            budget.free_gb = max(0.0, budget.free_gb - extra)
+    return budgets
+
+
 def _recipe(app, model: str):
     """The catalog entry for this model, if there is one.
 
@@ -161,7 +193,10 @@ async def handle_plan(request: web.Request) -> web.Response:
         return web.json_response({"error": "model parameter required"}, status=400)
 
     node_ids = [n for n in (request.query.get("nodes") or "").split(",") if n]
-    nodes = node_budgets(request.app, node_ids)
+    # The same budgets the admission gate uses. A dialog that is more
+    # optimistic than the gate offers launches that are then refused — or
+    # worse, is more optimistic than the hardware.
+    nodes = budgets_with_guard_reserve(request.app, node_ids)
     manager = request.app.get("model_manager")
     if manager is None:
         return web.json_response({"error": "no model manager"}, status=503)
