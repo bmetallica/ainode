@@ -92,3 +92,44 @@ class TestCaptureSkipsAnInstanceWithNoModel:
 
         with pytest.raises(ProfileError):
             ProfileEntry(model="")
+
+
+class TestTheLogSaysWhichLaunchIsWhich:
+    """That log is append-only across every launch a node has ever done.
+
+    Grepping it for "vllm serve" on a node that has served models for eleven
+    days answers with the first launch of the eleven — which is how an error
+    from 09-12 came to be read as today's, at the cost of a round trip.
+    """
+
+    def _script(self, tmp_path):
+        script = tmp_path / "launch.sh"
+        script.write_text("#!/bin/bash\nvllm serve /models/org--m \\\n"
+                          "    --port 8000\n")
+        return script
+
+    def test_the_banner_names_the_model_and_the_time(self, tmp_path):
+        backend = EugrBackend(NodeConfig(node_id="n1", model="org/m"))
+        log = tmp_path / "vllm.log"
+        backend._log_serve_command(self._script(tmp_path), log)
+        text = log.read_text()
+        assert "===== launch org/m at " in text
+        assert "serve command: vllm serve /models/org--m --port 8000" in text
+
+    def test_it_appends_rather_than_replaces(self, tmp_path):
+        backend = EugrBackend(NodeConfig(node_id="n1", model="org/m"))
+        log = tmp_path / "vllm.log"
+        log.write_text("earlier output\n")
+        backend._log_serve_command(self._script(tmp_path), log)
+        assert log.read_text().startswith("earlier output")
+
+    def test_both_paths_write_one(self):
+        source = inspect.getsource(EugrBackend)
+        assert "_log_serve_command(launch_script, self._log_file)" in source
+        assert "_log_serve_command(launch_script, self._distributed_log)" in source
+
+    def test_without_a_log_it_still_logs_to_the_process(self, tmp_path, caplog):
+        backend = EugrBackend(NodeConfig(node_id="n1", model="org/m"))
+        with caplog.at_level("INFO", logger="ainode.engine.backends.eugr"):
+            backend._log_serve_command(self._script(tmp_path))
+        assert "serve command" in caplog.text
