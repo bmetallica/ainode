@@ -1705,33 +1705,93 @@ def _local_embedding_models(app) -> list[str]:
         return []
 
 
+#: What a client asking /v1/models without qualification means by "model":
+#: something it can send to /v1/chat/completions. An empty kind is an older
+#: peer's instance record, which could only ever have been an LLM.
+_CHAT_KINDS = ("", "llm", "vision")
+
+
+def _fleet_model_kinds(cluster) -> dict:
+    """model id → kind, from what every node advertises about its instances."""
+    kinds: dict = {}
+    if cluster is None:
+        return kinds
+    try:
+        members = list(cluster.members())
+    except Exception:
+        logger.debug("cluster members unavailable", exc_info=True)
+        return kinds
+    for node in members:
+        for inst in (getattr(node, "instances", []) or []):
+            if isinstance(inst, dict) and inst.get("model"):
+                kinds.setdefault(str(inst["model"]), str(inst.get("kind") or ""))
+    return kinds
+
+
+def _wanted_kinds(request: web.Request) -> set:
+    """Which kinds this request asked for.
+
+    ``?type=embedding`` for a RAG client, ``?type=all`` for a complete
+    inventory, nothing for the chat-capable models — because a client that
+    does not ask is a chat client, and every one of them puts whatever this
+    returns straight into a model picker.
+    """
+    asked = str(request.query.get("type") or request.query.get("kind") or "").strip().lower()
+    if asked in ("", "chat"):
+        return set(_CHAT_KINDS)
+    if asked == "all":
+        return {"all"}
+    return {k.strip() for k in asked.split(",") if k.strip()}
+
+
 async def handle_v1_models(request: web.Request) -> web.Response:
-    """Federated /v1/models — the UNION of models served across the fleet (F1)."""
+    """Federated /v1/models — the UNION of models served across the fleet (F1).
+
+    Chat-capable by default. An embedding model answers at /v1/embeddings and
+    an image model at /v1/images/generations; neither can hold a conversation,
+    and OpenWebUI — like every other OpenAI client — offers whatever this
+    returns as something to chat with. Listing them here made the embedding
+    model appear as a chat model, which is not a display bug: the list said it
+    was one.
+
+    They are still reachable through this endpoint, by asking:
+    ``?type=embedding``, ``?type=image``, or ``?type=all`` for everything.
+    A RAG client that checks its embedding model is listed before calling
+    /v1/embeddings asks the first of those.
+    """
     config: NodeConfig = request.app["config"]
     cluster = request.app.get("cluster_state")
+    wanted = _wanted_kinds(request)
+    everything = "all" in wanted
+
     table = _routing_table(cluster, config.node_id, config.api_port) if cluster is not None else {}
     if not table and config.model:
         table = {config.model: ("localhost", config.api_port)}
-    data = [{"id": m, "object": "model", "owned_by": "ainode"} for m in sorted(table)]
-    # Embedding models too. They are not vLLM instances, so they never entered
-    # the routing table, and a RAG client that asks /v1/models before calling
-    # /v1/embeddings concluded the model it had just loaded was unavailable.
-    # OpenAI lists its embedding models here; so do we.
-    #
-    # The whole fleet's, not only this node's: peers advertise what they have
-    # loaded and /v1/embeddings forwards to the node that has it, so a model
-    # listed here is one this address can actually answer for — which is the
-    # only promise the list makes.
-    embeddings = set(_local_embedding_models(request.app))
-    if cluster is not None:
-        try:
-            for node in cluster.get_nodes():
-                embeddings.update(getattr(node, "embedding_models", []) or [])
-        except Exception:
-            logger.debug("could not read peers' embedding models", exc_info=True)
-    for model_id in sorted(embeddings):
-        if model_id not in table:
-            data.append({"id": model_id, "object": "model", "owned_by": "ainode"})
+    kinds = _fleet_model_kinds(cluster)
+    data = [
+        {"id": m, "object": "model", "owned_by": "ainode",
+         "ainode_kind": kinds.get(m, "") or "llm"}
+        for m in sorted(table)
+        if everything or (kinds.get(m, "") or "llm") in wanted or kinds.get(m, "") in wanted
+    ]
+
+    # Embedding models are not vLLM instances, so they never entered the
+    # routing table. The whole fleet's, not only this node's: peers advertise
+    # what they have loaded and /v1/embeddings forwards to the node that has
+    # it, so a model listed here is one this address can answer for — which is
+    # the only promise the list makes.
+    if everything or "embedding" in wanted:
+        embeddings = set(_local_embedding_models(request.app))
+        if cluster is not None:
+            try:
+                for node in cluster.get_nodes():
+                    embeddings.update(getattr(node, "embedding_models", []) or [])
+            except Exception:
+                logger.debug("could not read peers' embedding models", exc_info=True)
+        for model_id in sorted(embeddings):
+            if model_id not in table:
+                data.append({"id": model_id, "object": "model",
+                             "owned_by": "ainode", "ainode_kind": "embedding"})
     return web.json_response({"object": "list", "data": data})
 
 

@@ -11,7 +11,12 @@ Two separate blind spots:
   * /v1/models builds its list from the vLLM routing table. Embedding models
     are not vLLM instances, so they never appeared — and a RAG client that
     asks /v1/models before calling /v1/embeddings concludes the model it just
-    loaded is unavailable. OpenAI lists embedding models there; so do we now.
+    loaded is unavailable. They are listed now, but behind ?type=embedding:
+    plain /v1/models is what a chat client reads, and everything it returns
+    goes into a chat picker. Reported later, from the same cluster:
+
+        zudem wird es auch von openwebui als chatmodell angezeigt,
+        was ja falsch ist
   * /api/embeddings/models walked the CURATED catalog and set a `loaded` flag
     on it. Anything loaded from outside that list — which the UI can now ask
     for by repo id — was invisible however loaded it was, including in the
@@ -60,30 +65,61 @@ async def client(app):
 
 
 class TestV1Models:
+    """Chat-capable by default; everything else on request.
+
+    An embedding model answers at /v1/embeddings and an image model at
+    /v1/images/generations. Neither can hold a conversation, and every
+    OpenAI-compatible client offers whatever /v1/models returns as something
+    to chat with — so listing them there did not display them wrongly, it
+    described them wrongly.
+    """
+
     @pytest.mark.asyncio
-    async def test_a_loaded_embedding_model_is_listed(self, client, app):
+    async def test_an_embedding_model_is_not_a_chat_model(self, client, app):
         app["embedding_manager"] = _Manager([CURATED])
         data = await (await client.get("/v1/models")).json()
-        assert CURATED in [m["id"] for m in data["data"]]
+        assert CURATED not in [m["id"] for m in data["data"]]
 
     @pytest.mark.asyncio
     async def test_the_chat_model_is_still_there(self, client, app):
         app["embedding_manager"] = _Manager([CURATED])
         data = await (await client.get("/v1/models")).json()
+        assert "org/chat-model" in [m["id"] for m in data["data"]]
+
+    @pytest.mark.asyncio
+    async def test_a_rag_client_can_ask_for_its_own(self, client, app):
+        # The reason they were listed at all: a client that checks the model
+        # it just loaded is available before calling /v1/embeddings.
+        app["embedding_manager"] = _Manager([CURATED])
+        data = await (await client.get("/v1/models?type=embedding")).json()
+        assert [m["id"] for m in data["data"]] == [CURATED]
+
+    @pytest.mark.asyncio
+    async def test_everything_is_still_reachable_in_one_call(self, client, app):
+        app["embedding_manager"] = _Manager([CURATED])
+        data = await (await client.get("/v1/models?type=all")).json()
         ids = [m["id"] for m in data["data"]]
         assert "org/chat-model" in ids and CURATED in ids
+
+    @pytest.mark.asyncio
+    async def test_each_entry_says_what_it_is(self, client, app):
+        app["embedding_manager"] = _Manager([CURATED])
+        data = await (await client.get("/v1/models?type=all")).json()
+        kinds = {m["id"]: m.get("ainode_kind") for m in data["data"]}
+        assert kinds[CURATED] == "embedding"
+        assert kinds["org/chat-model"] == "llm"
 
     @pytest.mark.asyncio
     async def test_an_unloaded_one_is_not_listed(self, client, app):
         """Listing the catalog would advertise models nothing can answer for."""
         app["embedding_manager"] = _Manager([])
-        data = await (await client.get("/v1/models")).json()
+        data = await (await client.get("/v1/models?type=all")).json()
         assert CURATED not in [m["id"] for m in data["data"]]
 
     @pytest.mark.asyncio
     async def test_no_duplicate_when_a_name_collides(self, client, app):
         app["embedding_manager"] = _Manager(["org/chat-model"])
-        data = await (await client.get("/v1/models")).json()
+        data = await (await client.get("/v1/models?type=all")).json()
         assert [m["id"] for m in data["data"]].count("org/chat-model") == 1
 
     @pytest.mark.asyncio
@@ -93,7 +129,7 @@ class TestV1Models:
                 raise RuntimeError("torch is not installed")
 
         app["embedding_manager"] = _Broken()
-        response = await client.get("/v1/models")
+        response = await client.get("/v1/models?type=all")
         assert response.status == 200
         assert "org/chat-model" in [m["id"] for m in (await response.json())["data"]]
 
@@ -112,7 +148,7 @@ class TestV1Models:
             last_seen=0.0, fabric_ip="10.0.0.3",
             embedding_models=[CURATED],
         ))
-        data = await (await client.get("/v1/models")).json()
+        data = await (await client.get("/v1/models?type=embedding")).json()
         assert CURATED in [m["id"] for m in data["data"]]
 
 

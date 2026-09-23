@@ -728,13 +728,38 @@ print(resp.choices[0].message.content)
 Works with Open WebUI, LiteLLM, LangChain, llama.cpp clients, and
 anything else that speaks OpenAI.
 
+#### `/v1/models` lists what you can chat with
+
+Plain `GET /v1/models` returns the chat-capable models across the whole fleet.
+Embedding and image models are not in it: they answer at `/v1/embeddings` and
+`/v1/images/generations`, and every OpenAI client — Open WebUI included —
+offers whatever this endpoint returns as something to chat with. Ask for them
+explicitly:
+
+```bash
+curl localhost:8000/v1/models                    # chat + vision
+curl localhost:8000/v1/models?type=embedding     # for a RAG client
+curl localhost:8000/v1/models?type=image
+curl localhost:8000/v1/models?type=all           # the complete inventory
+```
+
+Every entry carries `ainode_kind` alongside the OpenAI fields, so a client
+that reads `?type=all` can sort them itself.
+
 ### Profiles — one deployment, saved and restored
 
-A profile is the set of models a node should be serving, with placement and
-per-load settings. Applying one converges the node onto it: missing models are
-started one after another, models the profile does not list are stopped. A
-default profile is applied at startup and replaces the instance-manifest
-replay, which could only record single-node instances.
+A profile is the set of models the **cluster** should be serving, with
+placement and per-load settings. Applying one converges onto it: missing models
+are started one after another — each on the node its entry names — and models
+that should not be running *here* are stopped here, including a local copy of
+something the profile places on another node. A default profile is applied at
+startup and replaces the instance-manifest replay, which could only record
+single-node instances.
+
+Placement is exclusive. An embedding model assigned to node 3 is unloaded from
+every other node when the profile is applied, and an embeddings request for it
+that reaches another node is answered by node 3 rather than by loading a second
+copy where it arrived.
 
 ```bash
 # save what is running right now
