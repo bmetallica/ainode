@@ -266,8 +266,15 @@ class UpdateRunner:
         return {"ok": True}
 
     def _say(self, line: str) -> None:
-        self.job["lines"].append(line.rstrip())
+        line = line.rstrip()
+        self.job["lines"].append(line)
         del self.job["lines"][:-_MAX_LINES]
+        # And into this node's log, so the run can be followed from a shell —
+        # `docker logs -f ainode`, journalctl, or the MQTT log topic — without
+        # a browser. The output lived only in this object before, which meant
+        # the only way to watch a twenty-minute build was to keep one tab open
+        # and never reload it.
+        logger.info("update | %s", line)
 
     def _run(self, nodes: List[str], base: bool, images: bool) -> None:
         directory = self.source_dir()

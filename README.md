@@ -725,6 +725,21 @@ the directory's owner rather than being told to ignore the ownership — a pull
 as root leaves objects under `.git` that your own shell then cannot write
 over.
 
+**Watching it from a shell.** The run is not tied to the browser that started
+it: reload, close the tab, come back on another machine — the panel picks the
+output back up, and the dashboard carries a banner while one is in flight. From
+the head's shell, either of:
+
+```bash
+docker logs -f ainode | grep --line-buffered '^.*update |'   # every line, live
+curl -s localhost:3000/api/update/status |                   # the last lines
+  python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"]); print(*d["lines"][-30:], sep="\n")'
+```
+
+It is finished when `status` reads `done` — or when this node restarts under
+you, which is the last thing a successful update does. The outcome is kept in
+`~/.ainode/update-last.json` and shown in the panel afterwards.
+
 From then on the button does the same thing: `git pull`, build, distribute,
 restart the peers, verify them, and restart the head last — which from inside
 the container is a `docker stop` of itself that systemd turns into a start on
