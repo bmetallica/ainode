@@ -106,7 +106,7 @@ The large ones, by how much:
 orchestrator image, the image-generation engine, the registry cache, the
 cluster updater and a diagnostic.
 
-Tests: **88 new files**, 13 upstream files extended, 2978 tests. Two of them
+Tests: **88 new files**, 13 upstream files extended, 2981 tests. Two of them
 hold the documentation to the code rather than to good intentions:
 `test_fork_documentation.py` checks that every module and link this file and
 the README name exists and that every feature row claiming an endpoint matches

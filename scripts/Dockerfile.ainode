@@ -27,9 +27,13 @@ ENV AINODE_HOME=/root/.ainode \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     AINODE_IN_CONTAINER=1 \
-    # All HF downloads from the orchestrator default to the Rust parallel
-    # downloader. See ops/slices/nvidia-vllm-engine/runbooks/04-install-ux-spec.md § 5.1.
-    HF_HUB_ENABLE_HF_TRANSFER=1 \
+    # All HF downloads from the orchestrator go the fast way. The variable
+    # for that changed: huggingface_hub dropped hf_transfer, and
+    # HF_HUB_ENABLE_HF_TRANSFER now only produces a FutureWarning on every
+    # start. HF_XET_HIGH_PERFORMANCE is its replacement, and the difference
+    # is not cosmetic — a download we believed was accelerated has not been
+    # for however long the installed hub version has been current.
+    HF_XET_HIGH_PERFORMANCE=1 \
     # Named explicitly rather than left to Triton's search. Its error names
     # this variable, so an operator who hits it on a build without gcc gets a
     # message that matches what is actually configured.

@@ -92,7 +92,9 @@ DOCKER_RUN_CMD = (
     # in-container update path knows a self-`docker stop` will image-swap (systemd
     # Restart=always + EnvironmentFile) rather than drop/rebooting the old image.
     " -e AINODE_UNIT_SWAPPABLE=1"
-    " -e HF_HUB_ENABLE_HF_TRANSFER=1"
+    # HF_XET_HIGH_PERFORMANCE, not HF_HUB_ENABLE_HF_TRANSFER: huggingface_hub
+    # dropped hf_transfer, and the old name now only warns.
+    " -e HF_XET_HIGH_PERFORMANCE=1"
     # Shared cluster storage — required by DockerEngine._publish_nccl_init_script
     # to stage the per-node NCCL init shim. ``--mount type=bind`` (vs ``-v``) is
     # intentional: it fails loudly at container start if /mnt/shared-models does
