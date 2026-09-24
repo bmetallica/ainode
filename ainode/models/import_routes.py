@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from aiohttp import web
 
@@ -60,10 +60,32 @@ _COMPANIONS = (
 )
 
 
+#: Where an operator can simply put a model they downloaded elsewhere.
+#:
+#: A browser upload is fine for the twenty small files; it is the wrong tool
+#: for 43 GB of shards, which is what this deployment actually had to move.
+#: A directory and a file manager are the right tool, and every operating
+#: system already ships both.
+#:
+#: The host path is mounted into the container by the installer, at the same
+#: path inside, so the name an operator types on the host is the name the
+#: product uses. AINODE_IMPORT_DIR overrides it.
+DROP_DIR = "/model-import"
+
+
+def drop_dir(app) -> Path:
+    import os
+
+    configured = str(getattr(app.get("config"), "import_dir", "") or "").strip()
+    return Path(configured or os.environ.get("AINODE_IMPORT_DIR") or DROP_DIR)
+
+
 def register_import_routes(app: web.Application) -> None:
     app.router.add_get("/api/models/import/plan", handle_plan)
     app.router.add_post("/api/models/import/upload", handle_upload)
     app.router.add_post("/api/models/import/finish", handle_finish)
+    app.router.add_get("/api/models/import/dropbox", handle_dropbox)
+    app.router.add_post("/api/models/import/dropbox", handle_take_dropbox)
 
 
 def _target_dir(app, hf_repo: str) -> Path:
@@ -292,3 +314,156 @@ def _forget_size(app, path) -> None:
             forget(path)
         except Exception:
             logger.debug("could not drop the cached size", exc_info=True)
+
+
+# -- The drop directory --------------------------------------------------
+
+
+def _repo_from_name(name: str) -> str:
+    """``org--name`` or ``org/name`` as a repo id, or "" if it is neither."""
+    if "/" in name:
+        return name
+    if "--" in name:
+        org, _, rest = name.partition("--")
+        return f"{org}/{rest}" if org and rest else ""
+    return ""
+
+
+def _measure(directory: Path) -> Tuple[int, int]:
+    """(files, bytes) under a directory. Symlinks followed, like the rest."""
+    files = 0
+    total = 0
+    for path in directory.rglob("*"):
+        try:
+            if path.is_file():
+                files += 1
+                total += path.stat().st_size
+        except OSError:
+            continue
+    return files, total
+
+
+async def handle_dropbox(request: web.Request) -> web.Response:
+    """GET /api/models/import/dropbox — what is lying in the drop directory.
+
+    Two shapes are recognised, because both are what someone actually does
+    with a USB stick: a directory named after the repo (``org--name`` or
+    ``org/name``), and loose files at the top level, which need a repo id to
+    be given with them.
+    """
+    directory = drop_dir(request.app)
+    payload = {"dir": str(directory), "exists": directory.is_dir(),
+               "entries": [], "loose": []}
+    if not directory.is_dir():
+        payload["hint"] = (
+            f"{directory} is not visible from inside AINode. Create it on the "
+            f"host and re-run the installer, which mounts it at the same path "
+            f"when it exists — the model files are far too large to be worth "
+            f"copying twice.")
+        return web.json_response(payload)
+
+    for child in sorted(directory.iterdir()):
+        try:
+            if child.name.startswith("."):
+                continue
+            if child.is_dir():
+                repo = _repo_from_name(child.name)
+                # One level down, for someone who made org/name rather than
+                # org--name.
+                if not repo:
+                    for grandchild in sorted(child.iterdir()):
+                        if grandchild.is_dir():
+                            files, size = _measure(grandchild)
+                            payload["entries"].append({
+                                "name": f"{child.name}/{grandchild.name}",
+                                "repo": f"{child.name}/{grandchild.name}",
+                                "files": files, "bytes": size})
+                    continue
+                files, size = _measure(child)
+                payload["entries"].append({"name": child.name, "repo": repo,
+                                           "files": files, "bytes": size})
+            elif child.is_file():
+                payload["loose"].append({"name": child.name,
+                                         "bytes": child.stat().st_size})
+        except OSError:
+            continue
+    return web.json_response(payload)
+
+
+async def handle_take_dropbox(request: web.Request) -> web.Response:
+    """POST /api/models/import/dropbox {name, hf_repo?} — take it in.
+
+    Moved rather than copied where the filesystem allows it: a rename of
+    129 GB is instant and a copy is not, and the drop directory is not a
+    place anyone wants a second copy to live.
+    """
+    import shutil
+
+    try:
+        body = as_object(await request.json()) if request.can_read_body else {}
+    except Exception:
+        body = {}
+    name = str_field(body, "name").strip()
+    hf_repo = str_field(body, "hf_repo", "repo").strip()
+    if not name and not hf_repo:
+        return web.json_response({"error": "name or hf_repo required"},
+                                 status=400)
+
+    root = drop_dir(request.app)
+    if not root.is_dir():
+        return web.json_response({"error": f"{root} is not visible from here"},
+                                 status=404)
+
+    if name:
+        if not _SAFE_RELATIVE.match(name):
+            return web.json_response({"error": f"{name!r} is not a name in "
+                                               f"the drop directory"},
+                                     status=400)
+        source = root / name
+        hf_repo = hf_repo or _repo_from_name(name)
+    else:
+        source = root
+    if not hf_repo or "/" not in hf_repo:
+        return web.json_response(
+            {"error": "could not tell which repo this is — name the "
+                      "directory org--name, or send hf_repo"}, status=400)
+    if not source.exists():
+        return web.json_response({"error": f"{source} is not there"}, status=404)
+
+    target = _target_dir(request.app, hf_repo)
+    moved: List[str] = []
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        sources = ([source] if source.is_file()
+                   else sorted(p for p in source.rglob("*") if p.is_file()))
+        for path in sources:
+            relative = path.name if source.is_file() else \
+                str(path.relative_to(source))
+            destination = target / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(path), str(destination))
+            moved.append(relative)
+    except (OSError, shutil.Error) as exc:
+        return web.json_response(
+            {"error": f"could not move the files: {exc}", "moved": moved},
+            status=500)
+
+    # Leave the (now empty) directory behind rather than removing it: it is
+    # the operator's, and an empty one is a clear "this was taken".
+    _forget_size(request.app, target)
+    logger.info("took %d file(s) from %s into %s", len(moved), source, target)
+
+    from ainode.models.completeness import download_state
+
+    complete, reason = download_state(target)
+    result = {"ok": True, "hf_repo": hf_repo, "moved": len(moved),
+              "complete": complete, "incomplete_reason": reason,
+              "mirrored": False}
+    if complete:
+        job: dict = {}
+        from ainode.models.api_routes import _mirror_after_download
+
+        await _mirror_after_download(request.app, hf_repo, job)
+        result["mirrored"] = True
+        result["mirror"] = job.get("mirror", {})
+    return web.json_response(result)

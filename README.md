@@ -80,10 +80,14 @@ serving", captured from what is running and applied to converge); and
 **placement** ("this model runs on node X, permanently").
 
 **Importing a model by hand** — for a link that cannot carry 86 GB in one
-piece. **Models → Import from files** asks what the repo needs, says which
-files are missing with a direct Hugging Face URL for each, takes them from
-your browser one at a time, puts them where the downloader would have, and
-mirrors the finished model to the other nodes. The file list comes from the
+piece. **Models → Import from files** asks what the repo needs and says which
+files are missing, with a direct Hugging Face URL for each. Small files can
+go through the browser; a whole checkpoint goes in **`/model-import`** on the
+head — the installer mounts that directory into the container at the same
+path when it exists, so `org--name/` dropped there appears in the panel and
+is *moved* (not copied) into place with one click. Either way the finished
+model is checked and mirrored to the other nodes, and an incomplete one is
+never mirrored: that would spread the problem rather than the model. The file list comes from the
 Hub when it can be reached and from the checkpoint's own index when it
 cannot — which is what a node with no route has, and enough to finish a
 partial download.

@@ -86,7 +86,7 @@ DOCKER_RUN_CMD = (
     # because git pull writes. Conditional: rendered only when a checkout is
     # actually there, so a node installed from an image alone does not get a
     # mount that fails its container start.
-    "{source_mount}"
+    "{source_mount}{import_mount}"
     " -e AINODE_HOST_HOME={ainode_home}"
     # Marks the running container as launched by the swappable-image unit, so the
     # in-container update path knows a self-`docker stop` will image-swap (systemd
@@ -161,6 +161,21 @@ def _source_mount() -> str:
     return ""
 
 
+def _import_mount() -> str:
+    """``-v /model-import:/model-import`` when that directory exists.
+
+    The same path inside as outside, so the name an operator types on the
+    host is the name the product uses. Conditional for the same reason the
+    source mount is: a bind mount whose source is missing fails the container
+    start, and most nodes will never have one.
+    """
+    from ainode.models.import_routes import DROP_DIR
+
+    candidate = os.environ.get("AINODE_IMPORT_DIR") or DROP_DIR
+    path = Path(candidate)
+    return f" -v {path}:{path}" if path.is_dir() else ""
+
+
 def generate_unit_file(user_mode: bool = False) -> str:
     """Generate the systemd unit file content.
 
@@ -176,6 +191,7 @@ def generate_unit_file(user_mode: bool = False) -> str:
         ainode_home=ainode_home,
         home=home,
         source_mount=_source_mount(),
+        import_mount=_import_mount(),
         image="${AINODE_IMAGE}",
     )
     return UNIT_FILE_TEMPLATE.format(
