@@ -17,7 +17,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ainode.models.completeness import download_state, is_complete
+from ainode.models.completeness import (clear_partials, download_state,
+                                        is_complete)
 
 
 def _repo(tmp_path, shards=("a", "b"), present=("a", "b"), partial=()):
@@ -61,21 +62,102 @@ class TestFinishedDownloads:
 
 
 class TestInterruptedMidFile:
+    """Staging files answer for a repo that ships no index of its own.
+
+    Where there is an index they do not get to answer at all — see
+    TestTheIndexOutranksAStaleStub. So every case here is a repo with nothing
+    better to go on.
+    """
+
     def test_a_partial_file_is_caught(self, tmp_path):
         complete, reason = download_state(
-            _repo(tmp_path, partial=("model-00002-of-00002.safetensors",)))
+            _repo(tmp_path, shards=(),
+                  partial=("model-00002-of-00002.safetensors",)))
         assert complete is False
         assert "interrupted" in reason
 
     def test_it_names_the_file(self, tmp_path):
-        _, reason = download_state(_repo(tmp_path, partial=("shard-7.safetensors",)))
+        _, reason = download_state(
+            _repo(tmp_path, shards=(), partial=("shard-7.safetensors",)))
         assert "shard-7.safetensors" in reason
         assert ".incomplete" not in reason
 
+    def test_it_says_where_the_file_is(self, tmp_path):
+        # A Xet transfer names its staging files by content id, so the
+        # basename is a base64 hash and only the path makes it legible.
+        _, reason = download_state(
+            _repo(tmp_path, shards=(),
+                  partial=("0k4AjklGyGCyIWbHx36RsIjxBNg=.3565b5c5.f12932e7",)))
+        assert ".cache/huggingface/download" in reason
+
     def test_many_partials_are_summarised(self, tmp_path):
-        directory = _repo(tmp_path, partial=tuple(f"s{i}.bin" for i in range(6)))
+        directory = _repo(tmp_path, shards=(),
+                          partial=tuple(f"s{i}.bin" for i in range(6)))
         _, reason = download_state(directory)
         assert "6 file(s)" in reason and "and 3 more" in reason
+
+
+class TestTheIndexOutranksAStaleStub:
+    """Reported from the cluster, on a model carried in by hand:
+
+        sparkarena/Minimax-M3-v0-NVFP4-REAP50: a download of this model was
+        interrupted: 2 file(s) are still partial (0k4AjklGyGCyIWbHx36RsIjxBNg=
+        …) … das modell wurde über den /model-import weg importiert
+
+    Every shard was there. The stubs belonged to the interrupted Xet transfer
+    the import had replaced, and because a Xet stub is named by content id
+    rather than by filename, nothing tied it to a file that now existed. The
+    advice on the end of that message was "delete the model and fetch it
+    again" — which would have destroyed the files the operator had just
+    carried in over LTE that could not carry them.
+
+    The index is proof and a staging file is evidence; proof goes first.
+    """
+
+    def test_a_complete_checkpoint_with_a_stale_stub_is_complete(self, tmp_path):
+        directory = _repo(tmp_path, shards=("a", "b"), present=("a", "b"),
+                          partial=("0k4AjklGyGCyIWbHx36RsIjxBNg=.3565b5.f129",))
+        assert download_state(directory) == (True, "")
+
+    def test_a_missing_shard_still_wins_over_the_stub(self, tmp_path):
+        # The bug this module was written for must keep being caught: what
+        # changed is which signal decides, not whether anything does.
+        complete, reason = download_state(
+            _repo(tmp_path, shards=("a", "b"), present=("a",),
+                  partial=("anything.safetensors",)))
+        assert complete is False
+        assert "missing 1 of the shards" in reason
+
+    def test_a_missing_tokenizer_still_wins_over_the_stub(self, tmp_path):
+        directory = _repo(tmp_path, partial=("anything.safetensors",))
+        (directory / "tokenizer.json").unlink()
+        complete, reason = download_state(directory)
+        assert complete is False
+        assert "tokenizer" in reason
+
+
+class TestClearingWhatTheImportReplaced:
+    """An import is the operator saying "these are the files". What an earlier
+    transfer staged is then stale — and at Xet chunk sizes, large."""
+
+    def test_it_removes_the_stubs(self, tmp_path):
+        directory = _repo(tmp_path, partial=("a.safetensors", "b.safetensors"))
+        files, reclaimed = clear_partials(directory)
+        assert files == 2
+        assert reclaimed == 2
+        assert not list(directory.rglob("*.incomplete"))
+
+    def test_it_leaves_the_model_alone(self, tmp_path):
+        directory = _repo(tmp_path, partial=("a.safetensors",))
+        clear_partials(directory)
+        assert (directory / "model-00001-of-00002.safetensors").is_file()
+        assert (directory / "config.json").is_file()
+
+    def test_nothing_to_clear_is_not_an_error(self, tmp_path):
+        assert clear_partials(_repo(tmp_path)) == (0, 0)
+
+    def test_a_directory_that_is_not_there_is_not_an_error(self, tmp_path):
+        assert clear_partials(tmp_path / "nothing") == (0, 0)
 
 
 class TestInterruptedBetweenFiles:

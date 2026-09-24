@@ -87,7 +87,12 @@ head — the installer mounts that directory into the container at the same
 path when it exists, so `org--name/` dropped there appears in the panel and
 is *moved* (not copied) into place with one click. Either way the finished
 model is checked and mirrored to the other nodes, and an incomplete one is
-never mirrored: that would spread the problem rather than the model. The file list comes from the
+never mirrored: that would spread the problem rather than the model. An
+import also clears whatever a previous interrupted transfer left staged in
+that directory — a Xet download stages under the file's *content id*, so
+those stubs outlive the files they were fetching and would otherwise keep a
+hand-carried model marked Incomplete, with "delete it and fetch it again" as
+the advice. The file list comes from the
 Hub when it can be reached and from the checkpoint's own index when it
 cannot — which is what a node with no route has, and enough to finish a
 partial download.
@@ -99,7 +104,11 @@ interrupted — by a restart, an update, a lost link — is listed as
 **Incomplete** rather than as On disk: the check reads the checkpoint's own
 shard index *and* its tokenizer files, so a model missing a shard, or holding
 `merges.txt` with no `vocab.json`, says so instead of failing minutes into a
-launch with a message about safetensors or a backend tokenizer.
+launch with a message about safetensors or a backend tokenizer. The index
+decides where there is one: a checkpoint holding every shard it lists is
+complete even if a dead transfer left staging files behind, because the index
+is the checkpoint's own account of itself and a staging file is only a guess
+about one.
 
 **A recipe that reaches the engine** — a curated model's `extra_env` is now
 applied by the eugr backend as well as the NVIDIA and diffusers ones. It was
