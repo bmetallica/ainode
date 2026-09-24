@@ -19,6 +19,7 @@ from ainode.core.config import NodeConfig
 from ainode.core.gpu import detect_gpu, GPUInfo
 from ainode.web.serve import get_index_html, get_onboarding_html, get_static_path
 from ainode.models.api_routes import register_model_routes
+from ainode.models.registry import ModelManager
 from ainode.onboarding.api_routes import register_onboarding_routes
 from ainode.auth.middleware import AuthConfig, auth_middleware
 from ainode.auth.api_routes import register_auth_routes
@@ -217,7 +218,13 @@ def create_app(
     # the total timeout uncapped for a slow cold start.
     app.router.add_post("/v1/images/generations", proxy_to_vllm)
 
-    register_model_routes(app)
+    # The manager gets the configured directory, like every other consumer
+    # of it. Without this it silently used AINODE_HOME/models: the same path
+    # on a default install, and the wrong one for anybody who moved their
+    # models — the embedding manager honours the setting and the model
+    # manager did not.
+    register_model_routes(
+        app, ModelManager(models_dir=getattr(config, "models_dir", "") or None))
 
     register_onboarding_routes(app)
 
@@ -257,6 +264,10 @@ def create_app(
     # What each model actually cost here, so the next plan can prefer a
     # measurement to an estimate.
     register_measurement_routes(app)
+    # Bringing a model in by hand, for a link that cannot carry one.
+    from ainode.models.import_routes import register_import_routes
+
+    register_import_routes(app)
 
     # Updating this node from its own fork's source, rather than from a
     # published image.

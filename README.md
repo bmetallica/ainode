@@ -79,6 +79,15 @@ users, showing its arithmetic; **profiles** ("what this node should be
 serving", captured from what is running and applied to converge); and
 **placement** ("this model runs on node X, permanently").
 
+**Importing a model by hand** — for a link that cannot carry 86 GB in one
+piece. **Models → Import from files** asks what the repo needs, says which
+files are missing with a direct Hugging Face URL for each, takes them from
+your browser one at a time, puts them where the downloader would have, and
+mirrors the finished model to the other nodes. The file list comes from the
+Hub when it can be reached and from the checkpoint's own index when it
+cannot — which is what a node with no route has, and enough to finish a
+partial download.
+
 **Downloads you can stop and pick up again** — Pause keeps the partial files
 and Resume carries on from them (huggingface_hub reuses its own
 `.incomplete`), while Cancel still deletes them. And a download that was

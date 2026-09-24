@@ -4297,6 +4297,191 @@ const AINode = {
     });
   },
 
+  // ----- Import a model from files -----------------------------------------
+  //
+  // For a link that cannot carry 86 GB in one piece. The panel says which
+  // files are missing and where to get them; the browser then hands them
+  // over one at a time, and the head mirrors the result to the peers the
+  // same way a download does.
+
+  toggleImportPanel() {
+    var panel = document.getElementById('import-panel');
+    if (!panel) return;
+    if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    this.renderImportPanel();
+  },
+
+  renderImportPanel(plan) {
+    var panel = document.getElementById('import-panel');
+    if (!panel) return;
+    var self = this;
+    var repo = this.state.importRepo || '';
+    var html = '<div class="queue-header"><span class="queue-title">' +
+      '📥 Import a model from files</span></div>' +
+      '<div style="padding:10px 14px">' +
+      '<p class="config-card-desc">Download the files on any machine with a ' +
+      'working connection, then hand them over here. Nothing is fetched from ' +
+      'Hugging Face by this node, and the head mirrors the finished model to ' +
+      'the other nodes.</p>' +
+      '<div class="config-form-grid"><div>' +
+      '<label class="config-field-label">Repository</label>' +
+      '<input class="form-input" id="import-repo" placeholder="org/name" ' +
+      'value="' + this.esc(repo) + '"></div></div>' +
+      '<div class="config-actions">' +
+      '<button class="config-btn" id="import-check">What is missing?</button>' +
+      '</div>';
+
+    if (plan) {
+      var missing = plan.missing || [];
+      html += '<div class="plan-notes"><div>Target: <code>' +
+        this.esc(plan.target_dir) + '</code></div>';
+      if (plan.source === 'local') {
+        html += '<div>⚠ The Hub could not be reached, so this list comes from ' +
+          'the checkpoint already on disk. It can name the weight shards and ' +
+          'the usual small files, and nothing this repo has beyond them.</div>';
+      }
+      html += '<div>' + (plan.files || []).length + ' file(s), ' +
+        missing.length + ' missing' +
+        (plan.missing_bytes ? ' (' + this.formatBytes(plan.missing_bytes) + ')' : '') +
+        '</div>';
+      if (plan.incomplete_reason) {
+        html += '<div>⚠ ' + this.esc(plan.incomplete_reason) + '</div>';
+      }
+      html += '</div>';
+
+      if (missing.length) {
+        html += '<div class="queue-list">' + missing.slice(0, 200).map(function (f) {
+          return '<div class="queue-item"><div class="queue-item-info">' +
+            '<div class="queue-item-repo"><a href="' + self.esc(f.url) +
+            '" target="_blank" rel="noopener">' + self.esc(f.path) + '</a></div>' +
+            '<div class="queue-item-status">' +
+            (f.size ? self.formatBytes(f.size) : 'size unknown') +
+            '</div></div></div>';
+        }).join('') + '</div>';
+        html += '<div class="config-actions">' +
+          '<input type="file" id="import-files" multiple style="display:none">' +
+          '<button class="config-btn" id="import-pick">Choose the files…</button>' +
+          '<span class="config-field-hint" id="import-progress"></span>' +
+          '</div>';
+      } else {
+        html += '<div class="plan-notes"><div>Every file is here.</div></div>' +
+          '<div class="config-actions">' +
+          '<button class="config-btn" id="import-finish">Check and distribute</button>' +
+          '<span class="config-field-hint" id="import-progress"></span></div>';
+      }
+    }
+    html += '</div>';
+    panel.innerHTML = html;
+
+    var check = document.getElementById('import-check');
+    if (check) check.addEventListener('click', function () {
+      self.state.importRepo =
+        (document.getElementById('import-repo') || {}).value || '';
+      self.loadImportPlan();
+    });
+    var pick = document.getElementById('import-pick');
+    var input = document.getElementById('import-files');
+    if (pick && input) {
+      pick.addEventListener('click', function () { input.click(); });
+      input.addEventListener('change', function () {
+        self.uploadImportFiles(Array.prototype.slice.call(input.files || []));
+      });
+    }
+    var finish = document.getElementById('import-finish');
+    if (finish) finish.addEventListener('click', function () { self.finishImport(); });
+  },
+
+  async loadImportPlan() {
+    var repo = (this.state.importRepo || '').trim();
+    if (!repo || repo.indexOf('/') < 0) {
+      this.toast('Enter a repository as org/name', 'error');
+      return;
+    }
+    var plan = await this.fetchJSON(
+      '/api/models/import/plan?hf_repo=' + encodeURIComponent(repo));
+    if (!plan || plan.error) {
+      this.toast((plan && plan.error) || 'Could not read that repository', 'error');
+      return;
+    }
+    this.state.importPlan = plan;
+    this.renderImportPanel(plan);
+  },
+
+  async uploadImportFiles(files) {
+    if (!files.length) return;
+    var repo = (this.state.importRepo || '').trim();
+    var progress = document.getElementById('import-progress');
+    var plan = this.state.importPlan || {};
+    // Match what the browser hands over against what the plan expects, so a
+    // file picked from a subdirectory lands in that subdirectory here.
+    var byName = {};
+    (plan.files || []).forEach(function (f) {
+      byName[f.path.split('/').pop()] = f.path;
+    });
+    for (var i = 0; i < files.length; i++) {
+      var file = files[i];
+      var relative = byName[file.name] || file.name;
+      if (progress) {
+        progress.textContent = 'uploading ' + (i + 1) + '/' + files.length +
+          ' — ' + file.name;
+      }
+      var form = new FormData();
+      form.append('hf_repo', repo);
+      form.append('path', relative);
+      form.append('file', file);
+      try {
+        var resp = await fetch('/api/models/import/upload',
+                               { method: 'POST', body: form });
+        var out = await resp.json().catch(function () { return {}; });
+        if (!resp.ok || out.error) {
+          this.toast(out.error || ('Upload failed: ' + file.name), 'error');
+          if (progress) progress.textContent = '';
+          return;
+        }
+      } catch (err) {
+        this.toast('Upload failed: ' + err.message, 'error');
+        if (progress) progress.textContent = '';
+        return;
+      }
+    }
+    if (progress) progress.textContent = '';
+    this.toast(files.length + ' file(s) imported', 'success');
+    this.invalidate();
+    await this.loadImportPlan();
+  },
+
+  async finishImport() {
+    var repo = (this.state.importRepo || '').trim();
+    var progress = document.getElementById('import-progress');
+    if (progress) progress.textContent = 'checking and distributing…';
+    try {
+      var resp = await fetch('/api/models/import/finish', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hf_repo: repo }),
+      });
+      var out = await resp.json().catch(function () { return {}; });
+      if (progress) progress.textContent = '';
+      if (!resp.ok || out.error) {
+        this.toast(out.error || 'Could not finish the import', 'error');
+        return;
+      }
+      if (!out.complete) {
+        this.toast(out.incomplete_reason || 'Still incomplete', 'error');
+      } else {
+        var nodes = Object.keys(out.mirror || {});
+        this.toast('Imported and sent to ' + (nodes.length || 0) + ' node(s)',
+                   'success');
+      }
+      this.invalidate();
+      this.renderDownloads();
+      await this.loadImportPlan();
+    } catch (err) {
+      if (progress) progress.textContent = '';
+      this.toast('Error: ' + err.message, 'error');
+    }
+  },
+
   renderDownloads() {
     var container = document.getElementById('downloads-content');
     if (!container) return;
@@ -4518,7 +4703,9 @@ const AINode = {
       container.innerHTML =
         '<div class="downloads-header downloads-actions-row">' +
         '<button id="browse-hf-btn" class="btn-sm">🤗 Browse Hugging Face</button>' +
+        '<button id="import-model-btn" class="btn-sm">📥 Import from files</button>' +
         '</div>' +
+        '<div id="import-panel" class="downloads-queue" style="display:none"></div>' +
         '<div id="downloads-queue" class="downloads-queue"></div>' +
         '<div class="downloads-toolbar">' +
         '<input type="text" id="downloads-search" class="search-input" placeholder="Filter your models and catalog..." value="' + this.esc(this.state.modelsSearch) + '">' +
@@ -4545,6 +4732,12 @@ const AINode = {
         self.state.modelsSearch = searchInput.value;
         self.renderDownloads();
       });
+    }
+
+    var importBtn = document.getElementById('import-model-btn');
+    if (importBtn && !importBtn.dataset.bound) {
+      importBtn.dataset.bound = '1';
+      importBtn.addEventListener('click', function () { self.toggleImportPanel(); });
     }
 
     // Bind Browse HuggingFace.
