@@ -155,6 +155,15 @@ card rather than reading "On disk" while every launch of it is refused. A launch
 translated too: `code -9` is SIGKILL, which no process can catch, so the
 engine's own log is a healthy startup right up to the last line.
 
+**One load cannot inherit the last one's flags** — every per-load override
+(`kv_cache_dtype`, `quantization`, `trust_remote_code`, `engine_backend`, the
+image knobs) is resolved to a concrete value on both the solo and the
+distributed path, with anything unsupplied reset to its default rather than
+left over from the model before. The shared `NodeConfig` is what a primary
+load persists, so without that reset an image model loaded on one node leaves
+`engine_backend=diffusers` behind and the next multi-node LLM launch picks the
+image engine.
+
 **Knowing what happened** — per-phase load timings, an **error assistant**
 that explains a failure using a model already running, per-instance containers
 and logs, and a **measurement store** that records what each launch actually

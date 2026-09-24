@@ -499,13 +499,30 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         # blamed for the wrong thing.
         plan_note = f"{plan_note} {cap_note}".strip() if plan_note else cap_note
 
+    # Resolved, not merged. ``config`` is the shared, mutable NodeConfig, and
+    # it still carries whatever the last PRIMARY load persisted into
+    # config.json — including engine_backend. The solo path has reset every
+    # unsupplied override to its class default since the day a text model came
+    # back on the previous model's fp8; this path merged instead, so an image
+    # model loaded solo left "diffusers" behind and the next distributed
+    # launch of an LLM got:
+    #
+    #   Distributed launch failed: 'DiffusersBackend' object has no attribute
+    #   'start_distributed'
+    #
+    # The same leak reaches trust_remote_code, quantization, kv_cache_dtype and
+    # the rest; engine_backend is only the one that fails loudly.
+    from ainode.models.api_routes import _resolved_overrides
+
+    resolved = _resolved_overrides(overrides.get("gpu_memory_utilization"),
+                                   overrides)
     inst_config = replace(config, model=model, distributed_mode="head",
                           peer_ips=chosen_peers, peer_transfer_ips=peer_transfer_ips,
                           parallel_strategy=plan.strategy.value,
                           tensor_parallel_size=plan.tensor_parallel_size,
                           pipeline_parallel_size=plan.pipeline_parallel_size,
                           data_parallel_size=plan.data_parallel_size,
-                          api_port=port, **overrides)
+                          api_port=port, **resolved)
     backend = get_backend(inst_config, instance_id=name_token)
     try:
         # In a worker thread: start_distributed SSHes to every peer, compares
