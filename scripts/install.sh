@@ -336,6 +336,19 @@ for candidate in "${AINODE_SOURCE_DIR:-}" /opt/ainode; do
     fi
 done
 
+# The drop directory for models brought in by hand. Same path inside as
+# outside, so the name an operator types on the host is the name the product
+# uses. Conditional like the source mount: a bind mount whose source does not
+# exist fails the container start, and most nodes will never have one.
+IMPORT_MOUNT=""
+IMPORT_DIR="${AINODE_IMPORT_DIR:-/model-import}"
+if [ -d "$IMPORT_DIR" ]; then
+    IMPORT_MOUNT=" -v ${IMPORT_DIR}:${IMPORT_DIR}"
+    log "  model drop directory at ${IMPORT_DIR} — mounting it"
+else
+    log "  no ${IMPORT_DIR} on this host; create it and re-run to import models by hand"
+fi
+
 # ExecStart references ${AINODE_IMAGE} (escaped so systemd — not this shell —
 # expands it). The pinned Environment default is overridden by image.env, so
 # `ainode update` swaps the image without re-rendering this unit.
@@ -345,11 +358,12 @@ EXEC_START="/usr/bin/docker run --rm --name ainode \
  -v /var/run/docker.sock:/var/run/docker.sock \
  -v ${HOME}/.ssh:/host-ssh:ro \
  -v ${HOME}/.docker:/root/.docker:ro \
-${SOURCE_MOUNT} \
+${SOURCE_MOUNT}${IMPORT_MOUNT} \
  --mount type=bind,source=/mnt/shared-models,target=/mnt/shared-models,bind-propagation=rshared \
  -e AINODE_HOME=/root/.ainode \
  -e AINODE_HOST_HOME=${AINODE_HOME} \
  -e AINODE_UNIT_SWAPPABLE=1 \
+ -e AINODE_IMPORT_DIR=${IMPORT_DIR} \
  -e HF_XET_HIGH_PERFORMANCE=1 \
  -e NVIDIA_VISIBLE_DEVICES=all \
  -e CUDA_DEVICE_ORDER=PCI_BUS_ID \

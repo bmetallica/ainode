@@ -216,3 +216,149 @@ class TestTheUI:
 
     def test_finishing_distributes(self):
         assert "/api/models/import/finish" in APP_JS
+
+
+class TestTheDropDirectory:
+    """A browser upload is right for twenty small files and wrong for 43 GB
+    of shards. A directory and a file manager are right for that, and every
+    operating system already ships both.
+
+        baue es bitte so das ich das heruntergeladene modell auf dem head
+        auch einfach unter /model-import ablegen kann und er es von dort
+        zieht
+    """
+
+    @pytest_asyncio.fixture
+    async def dropped(self, tmp_path, monkeypatch):
+        drop = tmp_path / "drop"
+        (drop / "org--model").mkdir(parents=True)
+        (drop / "org--model" / "config.json").write_text("{}")
+        (drop / "org--model" / "tokenizer.json").write_text("{}")
+        (drop / "org--model" / "model.safetensors").write_bytes(b"x" * 10)
+        monkeypatch.setenv("AINODE_IMPORT_DIR", str(drop))
+        return drop
+
+    @pytest.mark.asyncio
+    async def test_it_lists_what_is_lying_there(self, client, dropped):
+        data = await (await client.get("/api/models/import/dropbox")).json()
+        assert data["exists"] is True
+        entry = data["entries"][0]
+        assert entry["repo"] == "org/model"
+        assert entry["files"] == 3
+
+    @pytest.mark.asyncio
+    async def test_a_nested_org_directory_is_understood_too(
+            self, client, tmp_path, monkeypatch):
+        drop = tmp_path / "drop2"
+        (drop / "org" / "model").mkdir(parents=True)
+        (drop / "org" / "model" / "config.json").write_text("{}")
+        monkeypatch.setenv("AINODE_IMPORT_DIR", str(drop))
+        data = await (await client.get("/api/models/import/dropbox")).json()
+        assert data["entries"][0]["repo"] == "org/model"
+
+    @pytest.mark.asyncio
+    async def test_a_missing_directory_says_how_to_get_one(
+            self, client, tmp_path, monkeypatch):
+        monkeypatch.setenv("AINODE_IMPORT_DIR", str(tmp_path / "nowhere"))
+        data = await (await client.get("/api/models/import/dropbox")).json()
+        assert data["exists"] is False
+        assert "re-run the installer" in data["hint"]
+
+    @pytest.mark.asyncio
+    async def test_taking_it_in_moves_the_files(self, client, tmp_path, dropped,
+                                                monkeypatch):
+        async def _mirror(app, model, job):
+            job["mirror"] = {"n2": "ok"}
+
+        monkeypatch.setattr("ainode.models.api_routes._mirror_after_download",
+                            _mirror)
+        data = await (await client.post("/api/models/import/dropbox",
+                                        json={"name": "org--model"})).json()
+        assert data["moved"] == 3
+        assert (tmp_path / "org--model" / "tokenizer.json").is_file()
+        # Moved, not copied: 129 GB should not exist twice.
+        assert not (dropped / "org--model" / "tokenizer.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_complete_one_is_distributed(self, client, dropped, monkeypatch):
+        sent = {}
+
+        async def _mirror(app, model, job):
+            sent["model"] = model
+            job["mirror"] = {"n2": "ok"}
+
+        monkeypatch.setattr("ainode.models.api_routes._mirror_after_download",
+                            _mirror)
+        data = await (await client.post("/api/models/import/dropbox",
+                                        json={"name": "org--model"})).json()
+        assert data["complete"] is True and data["mirrored"] is True
+        assert sent["model"] == "org/model"
+
+    @pytest.mark.asyncio
+    async def test_an_incomplete_one_is_not(self, client, tmp_path, monkeypatch):
+        drop = tmp_path / "drop3"
+        (drop / "org--half").mkdir(parents=True)
+        (drop / "org--half" / "config.json").write_text("{}")
+        (drop / "org--half" / "merges.txt").write_text("a b\n")
+        (drop / "org--half" / "model.safetensors").write_bytes(b"x")
+        monkeypatch.setenv("AINODE_IMPORT_DIR", str(drop))
+        data = await (await client.post("/api/models/import/dropbox",
+                                        json={"name": "org--half"})).json()
+        assert data["complete"] is False
+        assert data["mirrored"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_name_that_says_nothing_about_the_repo_is_refused(
+            self, client, tmp_path, monkeypatch):
+        drop = tmp_path / "drop4"
+        (drop / "justafolder").mkdir(parents=True)
+        (drop / "justafolder" / "config.json").write_text("{}")
+        monkeypatch.setenv("AINODE_IMPORT_DIR", str(drop))
+        resp = await client.post("/api/models/import/dropbox",
+                                 json={"name": "justafolder"})
+        assert resp.status == 400
+        assert "org--name" in (await resp.json())["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_name_that_leaves_the_directory_is_refused(
+            self, client, dropped):
+        resp = await client.post("/api/models/import/dropbox",
+                                 json={"name": "../etc", "hf_repo": "a/b"})
+        assert resp.status == 400
+
+
+class TestTheMountExists:
+    """The drop directory is on the host and AINode is in a container."""
+
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def test_the_installer_mounts_it(self):
+        install = (self.ROOT / "scripts" / "install.sh").read_text()
+        assert "IMPORT_MOUNT" in install
+        assert "${IMPORT_DIR}:${IMPORT_DIR}" in install
+
+    def test_it_mounts_it_at_the_same_path(self):
+        # So the name an operator types on the host is the name the product
+        # uses. A different path inside would need explaining forever.
+        from ainode.models.import_routes import DROP_DIR
+
+        assert DROP_DIR == "/model-import"
+
+    def test_only_when_it_exists(self):
+        # A bind mount whose source is missing fails the container start.
+        install = (self.ROOT / "scripts" / "install.sh").read_text()
+        block = install.split("IMPORT_MOUNT=\"\"")[1][:400]
+        assert 'if [ -d "$IMPORT_DIR" ]' in block
+
+    def test_the_other_renderer_agrees(self):
+        import inspect
+
+        from ainode.service import systemd
+
+        source = inspect.getsource(systemd)
+        assert "_import_mount" in source
+        assert "{import_mount}" in source
+
+    def test_the_container_is_told_where_it_is(self):
+        install = (self.ROOT / "scripts" / "install.sh").read_text()
+        assert "AINODE_IMPORT_DIR=${IMPORT_DIR}" in install

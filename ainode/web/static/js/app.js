@@ -4310,6 +4310,7 @@ const AINode = {
     if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
     panel.style.display = '';
     this.renderImportPanel();
+    this.loadDropBox();
   },
 
   renderImportPanel(plan) {
@@ -4317,8 +4318,10 @@ const AINode = {
     if (!panel) return;
     var self = this;
     var repo = this.state.importRepo || '';
+    var drop = this.state.importDrop;
     var html = '<div class="queue-header"><span class="queue-title">' +
       '📥 Import a model from files</span></div>' +
+      this.renderDropBox(drop) +
       '<div style="padding:10px 14px">' +
       '<p class="config-card-desc">Download the files on any machine with a ' +
       'working connection, then hand them over here. Nothing is fetched from ' +
@@ -4390,6 +4393,99 @@ const AINode = {
     }
     var finish = document.getElementById('import-finish');
     if (finish) finish.addEventListener('click', function () { self.finishImport(); });
+    panel.querySelectorAll('[data-take]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        self.takeFromDropBox(btn.getAttribute('data-take'), '');
+      });
+    });
+    var loose = panel.querySelector('[data-take-loose]');
+    if (loose) loose.addEventListener('click', function () {
+      var repo = (document.getElementById('import-repo') || {}).value || '';
+      if (!repo || repo.indexOf('/') < 0) {
+        self.toast('Name the repository first, as org/name', 'error');
+        return;
+      }
+      self.takeFromDropBox('', repo);
+    });
+  },
+
+  // The drop directory. A browser upload is right for twenty small files and
+  // wrong for 43 GB of shards; a directory and a file manager are right for
+  // that, and every operating system ships both.
+  renderDropBox(drop) {
+    if (!drop) return '';
+    var self = this;
+    var html = '<div style="padding:10px 14px 0">' +
+      '<div class="config-card-desc">Drop directory: <code>' +
+      this.esc(drop.dir) + '</code>';
+    if (!drop.exists) {
+      html += ' — not visible from inside AINode.</div>' +
+        '<div class="plan-warn">' + this.esc(drop.hint || '') + '</div></div>';
+      return html;
+    }
+    var entries = drop.entries || [];
+    var loose = drop.loose || [];
+    if (!entries.length && !loose.length) {
+      return html + ' — empty. Put a model there as <code>org--name/</code> ' +
+        'and it appears here.</div></div>';
+    }
+    html += '</div><div class="queue-list">';
+    entries.forEach(function (e) {
+      html += '<div class="queue-item"><div class="queue-item-info">' +
+        '<div class="queue-item-repo">' + self.esc(e.repo || e.name) + '</div>' +
+        '<div class="queue-item-status">' + e.files + ' file(s), ' +
+        self.formatBytes(e.bytes) + ' — in ' + self.esc(e.name) + '</div></div>' +
+        '<button class="config-btn" data-take="' + self.esc(e.name) +
+        '">Take it in</button></div>';
+    });
+    if (loose.length) {
+      html += '<div class="queue-item"><div class="queue-item-info">' +
+        '<div class="queue-item-repo">' + loose.length +
+        ' loose file(s) at the top level</div>' +
+        '<div class="queue-item-status">Name the repository above, then take ' +
+        'them in — they cannot say which model they belong to.</div></div>' +
+        '<button class="config-btn" data-take-loose="1">Take them in</button>' +
+        '</div>';
+    }
+    return html + '</div>';
+  },
+
+  async loadDropBox() {
+    this.state.importDrop = await this.fetchJSON('/api/models/import/dropbox');
+    this.renderImportPanel(this.state.importPlan);
+  },
+
+  async takeFromDropBox(name, repo) {
+    var progress = document.getElementById('import-progress');
+    if (progress) progress.textContent = 'moving the files in…';
+    try {
+      var resp = await fetch('/api/models/import/dropbox', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name || undefined, hf_repo: repo || undefined }),
+      });
+      var out = await resp.json().catch(function () { return {}; });
+      if (progress) progress.textContent = '';
+      if (!resp.ok || out.error) {
+        this.toast(out.error || 'Could not take it in', 'error');
+        return;
+      }
+      if (out.complete) {
+        var nodes = Object.keys(out.mirror || {});
+        this.toast('Took ' + out.moved + ' file(s) in and sent the model to ' +
+                   (nodes.length || 0) + ' node(s)', 'success');
+      } else {
+        this.toast('Took ' + out.moved + ' file(s) in — ' +
+                   (out.incomplete_reason || 'still incomplete'), 'info');
+      }
+      this.invalidate();
+      this.state.importRepo = out.hf_repo || this.state.importRepo;
+      await this.loadDropBox();
+      await this.loadImportPlan();
+      this.renderDownloads();
+    } catch (err) {
+      if (progress) progress.textContent = '';
+      this.toast('Error: ' + err.message, 'error');
+    }
   },
 
   async loadImportPlan() {
