@@ -2188,8 +2188,16 @@ const AINode = {
     if (plan.key !== this.launchPlanKey().key) return false;
 
     if (!plan.fits) {
+      // The USE THIS PLAN button is not drawn below, and its absence is the
+      // first thing anyone notices — "ich kann nichtmehr use this plan
+      // auswählen". Say why it is gone rather than leaving the reader to
+      // infer it from a warning that reads as advice.
       hint.className = 'launch-hint warn';
-      hint.innerHTML = '⚠ ' + this.esc(plan.blocker || 'This will not fit.');
+      hint.innerHTML = '⚠ ' + this.esc(plan.blocker || 'This will not fit.') +
+        '<div class="plan-notes">There is no plan to apply, so the button is ' +
+        'not offered. Free memory on a node, pick different nodes, or lower ' +
+        'the context — the planner re-checks as you change the form. ' +
+        '<strong>Launch anyway</strong> under Advanced overrides it.</div>';
       return true;
     }
     var axis = plan.strategy === 'solo' ? 'Solo'

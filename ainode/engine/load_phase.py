@@ -464,6 +464,28 @@ _MEMORY_WORDS = ("memory", "buffer_size", "oom", "sigkill", "allocat",
                  "kv cache", "budget")
 
 
+# transformers cannot build a fast tokenizer and has nothing to fall back to.
+# The message lists three ways it tried and stops, naming none of the files:
+#
+#   ValueError: Couldn't instantiate the backend tokenizer from one of: ...
+#
+# On this deployment it means one of three things, in order of likelihood: the
+# repo's tokenizer files did not come down with the weights, the tokenizer
+# class lives in the repo's own code and needs --trust-remote-code, or it is a
+# sentencepiece tokenizer in an image without sentencepiece.
+_TOKENIZER_HINT = (
+    "the engine could not build this model's tokenizer. That is a file "
+    "problem, not a memory or flag problem, and it is usually one of three: "
+    "the tokenizer files did not come down with the weights — check for "
+    "tokenizer.json, tokenizer.model or tokenizer_config.json in the model "
+    "directory, and re-download if they are missing; the tokenizer class "
+    "lives in the repo's own code, which needs --trust-remote-code; or it is "
+    "a sentencepiece tokenizer and this engine image has no sentencepiece. "
+    "The completeness check AINode runs before a launch reads the weight "
+    "index only, so a repo missing its tokenizer still counts as downloaded."
+)
+
+
 _FATAL_PATTERNS = [
     # Whatever a drafter's architecture is called, serving one alone dies
     # reaching through a speculative_config that is None —
@@ -474,6 +496,10 @@ _FATAL_PATTERNS = [
      _NO_PIPELINE_HINT),
     ("b12x loader requires", "b12xloaderrequires", _B12X_LOADER_HINT),
     ("unsupported weight_bits", "unsupportedweight_bits", _MIXED_BITS_HINT),
+    ("couldn't instantiate the backend tokenizer",
+     "couldn'tinstantiatethebackendtokenizer", _TOKENIZER_HINT),
+    ("could not instantiate the backend tokenizer",
+     "couldnotinstantiatethebackendtokenizer", _TOKENIZER_HINT),
     ("requires deepgemm", "requiresdeepgemm", _DEEPGEMM_HINT),
     ("exceeds device memory budget", "exceedsdevicememorybudget",
      _INSTANTTENSOR_BUDGET_HINT),

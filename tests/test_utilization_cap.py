@@ -319,3 +319,30 @@ class TestForceIsInTheForm:
 
         app = _app(monkeypatch, [_spark(1.0)])
         assert cap_utilization(app, 0.9, force=True) == (0.9, "")
+
+
+class TestAPlanThatDoesNotFitExplainsTheMissingButton:
+    """Reported: "ich kann nichtmehr use this plan auswählen, warum?"
+
+    Because the button is only drawn for a plan that fits, and the plan had
+    stopped fitting. The blocker was on screen; the connection between the
+    two was not.
+    """
+
+    APP_JS = (__import__("pathlib").Path(__file__).resolve().parent.parent /
+              "ainode" / "web" / "static" / "js" / "app.js").read_text()
+
+    def test_the_absence_is_explained(self):
+        block = self.APP_JS.split("if (!plan.fits) {")[1][:900]
+        assert "no plan to apply" in block
+        assert "not offered" in block
+
+    def test_it_says_what_would_change_the_answer(self):
+        block = self.APP_JS.split("if (!plan.fits) {")[1][:900]
+        assert "Free memory on a node" in block
+        assert "Launch anyway" in block
+
+    def test_the_button_is_still_only_for_a_plan_that_fits(self):
+        # The explanation is not a way to apply a plan that does not exist.
+        block = self.APP_JS.split("if (!plan.fits) {")[1][:900]
+        assert "plan-apply" not in block
