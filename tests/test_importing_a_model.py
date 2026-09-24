@@ -12,6 +12,7 @@ a link that is not.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -164,7 +165,7 @@ class TestFinishing:
         data = await (await client.post("/api/models/import/finish",
                                         json={"hf_repo": "org/model"})).json()
         assert data["complete"] is False
-        assert data["mirrored"] is False
+        assert data["mirroring"] is False
 
     @pytest.mark.asyncio
     async def test_a_complete_one_is(self, client, tmp_path, monkeypatch):
@@ -182,7 +183,9 @@ class TestFinishing:
         data = await (await client.post("/api/models/import/finish",
                                         json={"hf_repo": "org/model"})).json()
         assert data["complete"] is True
-        assert data["mirrored"] is True
+        # A job, not a result: the transfer outlives the request now.
+        assert data["mirroring"] is True and data["job_id"]
+        await asyncio.sleep(0)
         assert sent["model"] == "org/model"
 
     @pytest.mark.asyncio
@@ -291,7 +294,8 @@ class TestTheDropDirectory:
                             _mirror)
         data = await (await client.post("/api/models/import/dropbox",
                                         json={"name": "org--model"})).json()
-        assert data["complete"] is True and data["mirrored"] is True
+        assert data["complete"] is True and data["mirroring"] is True
+        await asyncio.sleep(0)
         assert sent["model"] == "org/model"
 
     @pytest.mark.asyncio
@@ -305,7 +309,7 @@ class TestTheDropDirectory:
         data = await (await client.post("/api/models/import/dropbox",
                                         json={"name": "org--half"})).json()
         assert data["complete"] is False
-        assert data["mirrored"] is False
+        assert data["mirroring"] is False
 
     @pytest.mark.asyncio
     async def test_a_name_that_says_nothing_about_the_repo_is_refused(
@@ -382,7 +386,7 @@ class TestTheImportClearsWhatItReplaced:
                             _mirror)
         data = await (await client.post("/api/models/import/dropbox",
                                         json={"name": "org--model"})).json()
-        assert data["complete"] is True and data["mirrored"] is True
+        assert data["complete"] is True and data["mirroring"] is True
 
     @pytest.mark.asyncio
     async def test_finishing_again_clears_them_too(
@@ -419,6 +423,110 @@ class TestTheUISaysWhatWasReclaimed:
 
     def test_it_names_the_space(self):
         assert "reclaimed_bytes" in self.SOURCE
+
+
+class TestTheMirrorOutlivesTheRequest:
+    """Reported from the cluster, on a 129 GB import:
+
+        curl -s localhost:3000/api/models/import/finish … ^C
+
+    The handler awaited the whole push to the peers before answering, so the
+    request hung for as long as the transfer took, and aiohttp cancels a
+    handler whose client has gone — pressing Ctrl-C took the transfer with it.
+    The download path has had a job for this all along. So does this one now.
+    """
+
+    @pytest_asyncio.fixture
+    async def ready(self, tmp_path, monkeypatch):
+        directory = tmp_path / "org--model"
+        directory.mkdir(parents=True)
+        for name in ("config.json", "tokenizer.json"):
+            (directory / name).write_text("{}")
+        (directory / "model.safetensors").write_bytes(b"x")
+        return directory
+
+    @pytest.mark.asyncio
+    async def test_the_answer_comes_back_before_the_transfer_does(
+            self, client, ready, monkeypatch):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _mirror(app, model, job):
+            started.set()
+            await release.wait()
+            job["mirror"] = {"n2": "ok"}
+
+        monkeypatch.setattr("ainode.models.api_routes._mirror_after_download",
+                            _mirror)
+        resp = await client.post("/api/models/import/finish",
+                                 json={"hf_repo": "org/model"})
+        data = await resp.json()
+        # Answered while the transfer is still in flight — the whole point.
+        assert resp.status == 202
+        assert data["mirroring"] is True and data["job_id"]
+        await asyncio.wait_for(started.wait(), timeout=2)
+        release.set()
+
+    @pytest.mark.asyncio
+    async def test_the_job_is_visible_while_it_runs(
+            self, client, ready, monkeypatch):
+        release = asyncio.Event()
+
+        async def _mirror(app, model, job):
+            job["mirror"] = {"n2": "sending"}
+            await release.wait()
+            job["mirror"] = {"n2": "ok"}
+
+        monkeypatch.setattr("ainode.models.api_routes._mirror_after_download",
+                            _mirror)
+        data = await (await client.post("/api/models/import/finish",
+                                        json={"hf_repo": "org/model"})).json()
+        await asyncio.sleep(0)
+        active = await (await client.get("/api/models/downloads/active")).json()
+        mine = [j for j in active["jobs"] if j["job_id"] == data["job_id"]]
+        assert mine and mine[0]["status"] == "mirroring"
+        assert mine[0]["model_id"] == "org/model"
+        release.set()
+        await asyncio.sleep(0)
+        after = await (await client.get("/api/models/downloads/active")).json()
+        mine = [j for j in after["jobs"] if j["job_id"] == data["job_id"]]
+        assert mine[0]["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_the_job_is_json(self, client, ready, monkeypatch):
+        # A Task on the job dict would make this route 500 — the reference
+        # that keeps the task alive belongs somewhere else.
+        async def _mirror(app, model, job):
+            job["mirror"] = {"n2": "ok"}
+
+        monkeypatch.setattr("ainode.models.api_routes._mirror_after_download",
+                            _mirror)
+        await client.post("/api/models/import/finish",
+                          json={"hf_repo": "org/model"})
+        assert (await client.get("/api/models/downloads/active")).status == 200
+
+    @pytest.mark.asyncio
+    async def test_a_failure_lands_on_the_job_not_on_the_import(
+            self, client, ready, monkeypatch):
+        async def _mirror(app, model, job):
+            raise RuntimeError("node 2 is down")
+
+        monkeypatch.setattr("ainode.models.api_routes._mirror_after_download",
+                            _mirror)
+        data = await (await client.post("/api/models/import/finish",
+                                        json={"hf_repo": "org/model"})).json()
+        assert data["ok"] is True          # the import itself succeeded
+        await asyncio.sleep(0)
+        active = await (await client.get("/api/models/downloads/active")).json()
+        mine = [j for j in active["jobs"] if j["job_id"] == data["job_id"]][0]
+        assert mine["status"] == "failed"
+        assert "node 2 is down" in mine["error"]
+
+    def test_the_ui_follows_the_job(self):
+        source = (Path(__file__).resolve().parent.parent / "ainode" / "web"
+                  / "static" / "js" / "app.js").read_text()
+        assert "watchImportMirror" in source
+        assert "downloads/active" in source
 
 
 class TestTheMountExists:

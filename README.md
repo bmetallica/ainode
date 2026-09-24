@@ -86,8 +86,11 @@ go through the browser; a whole checkpoint goes in **`/model-import`** on the
 head — the installer mounts that directory into the container at the same
 path when it exists, so `org--name/` dropped there appears in the panel and
 is *moved* (not copied) into place with one click. Either way the finished
-model is checked and mirrored to the other nodes, and an incomplete one is
-never mirrored: that would spread the problem rather than the model. An
+model is checked and then sent to the other nodes **as a job** — the request
+answers as soon as the check passes and the push shows up under Downloads,
+because a 129 GB transfer awaited inside an HTTP request dies with the client
+that closes the tab. An incomplete model is never mirrored: that would spread
+the problem rather than the model. An
 import also clears whatever a previous interrupted transfer left staged in
 that directory — a Xet download stages under the file's *content id*, so
 those stubs outlive the files they were fetching and would otherwise keep a
