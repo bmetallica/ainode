@@ -435,3 +435,93 @@ def test_an_idle_peer_produces_no_warning():
         [_solo_member("m1", "10.100.0.13")],
     )
     assert json.loads(resp.body)["note"] == ""
+
+
+class TestTheDistributedPathResetsTheLastLoadsOverrides:
+    """Reported from the cluster, launching an LLM across two nodes after an
+    image model had been loaded on one:
+
+        Distributed launch failed: 'DiffusersBackend' object has no attribute
+        'start_distributed'
+
+    ``config`` is the shared, mutable NodeConfig. A primary solo load persists
+    its whole override set into config.json — engine_backend included — and the
+    solo path has reset every unsupplied field to its class default since a
+    text model once came back serving on the previous model's fp8. This path
+    merged instead, so "diffusers" survived into the next launch and picked the
+    wrong backend class entirely.
+    """
+
+    def test_a_stale_engine_backend_does_not_choose_the_backend(self):
+        _FakeBackend.last = {}
+        config = NodeConfig(node_id="head", engine_backend="diffusers")
+        config.save = lambda *a, **k: None
+        cluster = ClusterState(local_announcement=_local_ann("head"))
+        cluster.add_node(_member("m1", "10.100.0.13"))
+        app = {"cluster_state": cluster, "config": config, "engine": None}
+
+        class _Req:
+            def __init__(self):
+                self.app = app
+
+            async def json(self):
+                return {"model": "m", "node_ids": ["head", "m1"]}
+
+        with patch.object(backends, "get_backend", _FakeBackend):
+            resp = asyncio.run(handle_sharding_launch(_Req()))
+        assert resp.status == 200
+        assert _FakeBackend.last["config"].engine_backend == \
+            NodeConfig().engine_backend
+
+    @pytest.mark.parametrize("field,stale", [
+        ("trust_remote_code", True),
+        ("quantization", "awq"),
+        ("kv_cache_dtype", "auto"),
+        ("served_model_name", "something/else"),
+    ])
+    def test_nothing_else_leaks_either(self, field, stale):
+        # engine_backend is only the one that fails loudly. The rest serve the
+        # new model with the old model's flags, which is worse: it works.
+        _FakeBackend.last = {}
+        config = NodeConfig(node_id="head", **{field: stale})
+        config.save = lambda *a, **k: None
+        cluster = ClusterState(local_announcement=_local_ann("head"))
+        cluster.add_node(_member("m1", "10.100.0.13"))
+        app = {"cluster_state": cluster, "config": config, "engine": None}
+
+        class _Req:
+            def __init__(self):
+                self.app = app
+
+            async def json(self):
+                return {"model": "m", "node_ids": ["head", "m1"]}
+
+        with patch.object(backends, "get_backend", _FakeBackend):
+            resp = asyncio.run(handle_sharding_launch(_Req()))
+        assert resp.status == 200
+        assert getattr(_FakeBackend.last["config"], field) == \
+            getattr(NodeConfig(), field)
+
+    def test_what_this_launch_asks_for_still_arrives(self):
+        # The reset is for fields nobody supplied. An explicit one wins, or
+        # this would be a different bug with the same shape.
+        _FakeBackend.last = {}
+        config = NodeConfig(node_id="head", engine_backend="diffusers")
+        config.save = lambda *a, **k: None
+        cluster = ClusterState(local_announcement=_local_ann("head"))
+        cluster.add_node(_member("m1", "10.100.0.13"))
+        app = {"cluster_state": cluster, "config": config, "engine": None}
+
+        class _Req:
+            def __init__(self):
+                self.app = app
+
+            async def json(self):
+                return {"model": "m", "node_ids": ["head", "m1"],
+                        "trust_remote_code": True, "max_model_len": 98304}
+
+        with patch.object(backends, "get_backend", _FakeBackend):
+            resp = asyncio.run(handle_sharding_launch(_Req()))
+        assert resp.status == 200
+        assert _FakeBackend.last["config"].trust_remote_code is True
+        assert _FakeBackend.last["config"].max_model_len == 98304
