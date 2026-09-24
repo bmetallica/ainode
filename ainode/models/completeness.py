@@ -28,6 +28,17 @@ different traces:
 Neither check is clever and neither needs the network — which matters,
 because this runs on a node that may have no route to the Hub, and the
 question "have I got all of it" has to be answerable there.
+
+The two are not equal, and the order they are asked in matters. The index is
+*proof*: it is the checkpoint's own account of what it is made of, and a
+directory holding every shard it names is complete. A staging file is only
+*evidence*, and a Xet transfer leaves it under a content id rather than a
+filename, so it can outlive the file it was staging without anything noticing.
+So the index is asked first, and the staging files only get to answer for a
+repo that ships no index at all. What made that concrete: a model carried in
+by hand through ``/model-import``, complete, reported as an interrupted
+download because of two stubs left by the transfer it had replaced — and sent
+its owner to "delete the model and fetch it again".
 """
 
 from __future__ import annotations
@@ -39,7 +50,7 @@ from typing import Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["download_state", "is_complete", "INDEX_FILES"]
+__all__ = ["download_state", "is_complete", "clear_partials", "INDEX_FILES"]
 
 #: Index files that enumerate the shards a checkpoint is made of.
 INDEX_FILES = (
@@ -67,14 +78,61 @@ def _snapshot(directory: Path) -> Optional[Path]:
     return directory if directory.is_dir() else None
 
 
-def _partials(directory: Path) -> List[str]:
-    """``.incomplete`` files left by an interrupted transfer."""
+def _partial_paths(directory: Path) -> List[Path]:
     try:
-        return sorted(p.name for p in directory.rglob("*.incomplete"))
+        return sorted(directory.rglob("*.incomplete"))
     except OSError:
         logger.debug("could not scan %s for partial files", directory,
                      exc_info=True)
         return []
+
+
+def _partials(directory: Path) -> List[str]:
+    """``.incomplete`` files left by an interrupted transfer, relative.
+
+    Relative rather than by name, because the name is not always a name. A
+    Xet-backed transfer writes its staging files under the file's content id,
+    so the basename is a base64 hash and says nothing:
+
+        0k4AjklGyGCyIWbHx36RsIjxBNg=.3565b5c5....f12932e7
+
+    The path around it is what makes that legible — it sits under
+    ``.cache/huggingface/download/``, which is the download cache and not the
+    checkpoint.
+    """
+    out = []
+    for path in _partial_paths(directory):
+        try:
+            out.append(str(path.relative_to(directory)))
+        except ValueError:          # pragma: no cover - rglob cannot do this
+            out.append(path.name)
+    return out
+
+
+def clear_partials(directory) -> Tuple[int, int]:
+    """Delete the ``.incomplete`` staging files under ``directory``.
+
+    (files removed, bytes reclaimed). For the import path, which is an
+    operator saying "these are the files": whatever an earlier interrupted
+    download left staged is then both stale and, at Xet chunk sizes, tens of
+    gigabytes of it. Never raises — a stub that cannot be removed is a stub
+    that stays, which is the situation before the call.
+    """
+    directory = Path(directory)
+    if not directory.is_dir():
+        return 0, 0
+    files = 0
+    total = 0
+    for path in _partial_paths(directory):
+        try:
+            size = path.stat().st_size
+            path.unlink()
+        except OSError:
+            logger.debug("could not remove %s", path, exc_info=True)
+            continue
+        files += 1
+        total += size
+    return files, total
 
 
 def _shards_from_index(snapshot: Path) -> Iterable[str]:
@@ -152,32 +210,48 @@ def download_state(directory) -> Tuple[bool, str]:
     if not directory.is_dir():
         return True, ""
 
+    snapshot = _snapshot(directory)
+    if snapshot is not None:
+        tokenizer = _tokenizer_gap(snapshot)
+        if tokenizer:
+            return False, tokenizer
+
+        shards = list(_shards_from_index(snapshot))
+        missing = [shard for shard in shards
+                   if not (snapshot / shard).is_file()]
+        if missing:
+            shown = ", ".join(missing[:3])
+            more = f" and {len(missing) - 3} more" if len(missing) > 3 else ""
+            return False, (
+                f"this model is missing {len(missing)} of the shards its own "
+                f"index lists ({shown}{more}) — a download that was "
+                f"interrupted between files leaves no other trace. Resume the "
+                f"download, or delete the model and fetch it again.")
+        if shards:
+            # Proof beats evidence. The index is the checkpoint's own account
+            # of what it is made of, every shard it names is here, and the
+            # tokenizer is here — so the model is complete, whatever staging
+            # files an earlier attempt left lying around. Measured on the
+            # cluster, after a model was brought in through /model-import over
+            # the top of an interrupted Xet download:
+            #
+            #   2 file(s) are still partial (0k4AjklGyGCyIWbHx36RsIjxBNg=.…)
+            #
+            # Every shard was present. The stubs were from the transfer that
+            # the import replaced, and refusing to launch over them sent the
+            # operator to "delete the model and fetch it again" — which would
+            # have destroyed the files they had just carried in by hand.
+            return True, ""
+
     partial = _partials(directory)
     if partial:
+        # No index to appeal to, so the staging files are the only evidence
+        # there is, and they do decide.
         shown = ", ".join(p.replace(".incomplete", "") for p in partial[:3])
         more = f" and {len(partial) - 3} more" if len(partial) > 3 else ""
         return False, (
             f"a download of this model was interrupted: {len(partial)} file(s) "
             f"are still partial ({shown}{more}). Resume the download, or "
-            f"delete the model and fetch it again.")
-
-    snapshot = _snapshot(directory)
-    if snapshot is None:
-        return True, ""
-
-    tokenizer = _tokenizer_gap(snapshot)
-    if tokenizer:
-        return False, tokenizer
-
-    missing = [shard for shard in _shards_from_index(snapshot)
-               if not (snapshot / shard).is_file()]
-    if missing:
-        shown = ", ".join(missing[:3])
-        more = f" and {len(missing) - 3} more" if len(missing) > 3 else ""
-        return False, (
-            f"this model is missing {len(missing)} of the shards its own "
-            f"index lists ({shown}{more}) — a download that was interrupted "
-            f"between files leaves no other trace. Resume the download, or "
             f"delete the model and fetch it again.")
     return True, ""
 

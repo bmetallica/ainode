@@ -4455,6 +4455,15 @@ const AINode = {
     this.renderImportPanel(this.state.importPlan);
   },
 
+  // "42 stale staging files, 61.4 GB reclaimed" — worth saying out loud,
+  // because that space was being held by a transfer the import replaced.
+  clearedNote(out) {
+    if (!out || !out.cleared_partials) return '';
+    var gb = (out.reclaimed_bytes || 0) / 1e9;
+    return ' (cleared ' + out.cleared_partials + ' stale staging file(s)' +
+           (gb >= 0.1 ? ', ' + gb.toFixed(1) + ' GB reclaimed' : '') + ')';
+  },
+
   async takeFromDropBox(name, repo) {
     var progress = document.getElementById('import-progress');
     if (progress) progress.textContent = 'moving the files in…';
@@ -4472,10 +4481,11 @@ const AINode = {
       if (out.complete) {
         var nodes = Object.keys(out.mirror || {});
         this.toast('Took ' + out.moved + ' file(s) in and sent the model to ' +
-                   (nodes.length || 0) + ' node(s)', 'success');
+                   (nodes.length || 0) + ' node(s)' + this.clearedNote(out),
+                   'success');
       } else {
-        this.toast('Took ' + out.moved + ' file(s) in — ' +
-                   (out.incomplete_reason || 'still incomplete'), 'info');
+        this.toast('Took ' + out.moved + ' file(s) in' + this.clearedNote(out) +
+                   ' — ' + (out.incomplete_reason || 'still incomplete'), 'info');
       }
       this.invalidate();
       this.state.importRepo = out.hf_repo || this.state.importRepo;
@@ -4563,11 +4573,12 @@ const AINode = {
         return;
       }
       if (!out.complete) {
-        this.toast(out.incomplete_reason || 'Still incomplete', 'error');
+        this.toast((out.incomplete_reason || 'Still incomplete') +
+                   this.clearedNote(out), 'error');
       } else {
         var nodes = Object.keys(out.mirror || {});
-        this.toast('Imported and sent to ' + (nodes.length || 0) + ' node(s)',
-                   'success');
+        this.toast('Imported and sent to ' + (nodes.length || 0) + ' node(s)' +
+                   this.clearedNote(out), 'success');
       }
       this.invalidate();
       this.renderDownloads();

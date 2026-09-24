@@ -286,11 +286,13 @@ async def handle_finish(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": f"nothing imported for {hf_repo} yet"}, status=404)
 
-    from ainode.models.completeness import download_state
+    from ainode.models.completeness import clear_partials, download_state
 
+    cleared, reclaimed = clear_partials(directory)
     complete, reason = download_state(directory)
     result = {"ok": True, "hf_repo": hf_repo, "complete": complete,
-              "incomplete_reason": reason}
+              "incomplete_reason": reason,
+              "cleared_partials": cleared, "reclaimed_bytes": reclaimed}
     if not complete:
         # Not mirrored: sending an incomplete model to the peers spreads the
         # problem rather than the model.
@@ -453,11 +455,22 @@ async def handle_take_dropbox(request: web.Request) -> web.Response:
     _forget_size(request.app, target)
     logger.info("took %d file(s) from %s into %s", len(moved), source, target)
 
-    from ainode.models.completeness import download_state
+    from ainode.models.completeness import clear_partials, download_state
+
+    # An import is the operator saying "these are the files". Whatever an
+    # earlier interrupted transfer staged under .cache/huggingface/download is
+    # then stale by definition, and at Xet chunk sizes it is not a rounding
+    # error — it is tens of gigabytes sitting on the head's disk claiming the
+    # model is half-downloaded.
+    cleared, reclaimed = clear_partials(target)
+    if cleared:
+        logger.info("cleared %d stale partial file(s), %.1f GB, from %s",
+                    cleared, reclaimed / 1e9, target)
 
     complete, reason = download_state(target)
     result = {"ok": True, "hf_repo": hf_repo, "moved": len(moved),
               "complete": complete, "incomplete_reason": reason,
+              "cleared_partials": cleared, "reclaimed_bytes": reclaimed,
               "mirrored": False}
     if complete:
         job: dict = {}

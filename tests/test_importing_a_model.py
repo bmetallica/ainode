@@ -327,6 +327,100 @@ class TestTheDropDirectory:
         assert resp.status == 400
 
 
+class TestTheImportClearsWhatItReplaced:
+    """Reported from the cluster, after the model was carried in by hand:
+
+        sparkarena/Minimax-M3-v0-NVFP4-REAP50: a download of this model was
+        interrupted: 2 file(s) are still partial … das modell wurde über den
+        /model-import weg importiert
+
+    A Xet transfer stages under the file's content id, so those stubs survive
+    an import that makes them meaningless — and they are not small. The
+    import removes them, because it is the operator declaring what the
+    directory holds.
+    """
+
+    @pytest_asyncio.fixture
+    async def dropped_over_a_dead_transfer(self, tmp_path, monkeypatch):
+        drop = tmp_path / "drop-x"
+        (drop / "org--model").mkdir(parents=True)
+        for name in ("config.json", "tokenizer.json"):
+            (drop / "org--model" / name).write_text("{}")
+        (drop / "org--model" / "model.safetensors").write_bytes(b"x" * 10)
+        monkeypatch.setenv("AINODE_IMPORT_DIR", str(drop))
+        # What the interrupted download left in the target directory.
+        stubs = tmp_path / "org--model" / ".cache" / "huggingface" / "download"
+        stubs.mkdir(parents=True)
+        (stubs / "0k4AjklGyGCyIWbHx36RsIjxBNg=.3565b5.f12932e7.incomplete"
+         ).write_bytes(b"x" * 1000)
+        (stubs / "zAulchGaJLrQXYGB2u_NDxralws=.ecf58a.e1abaf54.incomplete"
+         ).write_bytes(b"x" * 2000)
+        return drop
+
+    @pytest.mark.asyncio
+    async def test_the_stubs_are_gone(self, client, tmp_path, monkeypatch,
+                                      dropped_over_a_dead_transfer):
+        async def _mirror(app, model, job):
+            job["mirror"] = {"n2": "ok"}
+
+        monkeypatch.setattr("ainode.models.api_routes._mirror_after_download",
+                            _mirror)
+        data = await (await client.post("/api/models/import/dropbox",
+                                        json={"name": "org--model"})).json()
+        assert data["cleared_partials"] == 2
+        assert data["reclaimed_bytes"] == 3000
+        assert not list((tmp_path / "org--model").rglob("*.incomplete"))
+
+    @pytest.mark.asyncio
+    async def test_the_model_is_then_complete_and_distributed(
+            self, client, tmp_path, monkeypatch,
+            dropped_over_a_dead_transfer):
+        async def _mirror(app, model, job):
+            job["mirror"] = {"n2": "ok"}
+
+        monkeypatch.setattr("ainode.models.api_routes._mirror_after_download",
+                            _mirror)
+        data = await (await client.post("/api/models/import/dropbox",
+                                        json={"name": "org--model"})).json()
+        assert data["complete"] is True and data["mirrored"] is True
+
+    @pytest.mark.asyncio
+    async def test_finishing_again_clears_them_too(
+            self, client, tmp_path, monkeypatch):
+        # The way out for a model that was already imported before this
+        # existed: press Finish again rather than delete and re-fetch.
+        target = tmp_path / "org--already"
+        target.mkdir(parents=True)
+        for name in ("config.json", "tokenizer.json"):
+            (target / name).write_text("{}")
+        (target / "model.safetensors").write_bytes(b"x")
+        stubs = target / ".cache" / "huggingface" / "download"
+        stubs.mkdir(parents=True)
+        (stubs / "abc=.def.ghi.incomplete").write_bytes(b"x" * 64)
+
+        async def _mirror(app, model, job):
+            job["mirror"] = {}
+
+        monkeypatch.setattr("ainode.models.api_routes._mirror_after_download",
+                            _mirror)
+        data = await (await client.post("/api/models/import/finish",
+                                        json={"hf_repo": "org/already"})).json()
+        assert data["cleared_partials"] == 1
+        assert data["complete"] is True
+
+
+class TestTheUISaysWhatWasReclaimed:
+    SOURCE = (Path(__file__).resolve().parent.parent
+              / "ainode" / "web" / "static" / "js" / "app.js").read_text()
+
+    def test_it_has_a_line_for_it(self):
+        assert "clearedNote" in self.SOURCE
+        assert "cleared_partials" in self.SOURCE
+
+    def test_it_names_the_space(self):
+        assert "reclaimed_bytes" in self.SOURCE
+
+
 class TestTheMountExists:
     """The drop directory is on the host and AINode is in a container."""
 
