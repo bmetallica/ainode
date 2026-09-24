@@ -271,6 +271,63 @@ async def handle_upload(request: web.Request) -> web.Response:
                               "path": rel_path, "bytes": written})
 
 
+#: Strong references to the mirror tasks in flight. asyncio keeps only a weak
+#: one, so a task nobody holds can be collected mid-transfer.
+_MIRROR_TASKS: set = set()
+
+
+def _start_mirror(app, hf_repo: str) -> str:
+    """Push the model to the peers as a job, and return the job's id.
+
+    Not awaited inline, which is what it used to be. Measured on the cluster:
+    a 129 GB import answered ``/api/models/import/finish`` only when the last
+    byte had reached the last node, so the operator watched curl hang, pressed
+    Ctrl-C — and took the transfer down with it, because aiohttp cancels a
+    handler whose client has gone.
+
+    The download path has had a job for this since the beginning
+    (``download_jobs``, polled by /api/models/downloads/active). An import is
+    the same transfer arriving by a different road, so it gets the same job.
+    """
+    import asyncio
+    import time
+    import uuid
+
+    jobs = app.get("download_jobs")
+    if jobs is None:
+        jobs = {}
+        app["download_jobs"] = jobs
+
+    job_id = str(uuid.uuid4())
+    job = {"model_id": hf_repo, "status": "mirroring", "error": None,
+           "finished_at": None, "imported": True, "mirror": {}}
+    jobs[job_id] = job
+
+    async def _run() -> None:
+        from ainode.models.api_routes import _mirror_after_download
+        try:
+            await _mirror_after_download(app, hf_repo, job)
+            job["status"] = "completed"
+        except asyncio.CancelledError:
+            job["status"] = "cancelled"
+            job["finished_at"] = time.time()
+            raise
+        except Exception as exc:                       # pragma: no cover
+            logger.exception("mirroring %s failed", hf_repo)
+            job["status"] = "failed"
+            job["error"] = str(exc)
+        job["finished_at"] = time.time()
+
+    # A task on the app's loop rather than on the request's: the request is
+    # about to return, and its cancellation must not reach this. The reference
+    # is held here and not on the job, because the job is serialised straight
+    # to JSON by /api/models/downloads/active and a Task is not.
+    task = asyncio.get_event_loop().create_task(_run())
+    _MIRROR_TASKS.add(task)
+    task.add_done_callback(_MIRROR_TASKS.discard)
+    return job_id
+
+
 async def handle_finish(request: web.Request) -> web.Response:
     """POST /api/models/import/finish {hf_repo} — check it, then spread it."""
     try:
@@ -296,16 +353,12 @@ async def handle_finish(request: web.Request) -> web.Response:
     if not complete:
         # Not mirrored: sending an incomplete model to the peers spreads the
         # problem rather than the model.
-        result["mirrored"] = False
+        result["mirroring"] = False
         return web.json_response(result)
 
-    job: dict = {}
-    from ainode.models.api_routes import _mirror_after_download
-
-    await _mirror_after_download(request.app, hf_repo, job)
-    result["mirrored"] = True
-    result["mirror"] = job.get("mirror", {})
-    return web.json_response(result)
+    result["mirroring"] = True
+    result["job_id"] = _start_mirror(request.app, hf_repo)
+    return web.json_response(result, status=202)
 
 
 def _forget_size(app, path) -> None:
@@ -471,12 +524,8 @@ async def handle_take_dropbox(request: web.Request) -> web.Response:
     result = {"ok": True, "hf_repo": hf_repo, "moved": len(moved),
               "complete": complete, "incomplete_reason": reason,
               "cleared_partials": cleared, "reclaimed_bytes": reclaimed,
-              "mirrored": False}
+              "mirroring": False}
     if complete:
-        job: dict = {}
-        from ainode.models.api_routes import _mirror_after_download
-
-        await _mirror_after_download(request.app, hf_repo, job)
-        result["mirrored"] = True
-        result["mirror"] = job.get("mirror", {})
+        result["mirroring"] = True
+        result["job_id"] = _start_mirror(request.app, hf_repo)
     return web.json_response(result)

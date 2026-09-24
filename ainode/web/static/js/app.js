@@ -4464,6 +4464,50 @@ const AINode = {
            (gb >= 0.1 ? ', ' + gb.toFixed(1) + ' GB reclaimed' : '') + ')';
   },
 
+  // The mirror is a job, not a reply. A 129 GB push to the peers used to be
+  // awaited inside the request: the page (or a curl) waited for the last byte
+  // and killing the client killed the transfer. Now the request returns a
+  // job_id and this follows it, the same way a download is followed.
+  watchImportMirror(jobId, repo) {
+    if (!jobId) return;
+    var self = this;
+    var line = document.getElementById('import-progress');
+    var tick = async function () {
+      var data = await self.fetchJSON('/api/models/downloads/active')
+        .catch(function () { return null; });
+      var job = ((data || {}).jobs || []).filter(function (j) {
+        return j.job_id === jobId;
+      })[0];
+      if (!job) { if (line) line.textContent = ''; return; }
+      var states = job.mirror || {};
+      var names = Object.keys(states);
+      var done = names.filter(function (n) { return states[n] === 'ok'; });
+      if (job.status === 'mirroring') {
+        if (line) {
+          line.textContent = 'sending ' + (repo || job.model_id) +
+            ' to the other nodes — ' + done.length + '/' +
+            (names.length || '?') + ' done' +
+            (names.length ? ' (' + names.map(function (n) {
+              return n + ': ' + states[n];
+            }).join(', ') + ')' : '');
+        }
+        setTimeout(tick, 2000);
+        return;
+      }
+      if (line) line.textContent = '';
+      if (job.status === 'completed') {
+        self.toast('Sent ' + (repo || job.model_id) + ' to ' + done.length +
+                   ' node(s)', 'success');
+      } else {
+        self.toast('Could not send ' + (repo || job.model_id) + ' to the ' +
+                   'nodes: ' + (job.error || job.status), 'error');
+      }
+      self.invalidate();
+      self.renderDownloads();
+    };
+    tick();
+  },
+
   async takeFromDropBox(name, repo) {
     var progress = document.getElementById('import-progress');
     if (progress) progress.textContent = 'moving the files in…';
@@ -4479,10 +4523,9 @@ const AINode = {
         return;
       }
       if (out.complete) {
-        var nodes = Object.keys(out.mirror || {});
-        this.toast('Took ' + out.moved + ' file(s) in and sent the model to ' +
-                   (nodes.length || 0) + ' node(s)' + this.clearedNote(out),
-                   'success');
+        this.toast('Took ' + out.moved + ' file(s) in' + this.clearedNote(out) +
+                   ' — now sending it to the other nodes', 'success');
+        this.watchImportMirror(out.job_id, out.hf_repo);
       } else {
         this.toast('Took ' + out.moved + ' file(s) in' + this.clearedNote(out) +
                    ' — ' + (out.incomplete_reason || 'still incomplete'), 'info');
@@ -4576,9 +4619,9 @@ const AINode = {
         this.toast((out.incomplete_reason || 'Still incomplete') +
                    this.clearedNote(out), 'error');
       } else {
-        var nodes = Object.keys(out.mirror || {});
-        this.toast('Imported and sent to ' + (nodes.length || 0) + ' node(s)' +
-                   this.clearedNote(out), 'success');
+        this.toast('Imported' + this.clearedNote(out) +
+                   ' — now sending it to the other nodes', 'success');
+        this.watchImportMirror(out.job_id, out.hf_repo);
       }
       this.invalidate();
       this.renderDownloads();
