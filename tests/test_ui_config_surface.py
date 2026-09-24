@@ -554,6 +554,49 @@ class TestKnownMistakesAreNamed:
     def test_ordinary_models_are_not_flagged(self, arch):
         assert not self._fail_with([arch]).fatal_hint
 
+    REAL_SHARD_ID = [
+        "(Worker_TP0_EP0 pid=244) ERROR 09-24 20:44:48 [multiproc_executor.py:943] "
+        "  File \"/usr/local/lib/python3.12/dist-packages/vllm/models/"
+        "minimax_m3/nvidia/model.py\", line 967, in load_weights",
+        "(Worker_TP0_EP0 pid=244) ERROR 09-24 20:44:48 [multiproc_executor.py:943] "
+        "  File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/"
+        "parameter.py\", line 117, in _shard_id_as_int",
+        "(Worker_TP0_EP0 pid=244) ERROR 09-24 20:44:48 [multiproc_executor.py:943] "
+        "    assert shard_id in qkv_idxs",
+        "(Worker_TP0_EP0 pid=244) ERROR 09-24 20:44:48 [multiproc_executor.py:943] "
+        "AssertionError",
+        "(APIServer pid=73) RuntimeError: Engine core initialization failed. "
+        "See root cause above. Failed core proc(s): {}",
+    ]
+
+    def test_a_bare_assertion_is_named_as_a_checkpoint_mismatch(self):
+        """Measured on sparkarena/Minimax-M3-v0-NVFP4-REAP50, whose card asks
+        for a patched SGLang branch and says to run it with sparkrun. Under
+        vLLM it dies on a bare AssertionError with no message, no tensor name
+        and six frames of engine internals above it — which reads like a bug
+        in AINode and is a checkpoint built for another runtime."""
+        reason = self._fail_with(self.REAL_SHARD_ID).failure_reason()
+        assert "different runtime" in reason
+        assert "model card" in reason
+
+    def test_it_says_which_knobs_will_not_help(self):
+        # The operator's next move is otherwise a night of flag permutations.
+        reason = self._fail_with(self.REAL_SHARD_ID).failure_reason()
+        assert "not a flag" in reason
+        assert "quantization config" in reason
+
+    def test_the_assertion_itself_is_still_quoted(self):
+        reason = self._fail_with(self.REAL_SHARD_ID).failure_reason()
+        assert "qkv_idxs" in reason
+
+    @pytest.mark.parametrize("line", [
+        "assert shard_id in self.shard_names",
+        "(Worker pid=1) INFO loading weights, shard_id q of qkv_proj",
+        "AssertionError",
+    ])
+    def test_it_does_not_fire_on_anything_that_mentions_a_shard(self, line):
+        assert not self._fail_with([line]).fatal_hint
+
     def test_reset_clears_the_hint(self):
         t = self._fail_with(self.REAL)
         t.reset()

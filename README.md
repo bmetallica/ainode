@@ -158,7 +158,11 @@ engine's own log is a healthy startup right up to the last line.
 **Knowing what happened** — per-phase load timings, an **error assistant**
 that explains a failure using a model already running, per-instance containers
 and logs, and a **measurement store** that records what each launch actually
-cost and prefers that to any estimate.
+cost and prefers that to any estimate. A handful of failures whose traceback
+describes the symptom and not the mistake are named outright — a drafter
+served alone, a mixed-bit checkpoint, a missing tokenizer, and a checkpoint
+laid out for a different engine, which arrives as a bare `AssertionError`
+under six frames of vLLM internals and is not fixable with any flag.
 
 **Watching it** — MQTT telemetry for system, GPU, **RoCE fabric counters**
 (`/proc/net/dev` reads zero while RDMA saturates the link), models, engine
