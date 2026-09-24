@@ -196,3 +196,61 @@ class TestTheDocumentedPortIsTheOneWeListenOn:
         assert "/v1/images/generations" in self.README
         assert "Open WebUI" in self.README
         assert "b64_json" in self.README
+
+
+class TestTheCodingShortlistStaysHonest:
+    """A model shortlist is a document that rots faster than code.
+
+        mach mir mal eine liste der top 10 lokalen llms welche auf unserem
+        setup so laufen könnten
+
+    The list itself is a judgement and cannot be tested. What can be tested is
+    that it still points at real things: modules that exist, constants that
+    still hold the values it quotes, and a README that still links it. When
+    the planner's reserves change, the budget table in that document is wrong
+    and this fails — which is the point.
+    """
+
+    SHORTLIST = (Path(__file__).resolve().parent.parent
+                 / "docs" / "coding-models.md").read_text()
+    README = (Path(__file__).resolve().parent.parent / "README.md").read_text()
+
+    def test_the_readme_points_at_it(self):
+        assert "docs/coding-models.md" in self.README
+
+    def test_every_module_it_names_exists(self):
+        import re
+
+        for match in re.finditer(r"`(ainode/[\w/]+\.py)", self.SHORTLIST):
+            assert (ROOT / match.group(1)).is_file(), match.group(1)
+
+    def test_the_reserve_it_quotes_is_the_reserve_we_keep(self):
+        from ainode.planner.compute import SYSTEM_RESERVE_GB
+
+        assert f"| system reserve | {SYSTEM_RESERVE_GB:.0f} |" in self.SHORTLIST
+
+    def test_the_headroom_share_it_quotes_is_the_one_we_apply(self):
+        from ainode.planner.compute import PLAN_HEADROOM_SHARE
+
+        assert f"{PLAN_HEADROOM_SHARE * 100:.0f} % of total" in self.SHORTLIST
+
+    def test_it_names_the_expert_parallel_flag_we_actually_emit(self):
+        from ainode.models.architecture import EXPERT_PARALLEL
+
+        assert EXPERT_PARALLEL in self.SHORTLIST
+
+    def test_the_kv_arithmetic_is_attributed_to_the_planner(self):
+        # Every KV figure in the document comes out of this function; if it is
+        # renamed, the figures lose their provenance.
+        from ainode.planner import compute
+
+        assert hasattr(compute, "kv_bytes_per_token")
+        assert "kv_bytes_per_token" in self.SHORTLIST
+
+    def test_it_says_nothing_here_is_verified_on_the_hardware(self):
+        # The one claim that must never quietly disappear.
+        assert "has not yet said so" in self.SHORTLIST
+
+    def test_it_gives_a_hardware_check(self):
+        assert "/api/planner/plan" in self.SHORTLIST
+        assert '"fits": true' in self.SHORTLIST

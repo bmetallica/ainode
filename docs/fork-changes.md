@@ -202,6 +202,7 @@ instance — or a screenshot of one — says which code it is.
 | [`docs/mqtt-schema.md`](mqtt-schema.md) | Every topic and field published over MQTT |
 | [`update.md`](../update.md) | The audit that produced the memory guard, the non-blocking launches and the UI pass |
 | [`images.md`](../images.md) | The image-generation plan, and what was built from it |
+| [`docs/coding-models.md`](coding-models.md) | Ten coding models ranked for a 2-node GB10 cluster, with the budget arithmetic |
 | [`docs/mesh/ANLEITUNG-3-NODE-MESH.md`](mesh/ANLEITUNG-3-NODE-MESH.md) | Step-by-step for the reference cluster (German) |
 | [`docs/mesh/PHASE1-ANALYSE.md`](mesh/PHASE1-ANALYSE.md) | The audit of the original code before any of it was touched (German) |
 | [`CHANGELOG.md`](../CHANGELOG.md) | Everything, in order |

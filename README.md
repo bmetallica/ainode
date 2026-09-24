@@ -398,6 +398,23 @@ panel, pick the model, set **Minimum Nodes=2**, click **Tensor** →
 
 ---
 
+## Which model to run
+
+The catalog is curated for this hardware, but it does not answer "which one
+model should be *the* coding model on my two nodes". That question needs
+arithmetic — per-node budget after the guard reserve, weights split by tensor
+parallelism, KV cache per token at fp8 — and the answer changes every few
+weeks as new MoE checkpoints land.
+
+[`docs/coding-models.md`](docs/coding-models.md) is that answer, worked out
+and written down: ten models ranked for a 2-node GB10 cluster serving two
+parallel sessions, each with its Hub byte count, its per-node share at TP=2,
+its KV cost per token, and what it actually caps out at for context. It also
+records what was ruled out and why — too large for three nodes, or an
+architecture vLLM's registry does not know.
+
+---
+
 ## Quantize a model (AWQ / NVFP4)
 
 AINode can compress a full-precision model to 4-bit **in the browser**, on your
