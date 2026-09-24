@@ -486,6 +486,30 @@ _TOKENIZER_HINT = (
 )
 
 
+# A checkpoint that this engine cannot read, reported as a bare AssertionError:
+#
+#   File ".../vllm/model_executor/parameter.py", line 117, in _shard_id_as_int
+#     assert shard_id in qkv_idxs
+#   AssertionError
+#
+# No message, no tensor name, nothing about the model — and six frames of
+# vLLM internals above it. Measured here on
+# sparkarena/Minimax-M3-v0-NVFP4-REAP50, whose card asks for a patched SGLang
+# branch to read its w1/w3 scales and says to run it with sparkrun. The
+# weights load into that stack and assert in this one.
+_SHARD_ID_HINT = (
+    "the engine read this checkpoint's weights and found a tensor it could "
+    "not place: a fused attention parameter was handed a shard name that is "
+    "not q, k or v, and the loader asserted. That is a checkpoint-against-"
+    "engine mismatch and not a flag or a memory problem — no combination of "
+    "launch options changes it, and neither does repairing the quantization "
+    "config. It means the checkpoint was laid out for a different runtime. "
+    "Read the model card for the stack it names: a quantisation published for "
+    "SGLang, TensorRT-LLM or a vendor's own launcher can carry scales and "
+    "weight names that vLLM's loader does not recognise. Look for the same "
+    "model from a publisher who targets vLLM."
+)
+
 _FATAL_PATTERNS = [
     # Whatever a drafter's architecture is called, serving one alone dies
     # reaching through a speculative_config that is None —
@@ -509,6 +533,7 @@ _FATAL_PATTERNS = [
     ("illegal instruction", "illegalinstruction", _ILLEGAL_INSTRUCTION_HINT),
     ("cudaerrorillegaladdress", "cudaerrorillegaladdress", _ILLEGAL_ADDRESS_HINT),
     ("illegal memory access", "illegalmemoryaccess", _ILLEGAL_ADDRESS_HINT),
+    ("shard_id in qkv_idxs", "shard_idinqkv_idxs", _SHARD_ID_HINT),
     ("unrecognized arguments", "unrecognizedarguments", _ARGPARSE_HINT),
     ("error: argument", "error:argument", _ARGPARSE_HINT),
 ]
