@@ -83,9 +83,10 @@ serving", captured from what is running and applied to converge); and
 and Resume carries on from them (huggingface_hub reuses its own
 `.incomplete`), while Cancel still deletes them. And a download that was
 interrupted — by a restart, an update, a lost link — is listed as
-**Incomplete** rather than as On disk: the check is the checkpoint's own shard
-index, so a model missing a shard says which one instead of failing minutes
-into a launch with a message about safetensors.
+**Incomplete** rather than as On disk: the check reads the checkpoint's own
+shard index *and* its tokenizer files, so a model missing a shard, or holding
+`merges.txt` with no `vocab.json`, says so instead of failing minutes into a
+launch with a message about safetensors or a backend tokenizer.
 
 **A recipe that reaches the engine** — a curated model's `extra_env` is now
 applied by the eugr backend as well as the NVIDIA and diffusers ones. It was

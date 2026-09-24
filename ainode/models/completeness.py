@@ -90,6 +90,56 @@ def _shards_from_index(snapshot: Path) -> Iterable[str]:
         yield from sorted(set(weight_map.values()))
 
 
+#: Any one of these is a tokenizer a transformers model can be built from.
+_TOKENIZER_FILES = ("tokenizer.json", "tokenizer.model", "vocab.json",
+                    "spiece.model", "vocab.txt")
+
+
+def _tokenizer_gap(snapshot: Path) -> str:
+    """"" unless the tokenizer files are visibly a partial set.
+
+    A model is more than its weights, and the shard index says nothing about
+    the rest of the repo. Measured on the cluster, after a download that
+    reported itself finished::
+
+        added_tokens.json   1660
+        merges.txt          2414077
+
+    and nothing else — no vocab.json, no tokenizer.json, no
+    tokenizer_config.json. merges.txt is half of a BPE pair; on its own it
+    cannot build anything. The engine got as far as the weights and then:
+
+        ValueError: Couldn't instantiate the backend tokenizer from one of:
+
+    Narrow on purpose. A diffusion pipeline keeps its tokenizer in a
+    subdirectory and is skipped; a repo with any one of the files above is
+    left alone, because plenty ship exactly one.
+    """
+    if not (snapshot / "config.json").is_file():
+        return ""          # not a transformers-style model
+    if not any(snapshot.glob("*.safetensors")) and \
+            not any(snapshot.glob("*.bin")):
+        return ""          # no weights: not a model directory at all
+    # The more specific reading first: merges.txt is half of a BPE pair, and
+    # saying so is more useful than "no tokenizer", which is also true.
+    if (snapshot / "merges.txt").is_file() \
+            and not (snapshot / "vocab.json").is_file() \
+            and not (snapshot / "tokenizer.json").is_file():
+        return (
+            "this model has merges.txt and neither vocab.json nor "
+            "tokenizer.json — half of a BPE tokenizer, which cannot build "
+            "anything. The download stopped partway through the small files "
+            "at the end of the repo. Resume it, or delete the model and "
+            "fetch it again.")
+    if not any((snapshot / name).is_file() for name in _TOKENIZER_FILES):
+        return (
+            "this model has weights but no tokenizer file at all — none of "
+            + ", ".join(_TOKENIZER_FILES) + ". The download stopped before "
+            "the small files at the end of the repo. Resume it, or delete "
+            "the model and fetch it again.")
+    return ""
+
+
 def download_state(directory) -> Tuple[bool, str]:
     """(complete, reason). ``reason`` is "" when nothing is missing.
 
@@ -114,6 +164,10 @@ def download_state(directory) -> Tuple[bool, str]:
     snapshot = _snapshot(directory)
     if snapshot is None:
         return True, ""
+
+    tokenizer = _tokenizer_gap(snapshot)
+    if tokenizer:
+        return False, tokenizer
 
     missing = [shard for shard in _shards_from_index(snapshot)
                if not (snapshot / shard).is_file()]
