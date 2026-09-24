@@ -364,3 +364,40 @@ class TestTheTwoFreeMemoryNumbers:
         # It is imported lazily and every failure is swallowed: this runs on
         # the orchestrator, which may be the lean build with no torch at all.
         assert _driver_free_mb() is None or isinstance(_driver_free_mb(), float)
+
+
+class TestATokenizerThatCannotBeBuilt:
+    """Reported on a distributed launch:
+
+        ValueError: Couldn't instantiate the backend tokenizer from one of:
+
+    The message lists three ways transformers tried and names no file, so it
+    reads like a model problem. It is a file problem.
+    """
+
+    def _reason(self):
+        from ainode.engine.load_phase import LoadPhaseTracker
+
+        phase = LoadPhaseTracker()
+        phase.reset()
+        phase.observe("ValueError: Couldn't instantiate the backend "
+                      "tokenizer from one of:\n")
+        phase.fail_exit(1)
+        return phase.failure_reason()
+
+    def test_it_is_named_as_a_file_problem(self):
+        assert "That is a file problem" in self._reason()
+
+    def test_it_names_the_files_to_look_for(self):
+        reason = self._reason()
+        for name in ("tokenizer.json", "tokenizer.model", "tokenizer_config.json"):
+            assert name in reason
+
+    def test_it_names_the_other_two_causes(self):
+        reason = self._reason()
+        assert "--trust-remote-code" in reason
+        assert "sentencepiece" in reason
+
+    def test_it_admits_what_the_completeness_check_does_not_cover(self):
+        # Otherwise "AINode said it was downloaded" reads as a contradiction.
+        assert "reads the weight index only" in self._reason()
