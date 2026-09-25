@@ -47,7 +47,10 @@ class TestTheSizeCache:
         tree = self._tree(tmp_path, size=4096)
         first = ModelManager._dir_size_gb(tree)
         assert ModelManager._dir_size_gb(tree) == first
-        assert first == 4096 / (1024 ** 3)
+        # Decimal GB, like the Hub's own byte count and like the planner's
+        # weight_bytes_on_disk. It divided by 1024**3 and called that GB, so a
+        # launch panel showed "(148 GB)" above "159.4 GB on disk".
+        assert first == 4096 / 1e9
 
     def test_an_entry_also_expires_on_time(self, tmp_path, monkeypatch):
         # mtime is a cheap hint, not a guarantee: a file rewritten inside an

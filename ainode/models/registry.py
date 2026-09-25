@@ -1974,7 +1974,11 @@ class ModelManager:
                 and now - cached[2] < cls._SIZE_TTL_SECONDS):
             return cached[1]
         total = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
-        size = total / (1024**3)
+        # Decimal, like the Hub's usedStorage and like weight_bytes_on_disk in
+        # the planner. This divided by 1024**3 and called the result GB, so
+        # one launch panel showed "Qwen3-Coder-Next (148 GB)" above "Weights:
+        # 159.4 GB on disk" — the same bytes in two units, both labelled GB.
+        size = total / 1e9
         cls._SIZE_CACHE[key] = (stamp, size, now)
         return size
 

@@ -183,6 +183,14 @@ load persists, so without that reset an image model loaded on one node leaves
 `engine_backend=diffusers` behind and the next multi-node LLM launch picks the
 image engine.
 
+**The plan describes the launch it will get** — the planner is asked with the
+KV-cache dtype the launch would actually use (the node default is fp8, and the
+form says so), not with the model's own dtype, which doubled the cost per token
+and halved every reported cache for a model without a catalog recipe. A
+measurement is compared per node against a per-node plan rather than against
+the weights across every node, and on-disk sizes are decimal GB everywhere, so
+one panel cannot show "148 GB" above "159.4 GB on disk".
+
 **Knowing what happened** — per-phase load timings, an **error assistant**
 that explains a failure using a model already running, per-instance containers
 and logs, and a **measurement store** that records what each launch actually
