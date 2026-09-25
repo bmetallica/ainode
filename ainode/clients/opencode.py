@@ -90,12 +90,62 @@ def _launched_context(entry, info) -> Optional[int]:
     return None
 
 
-def _capabilities(info) -> Tuple[bool, bool, bool]:
-    """(tool_call, reasoning, attachment) from the catalog entry."""
+def _launch_args(entry, info) -> List[str]:
+    """Every vLLM flag this instance was started with, launch before recipe."""
+    out: List[str] = []
+    for source in (getattr(entry, "extra_vllm_args", None) or [],
+                   getattr(info, "extra_vllm_args", None) or []):
+        out.extend(str(a) for a in source)
+    return out
+
+
+def _capabilities(info, entry=None, model_id: str = "") -> Tuple[bool, bool, bool]:
+    """(tool_call, reasoning, attachment), from what the engine was told.
+
+    The catalog was the only source, which meant a model nobody curated got
+    ``"tool_call": false`` — and on a coding agent that is not a cosmetic
+    field, it is the difference between an assistant that edits files and one
+    that describes how it would.
+
+    Reported from the cluster, on Qwen3-Coder-Next served from the Hub:
+
+        "tool_call": false, "reasoning": false
+
+    while AINode had itself chosen ``--tool-call-parser qwen3_coder`` for that
+    launch (models/tool_parsers.py matches ``qwen3-?coder``). Two parts of the
+    same program disagreeing about the same model, and the wrong one is the
+    one written into the client config.
+
+    So the launch arguments come first: a flag the engine is running is not an
+    opinion. The catalog stays as the source for what flags cannot show —
+    vision, and a curated model's own declaration.
+    """
     caps = {str(c).lower() for c in (getattr(info, "capabilities", None) or [])}
-    return ("tool_use" in caps,
-            "reasoning" in caps,
-            bool(caps & {"vision", "image", "multimodal"}))
+    tool_call = "tool_use" in caps
+    reasoning = "reasoning" in caps
+    attachment = bool(caps & {"vision", "image", "multimodal"})
+
+    args = _launch_args(entry, info)
+    joined = " ".join(args)
+    if "--tool-call-parser" in args or "--enable-auto-tool-choice" in args \
+            or "--tool-call-parser=" in joined:
+        tool_call = True
+    if "--reasoning-parser" in args or "--reasoning-config" in args \
+            or "--reasoning-parser=" in joined:
+        reasoning = True
+
+    # Nothing in the flags and nothing in the catalog: ask the same table the
+    # launcher asks. It answers for a family rather than a repo, which is why
+    # it is the last resort and not the first.
+    if not tool_call and model_id:
+        try:
+            from ainode.models.tool_parsers import parser_for_model
+
+            tool_call = bool(parser_for_model(model_id))
+        except Exception:
+            logger.debug("could not ask for %s's tool parser", model_id,
+                         exc_info=True)
+    return tool_call, reasoning, attachment
 
 
 def _served_llms(app) -> List[Tuple[str, object]]:
@@ -129,7 +179,8 @@ def build_opencode_config(app, base_url: str) -> dict:
             except Exception:
                 logger.debug("no catalog entry for %s", model_id, exc_info=True)
 
-        tool_call, reasoning, attachment = _capabilities(info)
+        tool_call, reasoning, attachment = _capabilities(
+            info, entry, model_id)
         window = _launched_context(entry, info)
         if window is None:
             # No launch flag and no recipe flag: the engine is running the
