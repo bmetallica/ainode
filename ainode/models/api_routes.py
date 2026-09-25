@@ -125,6 +125,11 @@ def save_instance_manifest(app) -> None:
         entry = {
             "model": inst.record.model,
             "gpu_memory_utilization": getattr(cfg, "gpu_memory_utilization", None),
+            # So a container that outlived the orchestrator can be matched back
+            # to what it was serving without asking it. adopt_running_engines()
+            # can ask, and does when this is missing — but an engine that is
+            # still loading has no /v1/models to answer with.
+            "api_port": int(getattr(inst.record, "api_port", 0) or 0),
         }
         # round-trip per-load overrides so restart-replay restores aliases + ctx len
         for k in _OVERRIDE_KEYS:
@@ -832,6 +837,132 @@ async def _ensure_serving(app, port: int, relaunch, label: str, timeout: float =
     served = await _wait_port_ready(port, timeout=timeout)
     logger.info("%s relaunch %s", label, "is serving" if served else "still not serving")
     return served
+
+
+#: Engine containers whose name ends in the port they serve on. The primary
+#: keeps the unsuffixed legacy name and is owned by the boot engine.
+_ADOPTABLE_PREFIXES = ("ainode_image-", "ainode-vllm-node-solo-")
+
+
+def _running_engine_containers() -> list:
+    """[(container name, port)] for engine containers that are up right now."""
+    import subprocess
+
+    try:
+        ps = subprocess.run(["docker", "ps", "--format", "{{.Names}}"],
+                            capture_output=True, text=True, timeout=20)
+    except Exception:
+        logger.debug("could not list containers for adoption", exc_info=True)
+        return []
+    out = []
+    for name in (ps.stdout or "").split():
+        for prefix in _ADOPTABLE_PREFIXES:
+            if not name.startswith(prefix):
+                continue
+            suffix = name[len(prefix):]
+            if suffix.isdigit():
+                out.append((name, int(suffix)))
+            break
+    return out
+
+
+def _model_on_port(port: int) -> str:
+    """What the engine on ``port`` says it is serving, or ""."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{int(port)}/v1/models", timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return ""
+    for entry in (data.get("data") or []):
+        name = str(entry.get("id") or "")
+        if name:
+            return name
+    return ""
+
+
+def adopt_running_engines(app) -> int:
+    """Register engine containers that outlived the orchestrator. Returns how
+    many were adopted.
+
+    Reported from the cluster:
+
+        wenn ainode neu gestartet wird erkennt es das laufende diffusion
+        immage nicht mehr als laufend … INSTANCES im UI bleibt leer
+
+        ainode_image-8001   Up 15 hours
+
+    Restarting AINode does not stop the engines — they are separate
+    containers, on purpose, so an orchestrator update does not take a
+    fifteen-hour-old image server down with it. But nothing put them back on
+    the books. The only path that noticed was the manifest replay, which
+    relaunches from disk and adopts by accident, because a backend's start()
+    returns early when its container is already up. That path sleeps ten
+    seconds and then waits up to five minutes for the PRIMARY port to answer
+    — and on a node whose only engine is a stacked one, nothing ever answers
+    there. So the instance list stayed empty for five minutes and the UI
+    showed a node serving nothing while it served.
+
+    Adoption is the first thing that happens now, before any of that, and it
+    launches nothing: it asks each running engine what it is serving and puts
+    the record back.
+    """
+    from dataclasses import replace
+
+    from ainode.discovery.instance import InstanceRecord
+    from ainode.engine.backends import get_backend
+
+    manager = app.get("instances")
+    config = app.get("config")
+    if manager is None or config is None:
+        return 0
+
+    by_port = {}
+    for entry in load_instance_manifest():
+        port = int(entry.get("api_port") or 0)
+        if port:
+            by_port[port] = entry
+
+    adopted = 0
+    for name, port in _running_engine_containers():
+        entry = by_port.get(port) or {}
+        model = str(entry.get("model") or "") or _model_on_port(port)
+        if not model:
+            logger.info("%s is up on port %d but will not say what it serves; "
+                        "leaving it to the replay", name, port)
+            continue
+        try:
+            if manager.by_model(model) is not None:
+                continue
+        except Exception:
+            logger.debug("could not check for %s", model, exc_info=True)
+
+        overrides = {k: entry[k] for k in _OVERRIDE_KEYS if k in entry}
+        inst_config = replace(
+            config, model=model, distributed_mode="solo", peer_ips=[],
+            api_port=port,
+            **_resolved_overrides(entry.get("gpu_memory_utilization"), overrides))
+        token = "" if port == config.api_port else str(port)
+        backend = get_backend(inst_config, instance_id=token)
+        try:
+            if not backend.is_running():
+                continue
+        except Exception:
+            logger.debug("could not probe %s", name, exc_info=True)
+            continue
+        manager.add(InstanceRecord(
+            instance_id=f"{config.node_id or 'head'}:{model}",
+            model=model, head_node_id=config.node_id or "head",
+            peer_ips=[], api_port=port, tensor_parallel_size=1,
+            status="serving",
+            kind=("image" if str(getattr(inst_config, "engine_backend", "")) ==
+                  "diffusers" else "llm")), backend)
+        adopted += 1
+        logger.info("adopted %s on port %d, already serving %s",
+                    name, port, model)
+    return adopted
 
 
 async def replay_instances_on_startup(app) -> None:

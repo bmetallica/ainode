@@ -501,10 +501,24 @@ async def _on_startup(app: web.Application) -> None:
             # distributed instances the manifest cannot record. When one is
             # set it replaces the replay rather than running alongside it —
             # two sources for "what should be running" contradict each other.
-            from ainode.models.api_routes import replay_instances_on_startup
+            from ainode.models.api_routes import (adopt_running_engines,
+                                                   replay_instances_on_startup)
             from ainode.profiles.apply import startup_restore
 
             async def _restore() -> None:
+                # First, and without launching anything: an engine container
+                # outlives an orchestrator restart on purpose, and until it is
+                # back on the books the UI shows a node serving nothing while
+                # it serves. Both paths below assume the instance list is the
+                # truth about what is running, so this has to precede them.
+                try:
+                    adopted = await asyncio.get_event_loop().run_in_executor(
+                        None, adopt_running_engines, app)
+                    if adopted:
+                        logger.info("adopted %d running engine(s) on startup",
+                                    adopted)
+                except Exception:
+                    logger.exception("could not adopt running engines")
                 applied = False
                 try:
                     applied = await startup_restore(app)
