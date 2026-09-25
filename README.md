@@ -167,6 +167,13 @@ card rather than reading "On disk" while every launch of it is refused. A launch
 translated too: `code -9` is SIGKILL, which no process can catch, so the
 engine's own log is a healthy startup right up to the last line.
 
+**A restart does not lose what is running** — engine containers are separate
+from the orchestrator on purpose, so updating AINode does not take a
+fifteen-hour-old image server down with it. On startup the running ones are
+**adopted** rather than relaunched: each is asked what it serves and put back
+on the instance list before any replay or profile restore runs. Without that
+the node showed an empty **Instances** panel while it was serving.
+
 **One load cannot inherit the last one's flags** — every per-load override
 (`kv_cache_dtype`, `quantization`, `trust_remote_code`, `engine_backend`, the
 image knobs) is resolved to a concrete value on both the solo and the
