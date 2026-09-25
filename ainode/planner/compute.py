@@ -80,8 +80,28 @@ def plan_headroom_gb(total_gb: float) -> float:
     return round(min(PLAN_HEADROOM_MAX_GB,
                      max(PLAN_HEADROOM_MIN_GB, total_gb * PLAN_HEADROOM_SHARE)), 1)
 
-#: Tensor parallelism splits attention heads, and head counts are powers of
-#: two. TP=3 has no models behind it.
+#: Tensor parallelism splits attention heads, and vLLM's own layers assert
+#: that the count divides the rank count exactly — ``divide(total_num_heads,
+#: tp_size)`` in model_executor/layers/linear.py, which raises rather than
+#: rounds.
+#:
+#: Three divides almost nothing that ships. Checked against the head counts of
+#: ten current checkpoints, this cluster's catalog among them:
+#:
+#:   Qwen3-Coder-Next 16 · KAT-Coder-V2.5 16 · GLM-4.7-Flash 20
+#:   Mistral-7B 32 · MiMo-V2.6-Flash 64 · phi-4 40 · Qwen3-Coder-30B 32
+#:
+#: Not all powers of two — 20 and 40 are not — but none divisible by three.
+#: Published three-node recipes for this hardware exist and get there by
+#: patching: MiaAI-Lab's DGX Spark launcher carries a `dsv4_tp_pad.py` that
+#: pads the head count, and their GLM sibling ships a `cooperative_moe/tp3`
+#: extension. Both are engine changes, not a serve flag, and neither is in the
+#: image here.
+#:
+#: So a three-node cluster runs tensor parallelism on two of its nodes, and
+#: the third serves something else. That is a real limit and it is stated
+#: here rather than discovered: if a checkpoint with 24, 48 or 96 heads turns
+#: up and the engine grows the support, this tuple is the one line to change.
 TENSOR_SIZES = (1, 2, 4, 8)
 
 #: A context window is only useful in round numbers, and vLLM pages the cache
@@ -253,8 +273,23 @@ def _round_len(tokens: int) -> int:
 def _tensor_ok(facts: ModelFacts, size: int) -> Optional[str]:
     """Why this tensor-parallel size is impossible, or None."""
     if size not in TENSOR_SIZES:
-        return (f"tensor parallelism needs 2, 4 or 8 ranks — no model splits "
-                f"attention heads {size} ways")
+        # Say which of the two it is. A model COULD have a head count that
+        # divides three ways; none of the ones this cluster serves does, and
+        # the engine asserts rather than pads.
+        heads = facts.num_attention_heads
+        if heads and heads % size == 0:
+            return (f"tensor parallelism over {size} ranks is not enabled "
+                    f"here. This checkpoint's {heads} attention heads would "
+                    f"divide, but the engine image has no padded or "
+                    f"cooperative path for a non-power-of-two rank count — "
+                    f"the published three-node recipes for this hardware "
+                    f"patch the engine to get there")
+        return (f"tensor parallelism over {size} ranks needs a head count "
+                f"divisible by {size}, and "
+                f"{f'this checkpoint has {heads}' if heads else 'no current checkpoint has one'}"
+                f". vLLM's layers divide the heads by the rank count and "
+                f"raise on a remainder; 2, 4 and 8 are the counts models "
+                f"actually ship for")
     if size == 1:
         return None
     if facts.num_attention_heads and facts.num_attention_heads % size:
