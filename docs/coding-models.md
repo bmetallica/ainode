@@ -9,6 +9,12 @@ Every size below is the Hugging Face Hub's own byte count for the repo
 (`safetensors`/`bin` siblings, decimal GB, read 2026-09-24). Every KV figure
 comes from the same formula the planner uses,
 `ainode/planner/compute.py:kv_bytes_per_token`, at `--kv-cache-dtype fp8`.
+
+That is the conservative column. The engine image here also offers **4-bit**
+KV — `nvfp4_ds_mla`, `nvfp4`, `nvfp4_4over6`, `int4_per_token_head` — which
+halves every KV figure below again; `nvfp4_ds_mla` is what the published
+two-Spark recipe for DeepSeek-V4-Flash serves with. The planner costs those
+correctly, so a model listed here as context-bound may not be.
 Nothing here has been served on this cluster yet — the arithmetic says it
 fits, the hardware has not yet said so. That distinction is kept explicit in
 the verdict column.
