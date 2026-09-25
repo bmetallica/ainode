@@ -489,6 +489,7 @@ set the read token with `ainode config --hf-token hf_xxx`.
 | Model stacking — N concurrent models per node, persisted + replayed on boot | ✅ |
 | Serve models from on-disk weights (`~/.ainode/models/<slug>`) | ✅ |
 | fp8 KV-cache default on GB10 (long-context headroom) | ✅ |
+| Planner knows every KV-cache dtype the engine offers — 4-bit widths, and the MLA *layouts* that only look like one | ✅ |
 | Per-load overrides (`served_model_name` / `max_model_len` / `kv_cache_dtype` / `quantization` / `trust_remote_code`), persisted across restarts | ✅ v0.5.0 |
 | Node-targeted model load (`POST /api/cluster/load {node_id}`) | ✅ v0.5.1 |
 | Stacked-load admission guard — explicit `gpu_memory_utilization` required, reject > 0.9 projected total (409) | ✅ v0.5.1 |

@@ -26,7 +26,7 @@ from typing import List, Optional, Sequence
 from ainode.planner.facts import ModelFacts
 
 __all__ = ["NodeBudget", "Plan", "kv_bytes_per_token", "plan_for",
-           "plan_for_image"]
+           "plan_for_image", "kv_dtype_bytes"]
 
 #: CUDA context, the engine itself, activation buffers and the captured graphs.
 #: Measured on this hardware as roughly this much above the weights, and it
@@ -168,6 +168,63 @@ class Plan:
         }
 
 
+#: Bytes per cached element, by KV-cache dtype family. Measured against the
+#: engine image rather than assumed — ``vllm.config.cache.CacheDType`` on
+#: vllm-node (0.3.1.dev19+g08633cb5c.d20260917) offers eighteen values, and
+#: this planner knew two of them:
+#:
+#:     ('auto', 'float16', 'bfloat16', 'fp8', 'fp8_e4m3', 'fp8_e5m2',
+#:      'fp8_inc', 'fp8_ds_mla', 'nvfp4_ds_mla', 'turboquant_k8v4',
+#:      'turboquant_4bit_nc', 'turboquant_k3v4_nc', 'turboquant_3bit_nc',
+#:      'int4_per_token_head', 'int8_per_token_head', 'fp8_per_token_head',
+#:      'nvfp4', 'nvfp4_4over6')
+#:
+#: The old rule was `1 byte if it starts with "fp8", else the model dtype`,
+#: which read every 4-bit cache as 2 bytes — a factor of four, and in the
+#: direction that refuses a launch which fits.
+#:
+#: Note what this table does NOT do: infer a width from a name. nvfp4_ds_mla
+#: looks like four bits and is not — see its entry.
+_KV_DTYPE_BYTES = {
+    "float16": 2.0,
+    "bfloat16": 2.0,
+    "fp8": 1.0,
+    "fp8_e4m3": 1.0,
+    "fp8_e5m2": 1.0,
+    "fp8_inc": 1.0,
+    # The ds_mla pair are LAYOUTS, not widths, and on DeepSeek-V4 they are the
+    # same layout: 584 bytes per token per layer either way — the compressed
+    # latent at one byte per element plus its scales. Only the kernel dispatch
+    # differs. So nvfp4_ds_mla is costed like fp8_ds_mla and not at four bits,
+    # which is what a name-shaped guess would have done. Source: MiaAI-Lab's
+    # DeepSeek-V4-Flash DGX Spark recipe, docs/PATCHES.md issue #22 (MIT).
+    "fp8_ds_mla": 1.0,
+    "nvfp4_ds_mla": 1.0,
+    "fp8_per_token_head": 1.0,
+    "int8_per_token_head": 1.0,
+    "nvfp4": 0.5,
+    "nvfp4_4over6": 0.5,
+    "int4_per_token_head": 0.5,
+}
+
+
+def kv_dtype_bytes(kv_cache_dtype: str, model_dtype_bytes: float) -> float:
+    """Bytes one cached element costs under ``kv_cache_dtype``.
+
+    "auto" and anything unrecognised fall back to the model's own dtype, which
+    over-estimates rather than under-estimates: a plan that reserves too much
+    cache serves a shorter context than it could, and a plan that reserves too
+    little takes the node down. The turboquant_* family is deliberately left
+    to that fallback — the names read like per-tensor widths (k8v4, 3bit) but
+    this has not been verified against the kernels, and a guess here is a
+    guess about whether a launch survives.
+    """
+    key = str(kv_cache_dtype or "").strip().lower()
+    if key in _KV_DTYPE_BYTES:
+        return _KV_DTYPE_BYTES[key]
+    return float(model_dtype_bytes or 2)
+
+
 def kv_bytes_per_token(facts: ModelFacts, kv_cache_dtype: str = "auto") -> int:
     """Bytes of KV cache one token costs across the whole model.
 
@@ -177,8 +234,7 @@ def kv_bytes_per_token(facts: ModelFacts, kv_cache_dtype: str = "auto") -> int:
     vector per layer instead, which is why a model of that size can hold a
     million tokens where a conventional one holds a tenth of that.
     """
-    dtype_bytes = 1 if str(kv_cache_dtype).lower().startswith("fp8") \
-        else facts.dtype_bytes
+    dtype_bytes = kv_dtype_bytes(kv_cache_dtype, facts.dtype_bytes)
     layers = facts.attention_layers or facts.num_layers
     if not layers:
         return 0
@@ -494,7 +550,8 @@ def _explain(facts: ModelFacts, plan: Plan, best: _Candidate,
         f"per node for the system",
     ]
     if bytes_per_token:
-        dtype = "fp8" if str(kv_cache_dtype).lower().startswith("fp8") \
+        named = str(kv_cache_dtype or "").strip().lower()
+        dtype = named if named in _KV_DTYPE_BYTES \
             else (facts.torch_dtype or "the model dtype")
         shape = (f"{facts.attention_layers} attention layers x "
                  f"{facts.num_kv_heads} KV heads x {facts.head_dim} head dim")

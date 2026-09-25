@@ -245,6 +245,25 @@ def facts_from_config(config: dict, repo: str = "",
 
     facts.kv_lora_rank = int(_first(text, "kv_lora_rank", default=0) or 0)
     facts.qk_rope_head_dim = int(_first(text, "qk_rope_head_dim", default=0) or 0)
+    if not facts.kv_lora_rank and facts.qk_rope_head_dim:
+        # DeepSeek-V4 writes the latent geometry without naming it: one KV
+        # "head" whose head_dim IS the compressed rank, beside a rope split.
+        # Read as grouped-query attention that costs 2 x heads x head_dim per
+        # layer, which is the K and the V counted separately — and in MLA
+        # there is one latent, not two tensors. On DeepSeek-V4-Flash that is
+        # 1024 bytes per layer per token against a measured 584 (the latent at
+        # one byte per element plus its scales; MiaAI-Lab's DGX Spark recipe,
+        # docs/PATCHES.md issue #22, MIT). Nearly twice the cache reserved,
+        # which comes straight off the context the planner will offer.
+        #
+        # The remaining 8 bytes are the per-token scale block, which this does
+        # not model: 576 against 584 is 1.4% short, and ENGINE_OVERHEAD_GB
+        # covers that many times over. Fitting a scale factor to one measured
+        # checkpoint would be the worse error.
+        head_dim = int(_first(text, "head_dim", default=0) or 0)
+        kv_heads = int(_first(text, "num_key_value_heads", default=0) or 0)
+        if kv_heads == 1 and head_dim >= 256:
+            facts.kv_lora_rank = head_dim
 
     facts.num_experts = int(_first(
         text, "num_experts", "num_local_experts", "n_routed_experts",
