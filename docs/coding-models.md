@@ -11,10 +11,16 @@ comes from the same formula the planner uses,
 `ainode/planner/compute.py:kv_bytes_per_token`, at `--kv-cache-dtype fp8`.
 
 That is the conservative column. The engine image here also offers **4-bit**
-KV — `nvfp4_ds_mla`, `nvfp4`, `nvfp4_4over6`, `int4_per_token_head` — which
-halves every KV figure below again; `nvfp4_ds_mla` is what the published
-two-Spark recipe for DeepSeek-V4-Flash serves with. The planner costs those
-correctly, so a model listed here as context-bound may not be.
+KV — `nvfp4`, `nvfp4_4over6`, `int4_per_token_head` — which halves the figures
+below for a conventionally-attending model. It does **not** help the MLA
+entries: `nvfp4_ds_mla` names a layout, not a width, and on DeepSeek-V4 that
+layout is the same 584 bytes per token per layer as `fp8_ds_mla` — only the
+kernel dispatch differs, and stock vLLM dispatches the 4-bit name to the slow
+path, where long-context decode collapses to about a tenth of the throughput.
+Serve the MLA models with `fp8_ds_mla`.
+
+(Both facts come from MiaAI-Lab's two-Spark DeepSeek-V4-Flash recipe,
+`docs/PATCHES.md` issue #22, MIT — read, not copied.)
 Nothing here has been served on this cluster yet — the arithmetic says it
 fits, the hardware has not yet said so. That distinction is kept explicit in
 the verdict column.

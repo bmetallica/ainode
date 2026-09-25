@@ -181,9 +181,10 @@ class Plan:
 #:
 #: The old rule was `1 byte if it starts with "fp8", else the model dtype`,
 #: which read every 4-bit cache as 2 bytes — a factor of four, and in the
-#: direction that refuses a launch which fits. nvfp4_ds_mla is what the
-#: published two-Spark recipe for DeepSeek-V4-Flash serves with, so this is
-#: not a hypothetical value.
+#: direction that refuses a launch which fits.
+#:
+#: Note what this table does NOT do: infer a width from a name. nvfp4_ds_mla
+#: looks like four bits and is not — see its entry.
 _KV_DTYPE_BYTES = {
     "float16": 2.0,
     "bfloat16": 2.0,
@@ -191,11 +192,17 @@ _KV_DTYPE_BYTES = {
     "fp8_e4m3": 1.0,
     "fp8_e5m2": 1.0,
     "fp8_inc": 1.0,
+    # The ds_mla pair are LAYOUTS, not widths, and on DeepSeek-V4 they are the
+    # same layout: 584 bytes per token per layer either way — the compressed
+    # latent at one byte per element plus its scales. Only the kernel dispatch
+    # differs. So nvfp4_ds_mla is costed like fp8_ds_mla and not at four bits,
+    # which is what a name-shaped guess would have done. Source: MiaAI-Lab's
+    # DeepSeek-V4-Flash DGX Spark recipe, docs/PATCHES.md issue #22 (MIT).
     "fp8_ds_mla": 1.0,
+    "nvfp4_ds_mla": 1.0,
     "fp8_per_token_head": 1.0,
     "int8_per_token_head": 1.0,
     "nvfp4": 0.5,
-    "nvfp4_ds_mla": 0.5,
     "nvfp4_4over6": 0.5,
     "int4_per_token_head": 0.5,
 }
