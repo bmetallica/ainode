@@ -372,4 +372,12 @@ class TestTheUIShowsIt:
                   "static" / "js" / "app.js").read_text()
         assert "Measured here:" in app_js
         assert "vs the plan" in app_js
-        assert "line + measured + warn" in app_js
+        # Beside the estimate, in the same hint, in that order. Asserted as the
+        # ordering rather than one exact concatenation, so adding a segment to
+        # the hint does not read as the measurement having been removed — which
+        # is what happened when the occupancy forecast landed between them.
+        assembly = app_js[app_js.index("hint.innerHTML = line"):]
+        assembly = assembly[:assembly.index("\n")]
+        assert "line" in assembly
+        assert assembly.index("line") < assembly.index("measured")
+        assert assembly.index("measured") < assembly.index("warn")

@@ -157,6 +157,24 @@ class Plan:
     #: Image models only: the resolution ceiling the plan assumed. There is no
     #: KV cache here and no context length, so this is what bounds one run.
     max_image_size: int = 0
+    #: The forecast, per node, and deliberately three numbers rather than one.
+    #:
+    #: RESERVED is what the engine takes: gpu_memory_utilization is a share of
+    #: the node's TOTAL, and vLLM fills that share with cache blocks whether or
+    #: not the configured context needs them. It is what free(1) will show, and
+    #: it is what the memory guard sees coming.
+    #:
+    #: NEEDED is what the configured launch actually uses — weights, engine,
+    #: and cache for max_model_len x concurrency. On unified memory the gap
+    #: between the two is real memory held and not used, which is the number an
+    #: operator misjudges: raising the fraction does not make a model bigger,
+    #: it makes the pool bigger, and a pool that is bigger than the cache can
+    #: use is memory taken from the node for nothing.
+    node_total_gb: float = 0.0
+    reserved_per_node_gb: float = 0.0
+    needed_per_node_gb: float = 0.0
+    cache_used_per_node_gb: float = 0.0
+    overhead_per_node_gb: float = 0.0
     #: The arithmetic, in the order it was done. This is the point: a number
     #: an operator cannot check is a number they cannot overrule.
     notes: List[str] = field(default_factory=list)
@@ -182,6 +200,11 @@ class Plan:
             "concurrent_requests": self.concurrent_requests,
             "max_num_seqs": self.max_num_seqs,
             "max_image_size": self.max_image_size,
+            "node_total_gb": round(self.node_total_gb, 1),
+            "reserved_per_node_gb": round(self.reserved_per_node_gb, 1),
+            "needed_per_node_gb": round(self.needed_per_node_gb, 1),
+            "cache_used_per_node_gb": round(self.cache_used_per_node_gb, 1),
+            "overhead_per_node_gb": round(self.overhead_per_node_gb, 1),
             "notes": list(self.notes),
             "warnings": list(self.warnings),
             "blocker": self.blocker,
@@ -568,10 +591,54 @@ def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,
             plan.notes = _explain(facts, plan, best, bytes_per_token,
                                   kv_cache_dtype)
             return plan
+    _forecast(plan, best, smallest, bytes_per_token, concurrency)
     plan.notes = _explain(facts, plan, best, bytes_per_token, kv_cache_dtype)
     plan.warnings.extend(_caveats(facts, len(best.nodes),
                                   kv_cache_dtype))
     return plan
+
+
+def _forecast(plan: Plan, best: _Candidate, smallest: NodeBudget,
+              bytes_per_token: int, concurrency: int = 1) -> None:
+    """What this launch will take, and what it will use — per node.
+
+    Asked from the cluster:
+
+        was mir noch fehlt ist beim modelladen über die seitenleiste, ist eine
+        prognose wie viel vram das modell belegen wird, welche sich abhängig zu
+        den einstellungen live aktualisiert
+
+    Two numbers, because the honest answer is two numbers and reporting one of
+    them as "how much it will use" would be the more misleading half either
+    way.
+
+    The engine TAKES gpu_memory_utilization x the node's total: that fraction
+    is of the total, not of what is free, and vLLM fills it with cache blocks
+    whether the configured context needs them or not. That is what free(1)
+    shows and what the memory guard watches approach its line.
+
+    The launch USES the weights, the engine, and cache for
+    max_model_len x concurrency. On unified memory the difference between the
+    two is real memory held and not used — and it is the thing an operator
+    reaches for the wrong lever about, because raising the fraction does not
+    make the model bigger, it makes the pool bigger.
+    """
+    count = max(1, len(best.nodes))
+    plan.node_total_gb = smallest.total_gb or smallest.free_gb
+    plan.overhead_per_node_gb = ENGINE_OVERHEAD_GB + (
+        COMM_OVERHEAD_GB if count > 1 else 0.0)
+    # The concurrency ASKED FOR, not the one that fits. plan.concurrent_requests
+    # answers "how many could run", and using it here would report the pool as
+    # fully used on every plan — which is the one thing this is meant to show is
+    # not true.
+    used_tokens = plan.max_model_len * max(1, concurrency)
+    plan.cache_used_per_node_gb = (
+        used_tokens * bytes_per_token / count / 1e9) if bytes_per_token else 0.0
+    plan.needed_per_node_gb = (plan.weights_per_node_gb
+                               + plan.overhead_per_node_gb
+                               + plan.cache_used_per_node_gb)
+    plan.reserved_per_node_gb = (plan.gpu_memory_utilization
+                                 * plan.node_total_gb)
 
 
 def _blocker(facts: ModelFacts, nodes: Sequence[NodeBudget],

@@ -2243,6 +2243,54 @@ const AINode = {
     if (this._launchHintUpdater) this._launchHintUpdater();
   },
 
+  // How much of the node this will occupy, and how much of that it will use.
+  //
+  //     was mir noch fehlt ist beim modelladen über die seitenleiste, ist eine
+  //     prognose wie viel vram das modell belegen wird, welche sich abhängig zu
+  //     den einstellungen live aktualisiert
+  //
+  // Two numbers, because one would be the misleading half either way. The
+  // engine TAKES gpu_memory_utilization x the node's total and fills it with
+  // cache blocks whether the configured context needs them or not — that is
+  // what free(1) shows and what the memory guard watches. The launch USES the
+  // weights, the engine and cache for context x concurrency. On unified memory
+  // the gap is real memory held and not used.
+  renderOccupancy(plan) {
+    if (!plan || !plan.reserved_per_node_gb || !plan.node_total_gb) return '';
+    var total = plan.node_total_gb;
+    var reserved = plan.reserved_per_node_gb;
+    var needed = plan.needed_per_node_gb;
+    var share = Math.round((reserved / total) * 100);
+    var idle = reserved - needed;
+    var bar = function (value, cls) {
+      return '<span class="occupancy-seg ' + cls + '" style="width:' +
+        Math.max(0, Math.min(100, (value / total) * 100)).toFixed(1) + '%"></span>';
+    };
+    var html = '<div class="plan-occupancy">' +
+      '<div class="occupancy-bar">' +
+        bar(plan.weights_per_node_gb, 'weights') +
+        bar(plan.overhead_per_node_gb, 'engine') +
+        bar(plan.cache_used_per_node_gb, 'cache') +
+        bar(Math.max(0, idle), 'idle') +
+      '</div>' +
+      '<div class="occupancy-text">▤ Occupies <strong>' +
+      reserved.toFixed(1) + ' GB</strong> of ' + Math.round(total) +
+      ' per node (' + share + '% — the memory fraction), of which <strong>' +
+      needed.toFixed(1) + ' GB</strong> is used: ' +
+      plan.weights_per_node_gb.toFixed(1) + ' weights + ' +
+      plan.overhead_per_node_gb.toFixed(1) + ' engine + ' +
+      plan.cache_used_per_node_gb.toFixed(1) + ' cache for ' +
+      (plan.max_model_len || 0).toLocaleString() + ' x ' +
+      (document.getElementById('launch-max-seqs') || {}).value + ' requests.';
+    if (idle > 2) {
+      html += ' <span class="occupancy-idle">' + idle.toFixed(1) +
+        ' GB of the pool is reserved and will not be used at this context and ' +
+        'concurrency — lower the memory fraction to leave it on the node, or ' +
+        'raise the concurrency to spend it.</span>';
+    }
+    return html + '</div></div>';
+  },
+
   // Returns true when it has drawn the hint itself.
   renderPlanHint() {
     var hint = document.getElementById('launch-hint');
@@ -2278,6 +2326,7 @@ const AINode = {
         plan.concurrent_requests + ' concurrent at ' +
         plan.max_model_len.toLocaleString();
     }
+    var forecast = this.renderOccupancy(plan);
     var warn = (plan.warnings || []).map(function (w) {
       return '<div class="plan-warn">⚠ ' + this.esc(w) + '</div>';
     }, this).join('');
@@ -2300,7 +2349,7 @@ const AINode = {
         '</div>';
     }
     hint.className = 'launch-hint' + ((plan.warnings || []).length ? ' warn' : '');
-    hint.innerHTML = line + measured + warn +
+    hint.innerHTML = line + forecast + measured + warn +
       '<div class="plan-notes">' +
       (plan.notes || []).map(function (n) {
         return '<div>' + this.esc(n) + '</div>';
