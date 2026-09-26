@@ -1298,6 +1298,42 @@ h4.chat-h { font-size: 14px; color: var(--nvidia-green); }
   color: #ffb84d;
 }
 
+/* The occupancy forecast. A bar rather than four numbers, because the thing
+   worth seeing at a glance is the LAST segment — the share of the pool that is
+   reserved and will not be used at this context and concurrency. */
+.plan-occupancy {
+  margin-top: 8px;
+}
+
+.occupancy-bar {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.06);
+  margin-bottom: 5px;
+}
+
+.occupancy-seg {
+  height: 100%;
+  display: block;
+}
+
+.occupancy-seg.weights { background: var(--nvidia-green); }
+.occupancy-seg.engine  { background: #5aa9e6; }
+.occupancy-seg.cache   { background: #9d7bd8; }
+.occupancy-seg.idle    { background: rgba(255, 255, 255, 0.16); }
+
+.occupancy-text {
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.occupancy-text strong { color: var(--text-primary); }
+
+.occupancy-idle { color: #ffb84d; }
+
 .assist-text {
   font-size: 12px;
   line-height: 1.55;
