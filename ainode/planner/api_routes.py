@@ -213,10 +213,21 @@ def _attach_measurement(app, model: str, payload: dict) -> None:
         "tokens_per_second": measurement.get("tokens_per_second"),
         "seconds_per_image": measurement.get("seconds_per_image"),
     }
-    estimated = payload.get("weights_gb") or 0
+    # Per node against per node. This compared a measurement taken on ONE node
+    # against the weights across ALL of them, so a two-node plan that was
+    # right to within a gigabyte reported itself 76 GB out:
+    #
+    #   Measured here: 83.1 GB ... (-76.3 GB vs the plan)
+    #
+    # while the plan had said 83.7 GB per node. A plan that is accurate must
+    # not accuse itself, or the figure stops being read.
+    estimated = (payload.get("weights_per_node_gb")
+                 or payload.get("weights_gb") or 0)
     actual = measurement.get("memory_gb") or 0
     if estimated and actual:
         payload["measured"]["vs_plan_gb"] = round(actual - estimated, 1)
+        payload["measured"]["vs_plan_basis"] = (
+            "per node" if payload.get("weights_per_node_gb") else "total")
 
 
 def _int(request, name, default=0):
@@ -268,6 +279,19 @@ async def handle_plan(request: web.Request) -> web.Response:
         return web.json_response(payload)
 
     kv_dtype = request.query.get("kv_cache_dtype") or ""
+    if not kv_dtype:
+        # What the LAUNCH would use if nobody said otherwise — NodeConfig's
+        # default is fp8, and the launch form says so in words ("Default (fp8
+        # — required for long context on GB10)"). This defaulted to "auto"
+        # instead, which is the model's own dtype, so every plan for a model
+        # with no recipe was computed at twice the real cost per token. On
+        # Qwen3-Coder-Next that is 24.0 KiB against 12.0, and a panel
+        # reporting 165,774 tokens where the launch would hold 331,548.
+        #
+        # The recipe branch below was added for exactly this reason and only
+        # covered curated models. The default is the other half of it.
+        kv_dtype = str(getattr(request.app.get("config"), "kv_cache_dtype",
+                               "") or "")
     if not kv_dtype and recipe is not None:
         # The recipe's own flags are part of the plan: a model whose proven
         # configuration is fp8 should be planned with an fp8-sized cache, or

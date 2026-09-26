@@ -2144,14 +2144,19 @@ const AINode = {
     var sel = this.launchSelection();
     var len = document.getElementById('launch-max-len');
     var seqs = document.getElementById('launch-max-seqs');
+    // The KV dtype belongs in the key too: it halves or doubles the cost per
+    // token, so a plan computed without it describes a different launch.
+    var kv = document.getElementById('launch-kv-dtype');
     return {
       model: model,
       nodes: sel.node_ids,
       strategy: sel.strategy,
       max_model_len: (len && len.value) || '',
       concurrency: (seqs && seqs.value) || '',
+      kv_cache_dtype: (kv && kv.value) || '',
       key: [model, sel.node_ids.join(','), sel.strategy,
-            (len && len.value) || '', (seqs && seqs.value) || ''].join('|'),
+            (len && len.value) || '', (seqs && seqs.value) || '',
+            (kv && kv.value) || ''].join('|'),
     };
   },
 
@@ -2173,6 +2178,7 @@ const AINode = {
     if (want.strategy) params.set('strategy', want.strategy);
     if (want.max_model_len) params.set('max_model_len', want.max_model_len);
     if (want.concurrency) params.set('concurrency', want.concurrency);
+    if (want.kv_cache_dtype) params.set('kv_cache_dtype', want.kv_cache_dtype);
     var data = await this.fetchJSON('/api/planner?' + params.toString());
     if (!data || data.error) { this.state.launchPlan = null; return; }
     data.key = want.key;
