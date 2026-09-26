@@ -167,6 +167,16 @@ card rather than reading "On disk" while every launch of it is refused. A launch
 translated too: `code -9` is SIGKILL, which no process can catch, so the
 engine's own log is a healthy startup right up to the last line.
 
+**A knob the engine ignores is named before the launch, not after** — vLLM
+registers every environment variable it reads, so AINode asks the engine image
+for that registry and checks a recipe's `extra_env` against it. A `VLLM_*`
+name the image does not know produces one warning, once, in the middle of a
+launch log; here it lands on the instance before the weights are touched.
+`GET /api/engine/env?image=&names=` answers the same question directly. Only
+`VLLM_*` names are judged — `NCCL_*`, `HF_*` and `INSTANTTENSOR_*` are read by
+libraries that keep no registry, and calling those unknown would be a false
+alarm on every interesting launch.
+
 **A restart does not lose what is running** — engine containers are separate
 from the orchestrator on purpose, so updating AINode does not take a
 fifteen-hour-old image server down with it. On startup the running ones are
