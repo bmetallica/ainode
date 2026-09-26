@@ -1821,15 +1821,47 @@ class ModelManager:
 
         local_dir = self.models_dir / self._repo_to_dirname(info.hf_repo)
 
-        download_path = snapshot_download(
-            repo_id=info.hf_repo,
-            local_dir=str(local_dir),
-            local_dir_use_symlinks=False,
-            # Cap parallel file connections so a fat model pull can't monopolise
-            # the uplink (ponytail: bounds parallelism, not absolute byte-rate —
-            # upgrade to a tc/trickle shaper if a single stream still saturates).
-            max_workers=_download_max_workers(),
-        )
+        from ainode.models.completeness import (clear_download_mark,
+                                                mark_download_started)
+        from ainode.models.download_retry import (MAX_ATTEMPTS, retry_delay,
+                                                  should_retry)
+
+        # On record before a byte moves, so an interrupted pull cannot be listed
+        # as On disk. See completeness.mark_download_started.
+        mark_download_started(local_dir, info.hf_repo)
+
+        # Retried around the whole snapshot, because snapshot_download has no
+        # per-file hook to hang a retry on. That is cheap: it skips every file
+        # already on disk and resumes the partial one from its .incomplete, so a
+        # second attempt after a dropout continues rather than restarts.
+        download_path = None
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                download_path = snapshot_download(
+                    repo_id=info.hf_repo,
+                    local_dir=str(local_dir),
+                    local_dir_use_symlinks=False,
+                    # Cap parallel file connections so a fat model pull can't
+                    # monopolise the uplink (ponytail: bounds parallelism, not
+                    # absolute byte-rate — upgrade to a tc/trickle shaper if a
+                    # single stream still saturates).
+                    max_workers=_download_max_workers(),
+                )
+                break
+            except BaseException as exc:
+                if attempt >= MAX_ATTEMPTS or not should_retry(exc):
+                    mark_download_started(
+                        local_dir, info.hf_repo, attempts=attempt,
+                        last_error=f"{type(exc).__name__}: {exc}")
+                    raise
+                wait = retry_delay(attempt + 1)
+                logger.warning("%s: %s on attempt %d/%d, resuming in %.0fs",
+                               info.hf_repo, exc, attempt, MAX_ATTEMPTS, wait)
+                mark_download_started(
+                    local_dir, info.hf_repo, attempts=attempt,
+                    last_error=f"{type(exc).__name__}: {exc}")
+                time.sleep(wait)
+        clear_download_mark(local_dir)
 
         # The size on disk just changed under a directory whose own mtime may
         # not have moved.

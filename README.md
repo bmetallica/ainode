@@ -100,6 +100,19 @@ Hub when it can be reached and from the checkpoint's own index when it
 cannot — which is what a node with no route has, and enough to finish a
 partial download.
 
+**Downloads that survive a dropped link** — a transfer is retried per **file**,
+not per repo: the pull fetches through a bounded pool that propagates the first
+error, so one timeout on one shard used to end a 160 GB transfer. Five attempts
+with backoff, and nothing retried that will answer the same way next time (401,
+404, a full disk). Every download is also **on record** — a marker written when
+it starts and removed when it finishes — because the file-based checks can all
+be satisfied by a tree missing most of itself: no shard index yet, so nothing
+to check the shards against, and the tokenizer files that did arrive pass the
+tokenizer check. **Resume download** sits on any card marked Incomplete: it
+compares every local file against the size the Hub reports, deletes what is
+short or staged, and fetches the rest. A short file that huggingface_hub
+considers finished is the one thing a plain resume cannot fix.
+
 **Downloads you can stop and pick up again** — Pause keeps the partial files
 and Resume carries on from them (huggingface_hub reuses its own
 `.incomplete`), while Cancel still deletes them. And a download that was
