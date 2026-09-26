@@ -127,3 +127,37 @@ class TestTheFormAsksAndAnswers:
         source = APP_JS[APP_JS.index("reflectPlanIntoFields"):]
         source = source[:source.index("async fetchPlan")]
         assert "plan.fits === false" in source
+
+
+class TestACheckpointThatStatesNoCeiling:
+    """A repo whose config omits max_position_embeddings.
+
+    The first version of the concurrency-driven branch dropped the fallback the
+    old code carried: wanted_len is then zero, min(0, share) is zero, and a
+    window of zero reads as "nothing fits" — refusing a launch that is fine.
+    Five unrelated tests caught it, which is the argument for having them.
+    """
+
+    def _plan(self, **kw):
+        facts = ModelFacts(repo="org/model", num_layers=60,
+                           attention_layers=60, num_kv_heads=4, head_dim=128,
+                           torch_dtype="bfloat16",
+                           weight_bytes=160_000_000_000,
+                           kv_lora_rank=512, qk_rope_head_dim=64)
+        return plan_for(facts, [
+            NodeBudget(node_id="n1", name="S1", total_gb=128, free_gb=116),
+            NodeBudget(node_id="n2", name="S2", total_gb=128, free_gb=116),
+        ], **kw)
+
+    def test_it_still_fits(self):
+        assert self._plan(kv_cache_dtype="fp8_ds_mla").fits is True
+
+    def test_the_window_comes_from_the_cache(self):
+        plan = self._plan(kv_cache_dtype="fp8_ds_mla")
+        assert plan.max_model_len > 0
+        assert plan.max_model_len <= plan.kv_tokens
+
+    def test_the_concurrency_still_divides_it(self):
+        one = self._plan(kv_cache_dtype="fp8_ds_mla", concurrency=1)
+        many = self._plan(kv_cache_dtype="fp8_ds_mla", concurrency=8)
+        assert many.max_model_len < one.max_model_len

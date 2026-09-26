@@ -53,9 +53,15 @@ class TestOneLineForBoth:
         app = {"cluster_state": _Cluster([_node("n1")]), "memory_guard": _Guard(8192)}
         plain = budgets_with_guard_reserve({"cluster_state": app["cluster_state"]})
         guarded = budgets_with_guard_reserve(app)
-        # 8 GB warning line against the planner's own 4 GB reserve: 4 GB less
-        # to plan into, which is exactly the difference between the two.
-        assert round(plain[0].free_gb - guarded[0].free_gb) == 4
+        # 8 GiB warning line against the planner's own 4 (decimal) GB
+        # reserve. The guard works in GiB off /proc/meminfo and the planner in
+        # decimal GB, so the held-back amount is 8 GiB - 4 GB = 4.59 GB — the
+        # conversion is explicit at that boundary rather than assumed. See
+        # ainode/core/units.py.
+        from ainode.core.units import gb_from_gib
+
+        held = plain[0].free_gb - guarded[0].free_gb
+        assert round(held, 2) == round(gb_from_gib(8) - 4.0, 2)
 
     def test_a_raised_reserve_moves_it_further(self):
         from ainode.planner.api_routes import budgets_with_guard_reserve
@@ -68,8 +74,13 @@ class TestOneLineForBoth:
         from ainode.planner.compute import plan_headroom_gb
 
         app = {"cluster_state": _Cluster([_node("n1")])}
+        from ainode.core.units import gb_from_mib
+
         budget = budgets_with_guard_reserve(app)[0]
-        assert round(budget.free_gb) == round(117.2 - plan_headroom_gb(125.0))
+        # The fixture's node reports MiB, and budgets are decimal GB.
+        free = gb_from_mib(128000 - 8000)
+        total = gb_from_mib(128000)
+        assert round(budget.free_gb) == round(free - plan_headroom_gb(total))
 
     def test_the_headroom_is_not_the_guards_line(self):
         # Two different things: the guard's line is where it starts acting,

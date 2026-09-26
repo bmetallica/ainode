@@ -13,6 +13,7 @@ import logging
 from aiohttp import web
 
 from ainode.planner.compute import NodeBudget, plan_for
+from ainode.core.units import gb_from_gib, gb_from_mib
 from ainode.planner.facts import local_facts
 
 logger = logging.getLogger(__name__)
@@ -54,8 +55,14 @@ def node_budgets(app, node_ids=None) -> list:
         # plans a launch into memory it is already using.
         if live and node_id == own_id:
             total_mb, used_mb = live
-        total_gb = float(getattr(node, "gpu_memory_gb", 0) or 0) or total_mb / 1024
-        free_gb = (total_mb - used_mb) / 1024 if total_mb else total_gb
+        # Decimal GB, the same unit facts.weights_gb is in. This divided MiB
+        # by 1024 and called the result _gb, so every plan subtracted decimal
+        # gigabytes of weights from binary gigabytes of memory — 7.4% in the
+        # direction that makes the model look bigger than the node, all of it
+        # landing on the KV cache. See ainode/core/units.py.
+        total_gb = gb_from_mib(total_mb) if total_mb else \
+            gb_from_gib(getattr(node, "gpu_memory_gb", 0) or 0)
+        free_gb = gb_from_mib(total_mb - used_mb) if total_mb else total_gb
         out.append(NodeBudget(
             node_id=node_id,
             name=str(getattr(node, "node_name", "") or node_id),
@@ -90,7 +97,9 @@ def budgets_with_guard_reserve(app, node_ids=None) -> list:
         warn_gb = float(guard.read().warn_mb) / 1024 if guard is not None else 0.0
     except Exception:
         warn_gb = float(getattr(guard, "warn_mb", 0.0) or 0.0) / 1024
-    extra = max(0.0, warn_gb - SYSTEM_RESERVE_GB)
+    # warn_gb comes from the guard, which works in GiB off /proc/meminfo.
+    # SYSTEM_RESERVE_GB and everything else here is decimal.
+    extra = max(0.0, gb_from_gib(warn_gb) - SYSTEM_RESERVE_GB)
     for budget in budgets:
         # The guard's line, and then room to stand back from it. Planning up
         # to the line puts a launch that went exactly to plan one page-cache
@@ -204,10 +213,21 @@ def _attach_measurement(app, model: str, payload: dict) -> None:
         "tokens_per_second": measurement.get("tokens_per_second"),
         "seconds_per_image": measurement.get("seconds_per_image"),
     }
-    estimated = payload.get("weights_gb") or 0
+    # Per node against per node. This compared a measurement taken on ONE node
+    # against the weights across ALL of them, so a two-node plan that was
+    # right to within a gigabyte reported itself 76 GB out:
+    #
+    #   Measured here: 83.1 GB ... (-76.3 GB vs the plan)
+    #
+    # while the plan had said 83.7 GB per node. A plan that is accurate must
+    # not accuse itself, or the figure stops being read.
+    estimated = (payload.get("weights_per_node_gb")
+                 or payload.get("weights_gb") or 0)
     actual = measurement.get("memory_gb") or 0
     if estimated and actual:
         payload["measured"]["vs_plan_gb"] = round(actual - estimated, 1)
+        payload["measured"]["vs_plan_basis"] = (
+            "per node" if payload.get("weights_per_node_gb") else "total")
 
 
 def _int(request, name, default=0):
@@ -259,6 +279,19 @@ async def handle_plan(request: web.Request) -> web.Response:
         return web.json_response(payload)
 
     kv_dtype = request.query.get("kv_cache_dtype") or ""
+    if not kv_dtype:
+        # What the LAUNCH would use if nobody said otherwise — NodeConfig's
+        # default is fp8, and the launch form says so in words ("Default (fp8
+        # — required for long context on GB10)"). This defaulted to "auto"
+        # instead, which is the model's own dtype, so every plan for a model
+        # with no recipe was computed at twice the real cost per token. On
+        # Qwen3-Coder-Next that is 24.0 KiB against 12.0, and a panel
+        # reporting 165,774 tokens where the launch would hold 331,548.
+        #
+        # The recipe branch below was added for exactly this reason and only
+        # covered curated models. The default is the other half of it.
+        kv_dtype = str(getattr(request.app.get("config"), "kv_cache_dtype",
+                               "") or "")
     if not kv_dtype and recipe is not None:
         # The recipe's own flags are part of the plan: a model whose proven
         # configuration is fp8 should be planned with an fp8-sized cache, or

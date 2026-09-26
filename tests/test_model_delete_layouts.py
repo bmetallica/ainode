@@ -46,7 +46,10 @@ def manager(tmp_path) -> ModelManager:
     return ModelManager(models_dir=models)
 
 
-GIB = 1024 ** 3
+#: Decimal, because _dir_size_gb reports decimal GB — the same unit the Hub
+#: and the planner use. The name stays GB-shaped on purpose.
+GB = 10 ** 9
+GIB = GB          # historical alias; the tests below read either
 
 
 def _place(manager: ModelManager, layout: Path, size: int = GIB) -> Path:

@@ -2,6 +2,7 @@
 
 import re
 from ainode.core.config import NodeConfig
+from ainode.core.units import gb_from_mib
 from ainode.core.gpu import detect_gpu
 
 
@@ -13,7 +14,7 @@ def run_onboarding(config: NodeConfig) -> NodeConfig:
     # Step 1: GPU detection
     gpu = detect_gpu()
     if gpu:
-        mem_gb = gpu.memory_total_mb / 1024
+        mem_gb = gb_from_mib(gpu.memory_total_mb)
         print(f"  Detected: {gpu.name} ({mem_gb:.0f} GB)")
 
         # Suggest a model based on memory

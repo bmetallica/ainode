@@ -4,6 +4,7 @@ import socket
 from aiohttp import web
 
 from ainode.core.config import NodeConfig
+from ainode.core.units import gb_from_mib
 from ainode.core.gpu import detect_gpu
 from ainode.models.registry import ModelManager
 
@@ -32,7 +33,7 @@ async def handle_onboarding_suggestions(request: web.Request) -> web.Response:
     gpu_memory_gb = 0.0
     gpu_info = None
     if gpu:
-        gpu_memory_gb = gpu.memory_total_mb / 1024
+        gpu_memory_gb = gb_from_mib(gpu.memory_total_mb)
         gpu_info = {
             "name": gpu.name,
             "memory_gb": round(gpu_memory_gb, 1),
