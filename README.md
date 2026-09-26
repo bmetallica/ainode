@@ -206,6 +206,16 @@ load persists, so without that reset an image model loaded on one node leaves
 `engine_backend=diffusers` behind and the next multi-node LLM launch picks the
 image engine.
 
+**The Server view shows the launch, not a template** — the Load tab reports
+the instance's own `max_model_len`, KV dtype, memory share, concurrent
+sequences and split, or an em-dash and where to look. It used to render three
+literals typed into the HTML (`4096`, `-1`) under a real model, and the
+Inference tab a temperature no engine holds — sampling is per request. The
+generated **opencode** config derives `tool_call` and `reasoning` from the
+flags the engine is running rather than from the curated catalog alone, so a
+model pulled straight from the Hub no longer arrives at a coding agent with
+tool calling switched off.
+
 **One unit for memory** — model sizes come off the disk and out of the Hub in
 decimal GB, and node budgets used to come through MiB divided by 1024. Both
 were called GB and subtracted from each other, so every plan compared decimal
