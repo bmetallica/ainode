@@ -206,6 +206,14 @@ load persists, so without that reset an image model loaded on one node leaves
 `engine_backend=diffusers` behind and the next multi-node LLM launch picks the
 image engine.
 
+**The tightest node sets the cache, and the plan says which one** — every rank
+gets the same share of its own memory and holds the same number of KV blocks,
+so a cluster's cache is the smallest rank's capacity times the rank count.
+Spare memory on a roomier node is unreachable: raising
+`gpu_memory_utilization` pushes the tight node into the memory guard and leaves
+the cache where it was. The plan now names the tight node, says how much is
+stranded on the others, and says that freeing the tight one is the only lever.
+
 **The Server view shows the launch, not a template** — the Load tab reports
 the instance's own `max_model_len`, KV dtype, memory share, concurrent
 sequences and split, or an em-dash and where to look. It used to render three

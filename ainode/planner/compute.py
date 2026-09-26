@@ -572,6 +572,48 @@ def _blocker(facts: ModelFacts, nodes: Sequence[NodeBudget],
             "form: " + ("; ".join(refusals[-3:]) if refusals else "no valid split"))
 
 
+#: Below this, two nodes are the same size for practical purposes and saying
+#: so would be noise on every plan.
+ASYMMETRY_GB = 4.0
+
+
+def _asymmetry(best: _Candidate) -> List[str]:
+    """Which node sets the cache, and what that strands on the others.
+
+    Asked from the cluster, looking at two nodes running one model at TP=2:
+
+        auf node1 habe ich 91% vram voll und auf node2 72% — dann müsste ich
+        den cache ja noch größer skalieren können
+
+    Reasonable, and no. Every rank is given the same fraction of its OWN total
+    by gpu_memory_utilization, and all ranks must hold the SAME number of KV
+    blocks — there is no per-rank cache size. So the cache is the tightest
+    rank's capacity times the rank count, and whatever the roomier node has
+    beyond that cannot be reached by raising anything. Raising the fraction
+    pushes the tight node into the memory guard and leaves the cache where it
+    was.
+
+    The arithmetic already used min(usable) and never said so, which left the
+    free memory on the other node looking like headroom.
+    """
+    if len(best.nodes) < 2:
+        return []
+    tight = min(best.nodes, key=lambda n: n.usable_gb)
+    roomiest = max(best.nodes, key=lambda n: n.usable_gb)
+    spare = roomiest.usable_gb - tight.usable_gb
+    if spare < ASYMMETRY_GB:
+        return []
+    return [
+        f"{tight.name or tight.node_id} is the tightest node at "
+        f"{tight.usable_gb:.1f} GB usable and sets the cache for all "
+        f"{len(best.nodes)} ranks; {roomiest.name or roomiest.node_id} has "
+        f"{spare:.1f} GB more that cannot be used. Every rank gets the same "
+        f"share of its own memory and holds the same number of KV blocks, so "
+        f"there is no setting that spends one node's spare room — free "
+        f"{tight.name or tight.node_id} instead, and the cache grows on both."
+    ]
+
+
 def _explain(facts: ModelFacts, plan: Plan, best: _Candidate,
              bytes_per_token: int, kv_cache_dtype: str) -> List[str]:
     notes = [
@@ -585,6 +627,7 @@ def _explain(facts: ModelFacts, plan: Plan, best: _Candidate,
         f"{len(best.nodes)} node(s), after keeping {SYSTEM_RESERVE_GB:.0f} GB "
         f"per node for the system",
     ]
+    notes.extend(_asymmetry(best))
     if bytes_per_token:
         named = str(kv_cache_dtype or "").strip().lower()
         dtype = named if named in _KV_DTYPE_BYTES \
