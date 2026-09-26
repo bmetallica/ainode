@@ -1842,9 +1842,14 @@ async def handle_pause_download(request: web.Request) -> web.Response:
 async def handle_resume_download(request: web.Request) -> web.Response:
     """POST /api/models/download-resume {hf_repo} — carry on where it stopped.
 
-    A new job against the same repo. Every file already on disk is skipped by
-    huggingface_hub and the partial one continues from its ``.incomplete``,
-    so this is a resume in every sense except the implementation.
+    Three steps: check what is here against the sizes the Hub reports, remove
+    what disagrees along with the staging files, then start an ordinary pull —
+    which skips every file that IS right and fetches the rest.
+
+    The middle step is the one that matters. A plain resume trusts
+    huggingface_hub's own idea of which files are finished, and a file killed
+    mid-write is short while still being accounted for. The response carries
+    what was checked and what was removed under ``checked``.
     """
     try:
         body = await request.json()
@@ -1865,6 +1870,33 @@ async def handle_resume_download(request: web.Request) -> web.Response:
             status=409)
 
     manager: ModelManager = request.app["model_manager"]
+
+    # Verify, clean, then fetch. huggingface_hub already skips a file it
+    # considers finished, which is the whole trouble: a file killed mid-write is
+    # short and accounted for, so a plain resume walks past it and the engine
+    # finds out later. Sizes come from the Hub, anything that disagrees is
+    # removed, and the pull below treats it as missing. Removing a wrong file
+    # costs one file of bandwidth and buys certainty; keeping it costs a launch.
+    import os
+
+    from ainode.models.resume import prepare_resume
+
+    directory = Path(manager.models_dir) / hf_repo.replace("/", "--")
+    report: dict = {}
+    if directory.is_dir():
+        loop = asyncio.get_event_loop()
+        token = (os.environ.get("HF_TOKEN")
+                 or os.environ.get("HUGGING_FACE_HUB_TOKEN") or None)
+        try:
+            report, freed = await loop.run_in_executor(
+                None, lambda: prepare_resume(directory, hf_repo, token))
+            if report.get("removed"):
+                logger.info("resume %s: removed %d unusable file(s), %.1f GB",
+                            hf_repo, len(report["removed"]), freed / 1e9)
+            _forget_size(manager, directory)
+        except Exception:
+            logger.exception("could not prepare %s for resuming", hf_repo)
+
     job_id = str(uuid.uuid4())
     jobs[job_id] = {"model_id": hf_repo, "status": "downloading", "error": None,
                     "finished_at": None, "resumed": True}
@@ -1872,8 +1904,8 @@ async def handle_resume_download(request: web.Request) -> web.Response:
     asyncio.get_event_loop().create_task(
         _run_download_repo(manager, hf_repo, job_id, jobs, request.app))
     return web.json_response({"job_id": job_id, "hf_repo": hf_repo,
-                              "status": "downloading", "resumed": True},
-                             status=202)
+                              "status": "downloading", "resumed": True,
+                              "checked": report}, status=202)
 
 
 async def handle_cancel_download(request: web.Request) -> web.Response:
@@ -1924,6 +1956,13 @@ async def _run_download_repo(manager: "ModelManager", hf_repo: str, job_id: str,
     loop = asyncio.get_event_loop()
     target = Path(manager.models_dir) / hf_repo.replace("/", "--")
     target.mkdir(parents=True, exist_ok=True)
+    # On record before a byte moves. Every other completeness check reads the
+    # files, and a tree can look finished while missing most of itself — see
+    # completeness.mark_download_started.
+    from ainode.models.completeness import (clear_download_mark,
+                                            mark_download_started)
+
+    mark_download_started(target, hf_repo, job_id=job_id)
 
     # Fetch total size in background (don't block start)
     total_bytes = await loop.run_in_executor(None, _get_repo_total_bytes, hf_repo)
@@ -1994,14 +2033,40 @@ async def _run_download_repo(manager: "ModelManager", hf_repo: str, job_id: str,
             files = [s.rfilename for s in (info.siblings or [])]
 
             def _download_one(rfilename: str) -> None:
-                _check_cancel()  # stop between files — no mid-file hook exists
-                hf_hub_download(
-                    repo_id=hf_repo,
-                    filename=rfilename,
-                    revision=revision,  # pin to the commit resolved above
-                    local_dir=str(target),
-                    token=token,
-                )
+                # Retried per FILE, not per repo. The pool propagates the first
+                # error and cancels everything not yet started, so without this
+                # one timeout on one shard of twenty-four ended the transfer
+                # twenty gigabytes in. hf_hub_download resumes from the
+                # .incomplete it left, so an attempt costs the lost chunk.
+                import time as _time
+
+                from ainode.models.download_retry import (MAX_ATTEMPTS,
+                                                          retry_delay,
+                                                          should_retry)
+
+                for attempt in range(1, MAX_ATTEMPTS + 1):
+                    _check_cancel()  # no mid-file hook exists; between tries
+                    try:
+                        hf_hub_download(
+                            repo_id=hf_repo,
+                            filename=rfilename,
+                            revision=revision,  # the commit resolved above
+                            local_dir=str(target),
+                            token=token,
+                        )
+                        return
+                    except BaseException as exc:
+                        if attempt >= MAX_ATTEMPTS or not should_retry(exc):
+                            raise
+                        wait = retry_delay(attempt + 1)
+                        logger.warning(
+                            "%s: %s on attempt %d/%d, retrying in %.0fs",
+                            rfilename, exc, attempt, MAX_ATTEMPTS, wait)
+                        job = jobs.get(job_id)
+                        if job is not None:
+                            job["retries"] = int(job.get("retries") or 0) + 1
+                            job["last_error"] = f"{type(exc).__name__}: {exc}"
+                        _time.sleep(wait)
 
             _check_cancel()
             max_workers = max(1, min(_download_max_workers(), len(files) or 1))
@@ -2025,6 +2090,7 @@ async def _run_download_repo(manager: "ModelManager", hf_repo: str, job_id: str,
         if total_bytes > 0:
             terminal["downloaded_bytes"] = total_bytes
         discard_partial = False
+        clear_download_mark(target)
     except _DownloadCancelled:
         # Paused, not cancelled, when the caller asked to keep what is there:
         # the difference between the two is entirely what happens to the
@@ -2035,6 +2101,12 @@ async def _run_download_repo(manager: "ModelManager", hf_repo: str, job_id: str,
     except Exception as exc:
         terminal = {"status": "failed", "error": str(exc)}
         discard_partial = False
+        # The mark stays, and says why. A failed pull used to leave a directory
+        # that the Models page listed as On disk with no hint at all.
+        mark_download_started(
+            target, hf_repo, job_id=job_id,
+            attempts=jobs.get(job_id, {}).get("retries"),
+            last_error=f"{type(exc).__name__}: {exc}")
     finally:
         # Stop the poller BEFORE the terminal state is written, not after.
         # ``poll_stop.set()`` only ends the *next* iteration: a poller already
