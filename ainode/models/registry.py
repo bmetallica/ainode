@@ -758,6 +758,66 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         ],
         recommended_gmu=0.87,
     ),
+    "qwen3.8-flash-next-nvfp4": ModelInfo(
+        id="qwen3.8-flash-next-nvfp4",
+        name="Qwen3.8-Flash-Next (NVFP4, vision) — 2 nodes",
+        hf_repo="nvidia/Qwen3.8-Flash-Next-NVFP4",
+        # MEASURED from the Hub's file listing: 132.7 GB. The bf16 original is
+        # 360 GB and does not fit this cluster at all — three nodes hold about
+        # 300 GB usable, and that is before a byte of cache.
+        size_gb=132.7, min_memory_gb=145,
+        description=(
+            "180B MoE with 10 of 512 experts active, hybrid attention (one "
+            "full-attention layer in four), native vision, and 262k context — "
+            "quantised to NVFP4 by NVIDIA, which is the only way it fits here. "
+            "Planned across two nodes at TP=2: 66.4 GB of weights per node and "
+            "the full 262,144 window with room for ten or more concurrent "
+            "requests. Unusually clean for this stack: the config already "
+            "names its quantization method, the architecture is native in "
+            "vLLM, and there is no auto_map, so it needs no --trust-remote-"
+            "code. It THINKS BY DEFAULT and keeps the thinking across turns "
+            "(preserve_thinking), so budget output tokens generously — and a "
+            "client that wants the reasoning separated needs a reasoning "
+            "parser set under Advanced, which this recipe deliberately does "
+            "not guess at. NOT YET SERVED HERE."
+        ),
+        quantization="NVFP4", family="qwen", params_b=180.0,
+        proven_tp=2, verified=False, curated=True,
+        context_length=262144, license="NVIDIA Open Model License",
+        recommended=False, format="nvfp4",
+        capabilities=["vision", "tool_use", "reasoning", "code",
+                      "multilingual"],
+        extra_vllm_args=[
+            # 512 experts. Without this every rank holds every expert and
+            # 132.7 GB needs 132.7 GB per node rather than 66.4.
+            "--enable-expert-parallel",
+            "--max-model-len", "262144",
+            # NOT set here, on purpose, one each:
+            #
+            # --trust-remote-code: the config has no auto_map and
+            #   Qwen4ExpForConditionalGeneration is in vLLM's own registry.
+            #   Asking for it anyway would run repository code for nothing.
+            #
+            # --kv-cache-dtype: this checkpoint has a vision_config, and fp8 KV
+            #   corrupts vision generation on GB10. serve_args downgrades the
+            #   fp8 default to auto for a multimodal model, and an explicit
+            #   value here would override that safety rule. bf16 KV costs 24.0
+            #   KiB per token against 12.0 — which this model can afford, and
+            #   a wrong picture cannot be afforded at all.
+            #
+            # --reasoning-parser: it thinks by default and a client will want
+            #   the blocks separated, but vLLM's argparse rejects a name it
+            #   does not know and kills the launch at second three. A recipe
+            #   that has never run here must not guess one. Probe the image
+            #   (vllm serve --help) and set it under Advanced.
+        ],
+        # The planner would pick 0.95, which reserves 121.6 GB of 128 per node
+        # for a launch that uses 79 at two sessions — 42 GB held and idle, and
+        # the guard's line that much closer. At 0.85 the cache still backs more
+        # than ten requests at the full window and 19 GB stays on the node.
+        # The launch panel's occupancy bar shows the difference.
+        recommended_gmu=0.85,
+    ),
     "smaug-flash": ModelInfo(
         id="smaug-flash",
         name="Smaug-Flash — agentic coding (2 nodes)",
