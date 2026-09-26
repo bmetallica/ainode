@@ -259,6 +259,14 @@ The gap between the two is real memory held and not used, and it is named with
 the lever that closes it — raising the fraction does not make the model bigger,
 it makes the pool bigger.
 
+**The UI that just shipped is the UI you get** — `app.js`, `topology.js` and
+the stylesheet are served with a version taken from the file's own modification
+time, and `/static/` answers `Cache-Control: no-cache` so the browser
+revalidates instead of guessing. Without that a node came back running a new
+API behind the previous UI: every server-side figure looked new and the
+client-side behaviour was the old one, which is the failure that sends you
+looking at the wrong code.
+
 **Knowing what happened** — per-phase load timings, an **error assistant**
 that explains a failure using a model already running, per-instance containers
 and logs, and a **measurement store** that records what each launch actually
