@@ -250,6 +250,15 @@ decimal now (`ainode/core/units.py`); the memory guard keeps its own GiB
 arithmetic and the conversion at that boundary is explicit. `free -g` prints
 GiB and will read about 7% below these figures.
 
+**What it will occupy, before it occupies it** — the launch sidebar forecasts
+per node, live, as the fields change: a bar and a line saying what the engine
+will **take** (`gpu_memory_utilization` × the node's *total*, which vLLM fills
+with cache blocks whether the configured context needs them or not) beside what
+the launch will **use** (weights + engine + cache for context × concurrency).
+The gap between the two is real memory held and not used, and it is named with
+the lever that closes it — raising the fraction does not make the model bigger,
+it makes the pool bigger.
+
 **Knowing what happened** — per-phase load timings, an **error assistant**
 that explains a failure using a model already running, per-instance containers
 and logs, and a **measurement store** that records what each launch actually
