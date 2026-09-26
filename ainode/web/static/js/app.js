@@ -1737,6 +1737,25 @@ const AINode = {
       });
     }
 
+    // The advanced fields had no listener at all, so the plan above them never
+    // moved when they changed: typing a context length left the hint
+    // describing a launch nobody had asked for. Each field now re-plans, and
+    // records itself as the one the operator drove — see launchPlanKey, which
+    // omits the OTHER constraint so the planner derives it rather than
+    // repeating what is already in the box.
+    [['launch-max-len', 'len'], ['launch-max-seqs', 'seqs'],
+     ['launch-kv-dtype', 'kv'], ['launch-gmu', 'gmu']].forEach(
+      function (pair) {
+        var field = document.getElementById(pair[0]);
+        if (!field) return;
+        var event = field.tagName === 'SELECT' ? 'change' : 'input';
+        field.addEventListener(event, function () {
+          if (self._applyingPlan) return;   // our own write-back, not an edit
+          self.state.launchLastEdited = pair[1];
+          self.schedulePlan();
+        });
+      });
+
     var pinBox = document.getElementById('launch-pin');
     if (pinBox) {
       pinBox.addEventListener('change', function () {
@@ -2169,6 +2188,32 @@ const AINode = {
                                  delay === undefined ? 350 : delay);
   },
 
+  // Put the derived half of the pair back in its box, so the two fields read
+  // as what they are: one number the operator chose and one the cache allows.
+  // Guarded by _applyingPlan, or the write would count as an edit and the two
+  // fields would chase each other.
+  reflectPlanIntoFields(plan) {
+    if (!plan || plan.fits === false) return;
+    var drove = this.state.launchLastEdited;
+    if (!drove) return;                      // nothing driven yet: leave be
+    var len = document.getElementById('launch-max-len');
+    var seqs = document.getElementById('launch-max-seqs');
+    this._applyingPlan = true;
+    try {
+      if (drove !== 'len' && len && plan.max_model_len) {
+        len.value = plan.max_model_len;
+      }
+      if (drove !== 'seqs' && seqs && plan.max_num_seqs) {
+        seqs.value = plan.max_num_seqs;
+      }
+      // The memory fraction is an input to both, never derived from them —
+      // writing it back would fight the operator for the one field that is
+      // purely theirs.
+    } finally {
+      this._applyingPlan = false;
+    }
+  },
+
   async fetchPlan() {
     var want = this.launchPlanKey();
     if (!want.model) { this.state.launchPlan = null; return; }
@@ -2176,13 +2221,25 @@ const AINode = {
     var params = new URLSearchParams({ model: want.model });
     if (want.nodes.length) params.set('nodes', want.nodes.join(','));
     if (want.strategy) params.set('strategy', want.strategy);
-    if (want.max_model_len) params.set('max_model_len', want.max_model_len);
-    if (want.concurrency) params.set('concurrency', want.concurrency);
+    // Context and concurrency multiply into one cache. Sending BOTH pins both
+    // and the planner has nothing left to say, so the fields could never move
+    // in relation to each other. Whichever the operator last touched is the
+    // constraint; the other is the answer.
+    var drove = this.state.launchLastEdited;
+    if (want.max_model_len && drove !== 'seqs') {
+      params.set('max_model_len', want.max_model_len);
+    }
+    if (want.concurrency && drove !== 'len') {
+      params.set('concurrency', want.concurrency);
+    }
+    // The dtype is neither: it halves or doubles the cost per token, so it is
+    // always sent and never derived.
     if (want.kv_cache_dtype) params.set('kv_cache_dtype', want.kv_cache_dtype);
     var data = await this.fetchJSON('/api/planner?' + params.toString());
     if (!data || data.error) { this.state.launchPlan = null; return; }
     data.key = want.key;
     this.state.launchPlan = data;
+    this.reflectPlanIntoFields(data);
     if (this._launchHintUpdater) this._launchHintUpdater();
   },
 

@@ -535,9 +535,23 @@ def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,
                 f"more cache than these nodes have free. Planned at "
                 f"{plan.max_model_len:,} instead; free memory on a node, or "
                 f"halve the cost per token with --kv-cache-dtype fp8.")
-        else:
+        elif max_model_len:
             plan.max_model_len = (min(wanted_len, _round_len(headroom))
                                   or _round_len(headroom))
+        else:
+            # Nobody named a window, so the concurrency that WAS named decides
+            # it: the question "I want N sessions, how long can each be" had no
+            # answer here. The plan reported the model's own ceiling and then a
+            # concurrency figure derived from that ceiling, which is a different
+            # question and the wrong one for a launch form where the two fields
+            # sit next to each other.
+            share = _round_len(headroom / max(1, concurrency))
+            # ``or share`` keeps the old fallback: a checkpoint that states no
+            # max_position_embeddings leaves wanted_len at zero, and min(0, …)
+            # is zero, which reads as "no window fits" and refuses a launch
+            # that is fine.
+            plan.max_model_len = min(wanted_len or share, share) \
+                or _round_len(headroom)
         if plan.max_model_len:
             plan.concurrent_requests = max(1, headroom // plan.max_model_len)
             plan.max_num_seqs = plan.concurrent_requests

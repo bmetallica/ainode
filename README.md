@@ -206,6 +206,13 @@ load persists, so without that reset an image model loaded on one node leaves
 `engine_backend=diffusers` behind and the next multi-node LLM launch picks the
 image engine.
 
+**The launch form's fields move together** — context length and concurrency
+multiply into one KV cache, so naming one is naming the other. Whichever you
+last touched is the constraint and the other is filled in from the plan, live.
+Before this the advanced fields had no listener at all: typing a context length
+changed nothing above them, and the planner could only answer "how many requests
+fit at maximum length" rather than "I want N sessions, how long can each be".
+
 **The plan describes the launch it will get** — the planner is asked with the
 KV-cache dtype the launch would actually use (the node default is fp8, and the
 form says so), not with the model's own dtype, which doubled the cost per token
