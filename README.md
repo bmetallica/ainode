@@ -183,6 +183,17 @@ load persists, so without that reset an image model loaded on one node leaves
 `engine_backend=diffusers` behind and the next multi-node LLM launch picks the
 image engine.
 
+**One unit for memory** — model sizes come off the disk and out of the Hub in
+decimal GB, and node budgets used to come through MiB divided by 1024. Both
+were called GB and subtracted from each other, so every plan compared decimal
+weights against binary memory: 7.4%, always making the model look bigger than
+the node, and all of it landing on the KV cache because the cache is the
+remainder. On a 159 GB model across two nodes that was 5.7 GiB per node of
+cache spent on a rounding convention. Everything the planner compares is
+decimal now (`ainode/core/units.py`); the memory guard keeps its own GiB
+arithmetic and the conversion at that boundary is explicit. `free -g` prints
+GiB and will read about 7% below these figures.
+
 **Knowing what happened** — per-phase load timings, an **error assistant**
 that explains a failure using a model already running, per-instance containers
 and logs, and a **measurement store** that records what each launch actually

@@ -15,6 +15,7 @@ from rich.text import Text
 
 from ainode import __version__
 from ainode.core.config import NodeConfig, ensure_dirs, AINODE_HOME, LOGS_DIR
+from ainode.core.units import gb_from_mib
 
 console = Console()
 
@@ -91,7 +92,7 @@ def _gpu_info_table(gpu):
     table.add_column("key", style="bold cyan", no_wrap=True)
     table.add_column("value")
 
-    mem_gb = gpu.memory_total_mb / 1024
+    mem_gb = gb_from_mib(gpu.memory_total_mb)
     um = " (unified memory)" if gpu.unified_memory else ""
     table.add_row("GPU", f"{gpu.name} | {mem_gb:.0f} GB{um}")
     table.add_row("CUDA", f"{gpu.cuda_version} | Driver {gpu.driver_version}")
@@ -373,7 +374,7 @@ def cmd_status(args):
     table.add_row("Email", config.email or "[dim]not set[/dim]")
 
     if gpu:
-        mem_gb = gpu.memory_total_mb / 1024
+        mem_gb = gb_from_mib(gpu.memory_total_mb)
         um = " (unified)" if gpu.unified_memory else ""
         table.add_row("GPU", f"{gpu.name} | {mem_gb:.0f} GB{um}")
         table.add_row("CUDA", f"{gpu.cuda_version} | Driver {gpu.driver_version}")
@@ -414,7 +415,7 @@ def cmd_models(args):
     console.print(_banner())
 
     gpu = detect_gpu()
-    gpu_mem_gb = (gpu.memory_total_mb / 1024) if gpu else 0
+    gpu_mem_gb = gb_from_mib(gpu.memory_total_mb) if gpu else 0
 
     models = [
         ("llama-3.2-3b", "Llama 3.2 3B Instruct", "~6 GB", "Quick start"),
