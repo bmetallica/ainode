@@ -234,3 +234,45 @@ class TestWhyThreeNodeTensorParallelismIsRefused:
         # If this ever fails, a model that could use all three nodes has
         # arrived and TENSOR_SIZES is the one line to revisit.
         assert heads % 3 != 0
+
+class TestTheMlaKernelCaveats:
+    """Two DGX Spark recipes say the same thing about caching an MLA model in
+    anything but fp8_ds_mla, and they say it from different directions.
+
+    MiaAI-Lab's GLM-5.3-Flash notes: "NVFP4 KV is not available here —
+    FlashInfer's SM12x NVFP4 kernels are dense MHA, not sparse MLA", with
+    `--kv-cache-dtype nvfp4` and bf16 on the do-not list. Their DeepSeek-V4
+    notes (docs/PATCHES.md issue #22): nvfp4_ds_mla is the same 584-byte
+    layout as fp8_ds_mla and, unpatched, dispatches to the slow kernel.
+
+    So the planner says so at plan time, where a choice is still being made.
+    """
+
+    NODES = [NodeBudget(node_id="n1", name="S1", total_gb=128, free_gb=116),
+             NodeBudget(node_id="n2", name="S2", total_gb=128, free_gb=116)]
+
+    def _mla(self):
+        return _facts(kv_lora_rank=512, qk_rope_head_dim=64,
+                      weight_bytes=160_000_000_000)
+
+    @pytest.mark.parametrize("dtype", ["nvfp4", "nvfp4_4over6", "bfloat16",
+                                       "float16"])
+    def test_a_dtype_with_no_sparse_mla_kernel_is_flagged(self, dtype):
+        plan = plan_for(self._mla(), self.NODES, kv_cache_dtype=dtype)
+        assert any("no sparse-MLA kernel" in w for w in plan.warnings)
+
+    def test_the_four_bit_mla_layout_is_flagged_for_speed_not_size(self):
+        plan = plan_for(self._mla(), self.NODES, kv_cache_dtype="nvfp4_ds_mla")
+        joined = " ".join(plan.warnings)
+        assert "saves no cache" in joined
+        assert "fp8_ds_mla" in joined
+
+    def test_the_right_choice_is_not_nagged_about(self):
+        plan = plan_for(self._mla(), self.NODES, kv_cache_dtype="fp8_ds_mla")
+        assert not any("sparse-MLA" in w or "saves no cache" in w
+                       for w in plan.warnings)
+
+    def test_a_grouped_query_model_is_not_told_about_mla(self):
+        plan = plan_for(_facts(weight_bytes=160_000_000_000), self.NODES,
+                        kv_cache_dtype="nvfp4")
+        assert not any("sparse-MLA" in w for w in plan.warnings)

@@ -1428,12 +1428,32 @@ class EugrBackend(EngineBackend):
         env_line = (", ".join(f"{k}={v}" for k, v in sorted(recipe_env.items()))
                     if recipe_env else "(none)")
         logger.info("recipe environment: %s", env_line)
+        # And whether this image will read it. vLLM answers "Unknown vLLM
+        # environment variable detected: X" once, mid-launch, between a Triton
+        # notice and a NCCL banner — which is where it stays.
+        ignored = ""
+        if recipe_env:
+            try:
+                from ainode.engine.engine_env import env_warning
+
+                ignored = env_warning(recipe_env, self._engine_image_for_env())
+            except Exception:
+                logger.debug("could not check the recipe environment",
+                             exc_info=True)
+        if ignored:
+            logger.warning("recipe environment: %s", ignored)
+            try:
+                self.load_detail = ignored
+            except Exception:
+                logger.debug("could not attach the env warning", exc_info=True)
         if log_file is None:
             return
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         banner = (f"\n[ainode] ===== launch {self.config.model or '<no model>'} "
                   f"at {stamp} =====\n[ainode] serve command: {rendered}\n"
-                  f"[ainode] recipe environment: {env_line}\n")
+                  f"[ainode] recipe environment: {env_line}\n"
+                  + (f"[ainode] ignored by this image: {ignored}\n"
+                     if ignored else ""))
         try:
             log_file.parent.mkdir(parents=True, exist_ok=True)
             with open(log_file, "a") as sink:
@@ -1441,6 +1461,15 @@ class EugrBackend(EngineBackend):
         except OSError:
             logger.debug("could not write the launch banner to %s", log_file,
                          exc_info=True)
+
+    def _engine_image_for_env(self) -> str:
+        """The image the env registry should be read from.
+
+        This backend serves on the launcher's own ``vllm-node`` whatever a
+        catalog names (see _launcher_image_args), so the question is about
+        that image and not about config.engine_image.
+        """
+        return (getattr(self, "LAUNCHER_IMAGE", "") or "vllm-node:latest")
 
     def _write_launch_script(self, plan: ParallelPlan, solo: bool = False) -> Path:
         """Emit a ``vllm serve`` script for eugr to execute inside the container.

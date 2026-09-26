@@ -555,7 +555,8 @@ def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,
                                   kv_cache_dtype)
             return plan
     plan.notes = _explain(facts, plan, best, bytes_per_token, kv_cache_dtype)
-    plan.warnings.extend(_caveats(facts, len(best.nodes)))
+    plan.warnings.extend(_caveats(facts, len(best.nodes),
+                                  kv_cache_dtype))
     return plan
 
 
@@ -611,8 +612,36 @@ def _explain(facts: ModelFacts, plan: Plan, best: _Candidate,
     return notes
 
 
-def _caveats(facts: ModelFacts, nodes: int = 1) -> List[str]:
+#: KV dtypes with no sparse-MLA kernel. An MLA model asked to cache in one of
+#: these does not run slower — it has nowhere to run. Reported by two
+#: independent DGX Spark recipes: MiaAI-Lab's GLM-5.3-Flash notes say
+#: "NVFP4 KV is not available here — FlashInfer's SM12x NVFP4 kernels are
+#: dense MHA, not sparse MLA", and list `--kv-cache-dtype nvfp4` and bf16 among
+#: the things not to do to that model.
+_NO_MLA_KERNEL = ("nvfp4", "nvfp4_4over6", "float16", "bfloat16",
+                  "int4_per_token_head", "int8_per_token_head",
+                  "fp8_per_token_head")
+
+
+def _caveats(facts: ModelFacts, nodes: int = 1,
+             kv_cache_dtype: str = "auto") -> List[str]:
     out = []
+    if facts.kv_lora_rank:
+        named = str(kv_cache_dtype or "").strip().lower()
+        if named in _NO_MLA_KERNEL:
+            out.append(
+                f"This model caches a compressed latent (MLA), and "
+                f"--kv-cache-dtype {named} has no sparse-MLA kernel on this "
+                f"hardware — the NVFP4 kernels are dense multi-head "
+                f"attention. Use fp8_ds_mla.")
+        elif named == "nvfp4_ds_mla":
+            out.append(
+                "nvfp4_ds_mla is the same 584-byte layout as fp8_ds_mla on "
+                "this architecture, so it saves no cache — and on unpatched "
+                "vLLM it dispatches to the bf16 kernel path, where "
+                "long-context decode has been measured at about a tenth of "
+                "the throughput (~1 tok/s against ~17 at 600k). fp8_ds_mla "
+                "is the same size and the fast path.")
     if facts.is_moe and nodes > 1:
         # The arithmetic above divides the weights by the rank count, which is
         # only true when the experts are actually sharded. They are not, by

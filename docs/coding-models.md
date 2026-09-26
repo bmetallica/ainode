@@ -88,6 +88,15 @@ base. MIT licensed.
 
 *Verdict:* fits with margin; arch already proven on this cluster.
 
+**In the catalog** as `smaug-flash`, with the recipe measured here for its
+base and `verified=False` until it has actually served. Two notes carried on
+that entry, both read out of MiaAI-Lab's published two-Spark recipe for this
+architecture (MIT): `fp8_ds_mla` — the packed sparse-MLA layout — is very
+likely the better KV choice and is *not* the default, because it has not been
+measured on this cluster; and `nvfp4_ds_mla` is not worth trying at all, being
+the same 584-byte layout at about a tenth of the long-context throughput on
+unpatched vLLM.
+
 ### 2. `Qwen/Qwen3-Coder-Next-FP8` — 80.4 GB, 40.2 GB/node
 
 80B total, ~3B active, `Qwen3NextForCausalLM` — hybrid attention, one full
