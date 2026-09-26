@@ -97,6 +97,34 @@ measured on this cluster; and `nvfp4_ds_mla` is not worth trying at all, being
 the same 584-byte layout at about a tenth of the long-context throughput on
 unpatched vLLM.
 
+### 1b. `nvidia/Qwen3.8-Flash-Next-NVFP4` — 132.7 GB, 66.4 GB/node
+
+Added after this list was written, because it is the strongest thing on it that
+needed no persuasion. 180B total with 10 of 512 experts active, hybrid attention
+(one full-attention layer in four), native vision, 262k context — NVFP4 by
+NVIDIA, which is the only way it fits: the bf16 original is **360 GB** against
+about 300 GB usable across three nodes.
+
+KV at bf16: 2 × 12 × 2 × 256 × 2 = **24.0 kB/token**. Twice what fp8 would cost,
+and not negotiable — the checkpoint has a `vision_config`, and fp8 KV corrupts
+vision generation on GB10, so the engine downgrades it. It can afford that:
+~4.0M tokens of cache at TP=2, against the 524k two full-window sessions need.
+
+Unusually clean for this stack. The config already names its quantization
+method, `Qwen4ExpForConditionalGeneration` is in vLLM's own registry, and there
+is no `auto_map` — so no `--trust-remote-code`. Every trap this document has
+collected, it avoids.
+
+Two things to know. It **thinks by default** and keeps the thinking across turns
+(`preserve_thinking`), so budget output tokens generously. And it is the first
+checkpoint here whose **24 attention heads divide by three** — TP=3 across all
+three nodes is refused by this fork's own `TENSOR_SIZES` rather than by the
+model, which makes it the first real test of whether that tuple is too strict.
+
+*Verdict:* in the catalog as `qwen3.8-flash-next-nvfp4`, `verified=False`. Put
+it on the two nodes that are **not** the head: the head's base load costs about
+29 GB of cache and five sessions.
+
 ### 2. `Qwen/Qwen3-Coder-Next-FP8` — 80.4 GB, 40.2 GB/node
 
 80B total, ~3B active, `Qwen3NextForCausalLM` — hybrid attention, one full
