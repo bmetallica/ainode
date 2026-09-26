@@ -17,6 +17,7 @@ from typing import Optional
 from aiohttp import web
 
 from ainode.api.params import str_field, str_list_field
+from ainode.core.units import gb_from_mib
 from ainode.core.gpu import detect_gpu
 from ainode.models.registry import ModelManager
 
@@ -2204,7 +2205,7 @@ async def handle_recommended(request: web.Request) -> web.Response:
             status=200,
         )
 
-    gpu_memory_gb = gpu.memory_total_mb / 1024
+    gpu_memory_gb = gb_from_mib(gpu.memory_total_mb)
     manager: ModelManager = request.app["model_manager"]
     loop = asyncio.get_event_loop()
     models = await loop.run_in_executor(None, manager.recommend_for_gpu, gpu_memory_gb)

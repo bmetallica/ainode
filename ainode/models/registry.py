@@ -738,9 +738,90 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # At 131072 the same nodes hold 1,226,910 tokens. Raising this
             # costs cache twice over: more per sequence, less in total.
             "--max-model-len", "131072",
+            # Measured here. The published two-Spark recipe for this
+            # architecture (MiaAI-Lab, MIT) runs 6, and names why it matters:
+            # a DSpark proposer handed requests that arrived at different
+            # times raises "DSpark currently requires uniform flattened
+            # per-request inputs". That needs staggered arrivals above 1 to
+            # appear, so it survives every smoke test and shows up the first
+            # time two people use the model. If parallel sessions start
+            # returning 500s, drop the speculative config or come down to 1.
+            # load_phase names the error.
             "--max-num-seqs", "8",
             # The drafter that ships inside this checkpoint. NVIDIA's card
             # gives these values; accepted by the engine here.
+            "--speculative-config",
+            '{"method":"dspark","num_speculative_tokens":7,'
+            '"draft_sample_method":"greedy"}',
+            "--enable-auto-tool-choice",
+            "--tool-call-parser", "deepseek_v4",
+        ],
+        recommended_gmu=0.87,
+    ),
+    "smaug-flash": ModelInfo(
+        id="smaug-flash",
+        name="Smaug-Flash — agentic coding (2 nodes)",
+        hf_repo="abacusai/Smaug-Flash",
+        # MEASURED from the Hub's file listing: 166.9 GB, the same as its base.
+        # The card says "the weights load exactly like the official release:
+        # same layout, same quantization formats, same context length", and
+        # the config.json is byte-for-byte the shape of
+        # DeepSeek-V4-Flash-0731 — 43 layers, MLA, 256 routed experts with
+        # 6 + 1 shared active, block-FP8 attention over packed-FP4 experts.
+        size_gb=166.9, min_memory_gb=175,
+        description=(
+            "An agentic-coding finetune of DeepSeek-V4-Flash-0731 by "
+            "Abacus.AI, in the same layout and the same quantization as the "
+            "base — so it plans, loads and serves exactly like the "
+            "DSpark entry beside it, including the speculative module. The "
+            "card reports +14.3 LiveBench agentic-coding, +10.1 Terminal "
+            "Bench 2.1 and +19 NL2Repo-Bench over the base, with general "
+            "capability up rather than traded away. MIT. NOT YET SERVED "
+            "HERE: the flags below are the ones measured on this cluster for "
+            "its base, which is the strongest evidence available and still "
+            "not a measurement of this checkpoint. It reasons before "
+            "answering — budget output tokens accordingly."
+        ),
+        quantization=None, family="deepseek", params_b=304.0,
+        # Not launched on this cluster. The base is; that is not the same
+        # claim, and the badge must not say it is.
+        proven_tp=2, verified=False, curated=True,
+        context_length=1048576, license="MIT", recommended=False,
+        format="safetensors",
+        capabilities=["tool_use", "reasoning", "code"],
+        extra_vllm_args=[
+            "--trust-remote-code",
+            "--enable-expert-parallel",
+            # fp8, not fp8_ds_mla. The published two-Spark recipe for this
+            # architecture (MiaAI-Lab, MIT) serves with fp8_ds_mla — the
+            # packed sparse-MLA layout, 584 bytes per token per layer — and
+            # that is very likely the better choice here too. It is not the
+            # default because the value beside it is what THIS cluster has
+            # measured, on the base checkpoint, and swapping a measured flag
+            # for a read one is how a recipe stops meaning anything. Try it
+            # under Advanced; if it holds, this line changes with a number
+            # behind it.
+            #
+            # What is NOT worth trying: nvfp4_ds_mla. Same 584-byte layout,
+            # so it saves nothing, and on unpatched vLLM it dispatches to the
+            # bf16 kernel where long-context decode drops to about a tenth.
+            # The planner warns about both.
+            "--kv-cache-dtype", "fp8",
+            "--max-model-len", "131072",
+            # 8 here, against the 6 that recipe uses. Also left at the
+            # measured value — but see the drafter note below before raising
+            # it.
+            "--max-num-seqs", "8",
+            # The drafter inside the checkpoint, inherited intact from the
+            # base ("DSpark multi-token module (inherited, fully functional)").
+            #
+            # Known failure under real load, from the same MIT recipe: a
+            # DSpark proposer handed requests that arrived at different times
+            # raises "DSpark currently requires uniform flattened per-request
+            # inputs". It cannot happen with one request in flight, so it
+            # survives every smoke test. If two parallel sessions start
+            # returning 500s, that is this — drop this flag or go to
+            # --max-num-seqs 1. load_phase names it.
             "--speculative-config",
             '{"method":"dspark","num_speculative_tokens":7,'
             '"draft_sample_method":"greedy"}',
@@ -986,6 +1067,9 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "--enable-prefix-caching",
             "--enable-chunked-prefill",
             "--dtype", "bfloat16",
+            # fp8, and not any nvfp4 variant: the SM12x NVFP4 kernels are
+            # dense multi-head attention, not sparse MLA, so a latent-cache
+            # model has nothing to run on. Same source as the b12x note below.
             "--kv-cache-dtype", "fp8",
             "--quantization", "modelopt_mixed",
             "--attention-backend", "B12X",
@@ -998,6 +1082,16 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # So the block size and the attention backend cannot be varied
             # independently while diagnosing this model.
             "--block-size", "256",
+            # b12x, and pinned on purpose — this is the one model here whose
+            # image provides the kernel its weights were built for. Two things
+            # NOT to do to a GLM-5.3-Flash, from MiaAI-Lab's published recipe
+            # for the EXL3 build of the same model (AGPL — read, not copied):
+            # do not pin --moe-backend marlin, and if a speculative config is
+            # ever added here, do not pin "attention_backend": "TRITON_ATTN"
+            # inside it. That mask is causal within the draft block on this
+            # generation of image and collapses acceptance at later positions
+            # — a quality failure with no error line, which is the kind that
+            # costs a week.
             "--moe-backend", "b12x",
             "--linear-backend", "b12x",
             "--no-enable-flashinfer-autotune",
