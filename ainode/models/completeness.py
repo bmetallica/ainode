@@ -45,12 +45,15 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["download_state", "is_complete", "clear_partials", "INDEX_FILES"]
+__all__ = ["download_state", "is_complete", "clear_partials",
+           "mark_download_started", "clear_download_mark",
+           "DOWNLOAD_MARK", "INDEX_FILES"]
 
 #: Index files that enumerate the shards a checkpoint is made of.
 INDEX_FILES = (
@@ -76,6 +79,76 @@ def _snapshot(directory: Path) -> Optional[Path]:
         for sub in sorted(s for s in snapshots.iterdir() if s.is_dir()):
             return sub
     return directory if directory.is_dir() else None
+
+
+#: Written when a download starts, removed when it finishes. The only signal
+#: here that is a statement rather than an inference.
+DOWNLOAD_MARK = ".ainode-download-incomplete"
+
+
+def mark_download_started(directory, repo: str = "", **extra) -> None:
+    """Record that a download of ``repo`` into ``directory`` has begun.
+
+    Every other check in this module infers completeness from what the
+    directory looks like, and a directory can look finished while being half
+    of one. Measured on the cluster: a pull over an unstable link died on the
+    fourth of twenty-four shards, and the listing showed the model as On disk
+    with no hint — because the shard index had not been fetched yet (so there
+    was nothing to check the shards against), the tokenizer files that HAD
+    arrived satisfied the tokenizer check, and the in-flight files finished
+    renaming themselves before anybody looked. Three heuristics, all agreeing
+    on the wrong answer.
+
+    This is not a heuristic. Something wrote down that it was starting and did
+    not write down that it finished.
+    """
+    directory = Path(directory)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        payload = {"repo": repo, "started_at": time.time()}
+        payload.update({k: v for k, v in extra.items() if v is not None})
+        (directory / DOWNLOAD_MARK).write_text(json.dumps(payload, indent=2))
+    except OSError:
+        logger.debug("could not mark %s as downloading", directory,
+                     exc_info=True)
+
+
+def clear_download_mark(directory) -> bool:
+    """Remove the mark. True when one was there."""
+    path = Path(directory) / DOWNLOAD_MARK
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.debug("could not clear the download mark in %s", directory,
+                     exc_info=True)
+        return False
+
+
+def _download_mark(directory: Path) -> str:
+    """"" unless a download into ``directory`` is on record as unfinished."""
+    path = directory / DOWNLOAD_MARK
+    if not path.is_file():
+        return ""
+    detail = ""
+    try:
+        blob = json.loads(path.read_text())
+        error = str(blob.get("last_error") or "")
+        attempts = blob.get("attempts")
+        if error:
+            detail = f" The last attempt stopped with: {error}"
+        elif attempts:
+            detail = f" {attempts} attempt(s) were made."
+    except (OSError, ValueError):
+        pass
+    return (
+        "a download of this model started and did not finish — that is on "
+        "record, not inferred from the files." + detail + " Resume it, or "
+        "delete the model and fetch it again. If you completed it by hand, "
+        "importing it clears this."
+    )
 
 
 def _partial_paths(directory: Path) -> List[Path]:
@@ -123,6 +196,8 @@ def clear_partials(directory) -> Tuple[int, int]:
         return 0, 0
     files = 0
     total = 0
+    if clear_download_mark(directory):
+        files += 1
     for path in _partial_paths(directory):
         try:
             size = path.stat().st_size
@@ -209,6 +284,13 @@ def download_state(directory) -> Tuple[bool, str]:
     directory = Path(directory)
     if not directory.is_dir():
         return True, ""
+
+    # Before any inference: did something say it was downloading and never say
+    # it had finished. The checks below read the files and can all three be
+    # satisfied by a tree that is missing most of itself.
+    marked = _download_mark(directory)
+    if marked:
+        return False, marked
 
     snapshot = _snapshot(directory)
     if snapshot is not None:

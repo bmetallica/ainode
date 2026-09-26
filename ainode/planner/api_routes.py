@@ -13,6 +13,7 @@ import logging
 from aiohttp import web
 
 from ainode.planner.compute import NodeBudget, plan_for
+from ainode.core.units import gb_from_gib, gb_from_mib
 from ainode.planner.facts import local_facts
 
 logger = logging.getLogger(__name__)
@@ -54,8 +55,14 @@ def node_budgets(app, node_ids=None) -> list:
         # plans a launch into memory it is already using.
         if live and node_id == own_id:
             total_mb, used_mb = live
-        total_gb = float(getattr(node, "gpu_memory_gb", 0) or 0) or total_mb / 1024
-        free_gb = (total_mb - used_mb) / 1024 if total_mb else total_gb
+        # Decimal GB, the same unit facts.weights_gb is in. This divided MiB
+        # by 1024 and called the result _gb, so every plan subtracted decimal
+        # gigabytes of weights from binary gigabytes of memory — 7.4% in the
+        # direction that makes the model look bigger than the node, all of it
+        # landing on the KV cache. See ainode/core/units.py.
+        total_gb = gb_from_mib(total_mb) if total_mb else \
+            gb_from_gib(getattr(node, "gpu_memory_gb", 0) or 0)
+        free_gb = gb_from_mib(total_mb - used_mb) if total_mb else total_gb
         out.append(NodeBudget(
             node_id=node_id,
             name=str(getattr(node, "node_name", "") or node_id),
@@ -90,7 +97,9 @@ def budgets_with_guard_reserve(app, node_ids=None) -> list:
         warn_gb = float(guard.read().warn_mb) / 1024 if guard is not None else 0.0
     except Exception:
         warn_gb = float(getattr(guard, "warn_mb", 0.0) or 0.0) / 1024
-    extra = max(0.0, warn_gb - SYSTEM_RESERVE_GB)
+    # warn_gb comes from the guard, which works in GiB off /proc/meminfo.
+    # SYSTEM_RESERVE_GB and everything else here is decimal.
+    extra = max(0.0, gb_from_gib(warn_gb) - SYSTEM_RESERVE_GB)
     for budget in budgets:
         # The guard's line, and then room to stand back from it. Planning up
         # to the line puts a launch that went exactly to plan one page-cache

@@ -3617,6 +3617,26 @@ const AINode = {
       }).catch(function (err) { self.toast('Error: ' + err.message, 'error'); });
   },
 
+  // What the resume verified before it started. Worth saying: the point of
+  // the button is that it checks, and a silent check is indistinguishable from
+  // no check at all.
+  resumeCheckNote(checked) {
+    if (!checked) return '';
+    if (checked.note) return ' — ' + checked.note;
+    var parts = [];
+    if ((checked.removed || []).length) {
+      parts.push('removed ' + checked.removed.length + ' unusable file(s)' +
+        (checked.freed_bytes ? ', ' + this.formatBytes(checked.freed_bytes) : ''));
+    }
+    if ((checked.present || []).length) {
+      parts.push((checked.present || []).length + ' file(s) verified');
+    }
+    if ((checked.will_fetch || []).length) {
+      parts.push((checked.will_fetch || []).length + ' to fetch');
+    }
+    return parts.length ? ' — ' + parts.join(', ') : '';
+  },
+
   resumeDownload(hfRepo) {
     var self = this;
     fetch('/api/models/download-resume', {
@@ -3637,7 +3657,8 @@ const AINode = {
         self.saveActiveDownloads();
         self.renderDownloadsQueue();
         self.resumeDownloadPolling(hfRepo);
-        self.toast('Resuming ' + hfRepo, 'info');
+        self.toast('Resuming ' + hfRepo + self.resumeCheckNote(data.checked),
+                   'info');
       }).catch(function (err) { self.toast('Error: ' + err.message, 'error'); });
   },
 
@@ -4782,6 +4803,15 @@ const AINode = {
         'model ' + stops + ' time' + (stops === 1 ? '' : 's') + '. Launching it ' +
         'the same way is refused — unlock it under Settings → Memory Guard.">' +
         'Blocked</span>' : '';
+      // The way out of Incomplete, on the card that says Incomplete. It used
+      // to live only on a paused job in the Downloads queue, which is gone
+      // after a restart — so a model interrupted by a dropped link had no
+      // button at all and the only offered route was deleting it.
+      var resumeBtn = partial ?
+        '<button class="btn-ghost model-btn-sm" data-resume-download="' +
+        self.esc(model.hf_repo || model.id) + '" title="Check every file ' +
+        'against the Hub, delete what is short, fetch what is missing.">' +
+        'Resume download</button>' : '';
       var statusBadge = isLoaded ?
         '<span class="model-badge loaded">Loaded</span>' :
         (partial ? '<span class="model-badge failed" title="' +
@@ -4831,7 +4861,7 @@ const AINode = {
         '<div class="download-card-repo">' + self.esc(model.hf_repo || model.id) + '</div>' +
         '<div class="download-card-desc">' + descParts.join(' &middot; ') + (model.desc ? '<br><span class="download-card-tagline">' + self.esc(model.desc) + '</span>' : '') + '</div>' +
         '</div>' +
-        '<div class="download-card-actions">' + detailsBtn + actionBtn + shardBtn + '</div>' +
+        '<div class="download-card-actions">' + detailsBtn + resumeBtn + actionBtn + shardBtn + '</div>' +
         '</div>' +
         '</div>';
     }
@@ -4905,6 +4935,12 @@ const AINode = {
     self.renderDownloadsQueue();
 
     // Bind shard buttons
+    container.querySelectorAll('[data-resume-download]').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        self.resumeDownload(btn.getAttribute('data-resume-download'));
+      });
+    });
     container.querySelectorAll('.downloads-shard-btn').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
@@ -9173,21 +9209,53 @@ const AINode = {
     return '';
   },
 
+  // One row, or an em-dash that does not pretend. Never a literal.
+  _loadRow(label, value) {
+    var shown = (value === '' || value === null || value === undefined)
+      ? '—' : String(value);
+    return '<div class="server-info-row"><span class="label">' +
+      this.esc(label) + '</span><span class="mono">' + this.esc(shown) +
+      '</span></div>';
+  },
+
   _renderServerInfoTab(tab, model, arch, fileName, sizeStr) {
     if (tab === 'load') {
+      // These were three literals in this template — 4096 and -1 typed into
+      // the HTML, under a real model, claiming to describe it. A number
+      // nobody measured is worse than a blank: a blank does not get pasted
+      // into a client config. The layer-offload row is gone rather than
+      // zeroed; it is a llama.cpp knob that never applied to a vLLM.
+      var known = (model.max_model_len || model.kv_cache_dtype ||
+                   model.gpu_memory_utilization);
+      var split = (model.pipeline_parallel_size > 1)
+        ? 'pipeline x' + model.pipeline_parallel_size
+        : (model.tensor_parallel_size > 1
+            ? 'tensor x' + model.tensor_parallel_size : 'single node');
       return '<div class="server-info-section">' +
-        '<div class="server-info-row"><span class="label">Context length</span><input class="form-input server-slider-stub" type="number" value="4096" disabled></div>' +
-        '<div class="server-info-row"><span class="label">GPU layers</span><input class="form-input server-slider-stub" type="number" value="-1" disabled></div>' +
-        '<div class="server-info-row"><span class="label">Parallel</span><input class="form-input server-slider-stub" type="number" value="' + (model.parallel || 1) + '" disabled></div>' +
-        '<div class="server-hint">Load parameters are read-only for Docker-managed engines.</div>' +
+        this._loadRow('Context length', model.max_model_len
+          ? this.formatNumber(model.max_model_len) + ' tokens' : '') +
+        this._loadRow('KV cache dtype', model.kv_cache_dtype || '') +
+        this._loadRow('Memory share', model.gpu_memory_utilization
+          ? Math.round(model.gpu_memory_utilization * 100) + '% of total' : '') +
+        this._loadRow('Concurrent sequences', model.max_num_seqs || '') +
+        this._loadRow('Split', known ? split : '') +
+        this._loadRow('Trust remote code',
+          known ? (model.trust_remote_code ? 'yes' : 'no') : '') +
+        '<div class="server-hint">' + (known
+          ? 'What this instance was launched with. Read-only — change it by ' +
+            'reloading the model.'
+          : 'This node did not report its launch parameters. The engine log ' +
+            'banner has them: <span class="mono">grep &quot;serve command&quot; ' +
+            '~/.ainode/logs/*.log</span>') +
+        '</div>' +
         '</div>';
     }
     if (tab === 'inference') {
       return '<div class="server-info-section">' +
-        '<div class="server-info-row"><span class="label">Temperature</span><input class="form-input server-slider-stub" type="number" step="0.01" value="0.7" disabled></div>' +
-        '<div class="server-info-row"><span class="label">Top-p</span><input class="form-input server-slider-stub" type="number" step="0.01" value="0.95" disabled></div>' +
-        '<div class="server-info-row"><span class="label">Top-k</span><input class="form-input server-slider-stub" type="number" value="40" disabled></div>' +
-        '<div class="server-hint">Override these per-request via the API.</div>' +
+        '<div class="server-hint">Sampling is per request, not per instance — ' +
+        'this engine holds no temperature, top-p or top-k of its own. Send ' +
+        'them with the request; the OpenAI-compatible defaults apply when you ' +
+        'do not.</div>' +
         '</div>';
     }
     // Info tab

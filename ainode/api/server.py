@@ -16,6 +16,7 @@ from aiohttp import web
 
 from ainode.api.params import str_field
 from ainode.core.config import NodeConfig
+from ainode.core.units import gb_from_mib
 from ainode.core.gpu import detect_gpu, GPUInfo
 from ainode.web.serve import get_index_html, get_onboarding_html, get_static_path
 from ainode.models.api_routes import register_model_routes
@@ -360,7 +361,7 @@ def _build_announcement(config: NodeConfig, engine=None) -> NodeAnnouncement:
     """Create a NodeAnnouncement from current node state."""
     gpu: Optional[GPUInfo] = detect_gpu()
     gpu_name = gpu.name if gpu else "CPU"
-    gpu_memory_gb = round(gpu.memory_total_mb / 1024, 1) if gpu else 0.0
+    gpu_memory_gb = round(gb_from_mib(gpu.memory_total_mb), 1) if gpu else 0.0
     unified_memory = gpu.unified_memory if gpu else False
 
     # This node's address for a head to reach us on: SSH, Ray, model transfer
