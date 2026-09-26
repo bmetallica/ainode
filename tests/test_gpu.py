@@ -42,5 +42,10 @@ def test_gpu_summary_with_gpu():
     with patch("ainode.core.gpu.detect_gpu", return_value=gpu):
         summary = gpu_summary()
         assert "NVIDIA GB10" in summary
-        assert "128 GB" in summary
+        # 131072 MiB is 137 decimal GB. Real GB10 hardware reports about
+        # 122070 MiB for its 128 GB, and the summary is decimal now — so the
+        # fixture above is a binary-flavoured number, not a Spark. What this
+        # asserts is that the conversion is decimal, which is the unit every
+        # model size in this program is in. See ainode/core/units.py.
+        assert "137 GB" in summary
         assert "unified memory" in summary

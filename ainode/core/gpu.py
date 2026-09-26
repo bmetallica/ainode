@@ -1,5 +1,6 @@
 """GPU detection and capability reporting."""
 
+from ainode.core.units import gb_from_mib
 from dataclasses import dataclass
 from typing import Optional
 
@@ -83,6 +84,6 @@ def gpu_summary() -> str:
     if gpu is None:
         return "No NVIDIA GPU detected"
 
-    mem_gb = gpu.memory_total_mb / 1024
+    mem_gb = gb_from_mib(gpu.memory_total_mb)
     um = " (unified memory)" if gpu.unified_memory else ""
     return f"{gpu.name} | {mem_gb:.0f} GB{um} | CUDA {gpu.cuda_version} | SM {gpu.compute_capability}"
