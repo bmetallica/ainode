@@ -597,6 +597,42 @@ class TestKnownMistakesAreNamed:
     def test_it_does_not_fire_on_anything_that_mentions_a_shard(self, line):
         assert not self._fail_with([line]).fatal_hint
 
+    REAL_DSPARK = [
+        "(EngineCore pid=143) ValueError: DSpark currently requires uniform "
+        "flattened per-request inputs; got 41 rows for batch_size=2.",
+        "(APIServer pid=91) RuntimeError: Engine core initialization failed.",
+    ]
+
+    def test_a_ragged_speculative_batch_is_named_as_concurrency(self):
+        """From MiaAI-Lab's two-Spark DeepSeek-V4-Flash recipe (MIT), patch 2.
+        It needs independent, staggered arrivals at max_num_seqs > 1 — so it
+        never appears in a smoke test and appears the first time two people
+        use the model. The traceback points at the drafter and the cause is
+        the batch, which sends the operator after the wrong thing."""
+        reason = self._fail_with(self.REAL_DSPARK).failure_reason()
+        assert "concurrency failure" in reason
+        assert "--max-num-seqs 1" in reason
+
+    def test_it_says_the_checkpoint_is_not_the_problem(self):
+        reason = self._fail_with(self.REAL_DSPARK).failure_reason()
+        assert "not a bad checkpoint" in reason
+
+    def test_a_mismatched_moe_kernel_is_named(self):
+        reason = self._fail_with([
+            "(Worker pid=2) ValueError: Unsupported moe_backend marlin for "
+            "this quantization",
+        ]).failure_reason()
+        assert "--moe-backend" in reason
+
+    def test_the_config_dump_is_not_a_verdict(self):
+        """vLLM prints moe_backend in non-default args on every healthy
+        launch. A bare name must not hijack an unrelated failure — the same
+        mistake the drafter hint made with an architecture name."""
+        assert not self._fail_with([
+            "(APIServer pid=91) INFO non-default args: "
+            "{'moe_backend': 'flashinfer', 'model': '/models/x'}",
+        ]).fatal_hint
+
     def test_reset_clears_the_hint(self):
         t = self._fail_with(self.REAL)
         t.reset()
