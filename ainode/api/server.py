@@ -287,8 +287,26 @@ def create_app(
 
     if getattr(config, "web_ui_enabled", True):
         app.router.add_static("/static", get_static_path(), name="static")
+        # Belt to the version query string's braces. aiohttp's static handler
+        # sends Last-Modified and answers a conditional request, but a browser
+        # with no Cache-Control may apply heuristic freshness and not ask at
+        # all — which is how a node came back serving a new API behind the
+        # previous UI. "no-cache" does not mean "do not store": it means
+        # revalidate, so the usual answer is a 304 and nothing is re-sent.
+        app.middlewares.append(_revalidate_static)
 
     return app
+
+
+@web.middleware
+async def _revalidate_static(request: web.Request, handler):
+    response = await handler(request)
+    try:
+        if request.path.startswith("/static/"):
+            response.headers.setdefault("Cache-Control", "no-cache")
+    except Exception:
+        logger.debug("could not set the static cache header", exc_info=True)
+    return response
 
 
 async def _web_ui_disabled(request: web.Request) -> web.Response:
