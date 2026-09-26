@@ -43,6 +43,14 @@ activations, workspace and (with `--enforce-eager`) no graph pool. Call it
 
 Two facts shape the whole list:
 
+- **Three nodes, two ranks.** Tensor parallelism needs the attention head
+  count to divide the rank count, and three divides almost nothing that
+  ships — 16, 20, 32, 40 and 64 are what the checkpoints here actually carry.
+  Published three-node recipes for this hardware exist and reach TP=3 by
+  patching the engine to pad the heads; that is not a flag, and it is not in
+  this image. So a three-node cluster runs one model across two nodes and
+  serves something else on the third.
+
 - **MoE is the design point.** GB10 decode is bandwidth-bound at 273 GB/s per
   node, so what matters is *active* parameters per token, not total. A 300B
   MoE with 3B active decodes like a 3B model and remembers like a 300B one.
@@ -79,6 +87,15 @@ claims +14.3 LiveBench agentic-coding and +10.1 Terminal Bench 2.1 over the
 base. MIT licensed.
 
 *Verdict:* fits with margin; arch already proven on this cluster.
+
+**In the catalog** as `smaug-flash`, with the recipe measured here for its
+base and `verified=False` until it has actually served. Two notes carried on
+that entry, both read out of MiaAI-Lab's published two-Spark recipe for this
+architecture (MIT): `fp8_ds_mla` — the packed sparse-MLA layout — is very
+likely the better KV choice and is *not* the default, because it has not been
+measured on this cluster; and `nvfp4_ds_mla` is not worth trying at all, being
+the same 584-byte layout at about a tenth of the long-context throughput on
+unpatched vLLM.
 
 ### 2. `Qwen/Qwen3-Coder-Next-FP8` — 80.4 GB, 40.2 GB/node
 

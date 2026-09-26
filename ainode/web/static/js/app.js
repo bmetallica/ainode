@@ -3617,6 +3617,26 @@ const AINode = {
       }).catch(function (err) { self.toast('Error: ' + err.message, 'error'); });
   },
 
+  // What the resume verified before it started. Worth saying: the point of
+  // the button is that it checks, and a silent check is indistinguishable from
+  // no check at all.
+  resumeCheckNote(checked) {
+    if (!checked) return '';
+    if (checked.note) return ' — ' + checked.note;
+    var parts = [];
+    if ((checked.removed || []).length) {
+      parts.push('removed ' + checked.removed.length + ' unusable file(s)' +
+        (checked.freed_bytes ? ', ' + this.formatBytes(checked.freed_bytes) : ''));
+    }
+    if ((checked.present || []).length) {
+      parts.push((checked.present || []).length + ' file(s) verified');
+    }
+    if ((checked.will_fetch || []).length) {
+      parts.push((checked.will_fetch || []).length + ' to fetch');
+    }
+    return parts.length ? ' — ' + parts.join(', ') : '';
+  },
+
   resumeDownload(hfRepo) {
     var self = this;
     fetch('/api/models/download-resume', {
@@ -3637,7 +3657,8 @@ const AINode = {
         self.saveActiveDownloads();
         self.renderDownloadsQueue();
         self.resumeDownloadPolling(hfRepo);
-        self.toast('Resuming ' + hfRepo, 'info');
+        self.toast('Resuming ' + hfRepo + self.resumeCheckNote(data.checked),
+                   'info');
       }).catch(function (err) { self.toast('Error: ' + err.message, 'error'); });
   },
 
@@ -4782,6 +4803,15 @@ const AINode = {
         'model ' + stops + ' time' + (stops === 1 ? '' : 's') + '. Launching it ' +
         'the same way is refused — unlock it under Settings → Memory Guard.">' +
         'Blocked</span>' : '';
+      // The way out of Incomplete, on the card that says Incomplete. It used
+      // to live only on a paused job in the Downloads queue, which is gone
+      // after a restart — so a model interrupted by a dropped link had no
+      // button at all and the only offered route was deleting it.
+      var resumeBtn = partial ?
+        '<button class="btn-ghost model-btn-sm" data-resume-download="' +
+        self.esc(model.hf_repo || model.id) + '" title="Check every file ' +
+        'against the Hub, delete what is short, fetch what is missing.">' +
+        'Resume download</button>' : '';
       var statusBadge = isLoaded ?
         '<span class="model-badge loaded">Loaded</span>' :
         (partial ? '<span class="model-badge failed" title="' +
@@ -4831,7 +4861,7 @@ const AINode = {
         '<div class="download-card-repo">' + self.esc(model.hf_repo || model.id) + '</div>' +
         '<div class="download-card-desc">' + descParts.join(' &middot; ') + (model.desc ? '<br><span class="download-card-tagline">' + self.esc(model.desc) + '</span>' : '') + '</div>' +
         '</div>' +
-        '<div class="download-card-actions">' + detailsBtn + actionBtn + shardBtn + '</div>' +
+        '<div class="download-card-actions">' + detailsBtn + resumeBtn + actionBtn + shardBtn + '</div>' +
         '</div>' +
         '</div>';
     }
@@ -4905,6 +4935,12 @@ const AINode = {
     self.renderDownloadsQueue();
 
     // Bind shard buttons
+    container.querySelectorAll('[data-resume-download]').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        self.resumeDownload(btn.getAttribute('data-resume-download'));
+      });
+    });
     container.querySelectorAll('.downloads-shard-btn').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
