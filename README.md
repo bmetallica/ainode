@@ -100,6 +100,19 @@ Hub when it can be reached and from the checkpoint's own index when it
 cannot — which is what a node with no route has, and enough to finish a
 partial download.
 
+**Downloads that survive a dropped link** — a transfer is retried per **file**,
+not per repo: the pull fetches through a bounded pool that propagates the first
+error, so one timeout on one shard used to end a 160 GB transfer. Five attempts
+with backoff, and nothing retried that will answer the same way next time (401,
+404, a full disk). Every download is also **on record** — a marker written when
+it starts and removed when it finishes — because the file-based checks can all
+be satisfied by a tree missing most of itself: no shard index yet, so nothing
+to check the shards against, and the tokenizer files that did arrive pass the
+tokenizer check. **Resume download** sits on any card marked Incomplete: it
+compares every local file against the size the Hub reports, deletes what is
+short or staged, and fetches the rest. A short file that huggingface_hub
+considers finished is the one thing a plain resume cannot fix.
+
 **Downloads you can stop and pick up again** — Pause keeps the partial files
 and Resume carries on from them (huggingface_hub reuses its own
 `.incomplete`), while Cancel still deletes them. And a download that was
@@ -167,6 +180,16 @@ card rather than reading "On disk" while every launch of it is refused. A launch
 translated too: `code -9` is SIGKILL, which no process can catch, so the
 engine's own log is a healthy startup right up to the last line.
 
+**A knob the engine ignores is named before the launch, not after** — vLLM
+registers every environment variable it reads, so AINode asks the engine image
+for that registry and checks a recipe's `extra_env` against it. A `VLLM_*`
+name the image does not know produces one warning, once, in the middle of a
+launch log; here it lands on the instance before the weights are touched.
+`GET /api/engine/env?image=&names=` answers the same question directly. Only
+`VLLM_*` names are judged — `NCCL_*`, `HF_*` and `INSTANTTENSOR_*` are read by
+libraries that keep no registry, and calling those unknown would be a false
+alarm on every interesting launch.
+
 **A restart does not lose what is running** — engine containers are separate
 from the orchestrator on purpose, so updating AINode does not take a
 fifteen-hour-old image server down with it. On startup the running ones are
@@ -191,14 +214,48 @@ measurement is compared per node against a per-node plan rather than against
 the weights across every node, and on-disk sizes are decimal GB everywhere, so
 one panel cannot show "148 GB" above "159.4 GB on disk".
 
+**The tightest node sets the cache, and the plan says which one** — every rank
+gets the same share of its own memory and holds the same number of KV blocks,
+so a cluster's cache is the smallest rank's capacity times the rank count.
+Spare memory on a roomier node is unreachable: raising
+`gpu_memory_utilization` pushes the tight node into the memory guard and leaves
+the cache where it was. The plan now names the tight node, says how much is
+stranded on the others, and says that freeing the tight one is the only lever.
+
+**The Server view shows the launch, not a template** — the Load tab reports
+the instance's own `max_model_len`, KV dtype, memory share, concurrent
+sequences and split, or an em-dash and where to look. It used to render three
+literals typed into the HTML (`4096`, `-1`) under a real model, and the
+Inference tab a temperature no engine holds — sampling is per request. The
+generated **opencode** config derives `tool_call` and `reasoning` from the
+flags the engine is running rather than from the curated catalog alone, so a
+model pulled straight from the Hub no longer arrives at a coding agent with
+tool calling switched off.
+
+**One unit for memory** — model sizes come off the disk and out of the Hub in
+decimal GB, and node budgets used to come through MiB divided by 1024. Both
+were called GB and subtracted from each other, so every plan compared decimal
+weights against binary memory: 7.4%, always making the model look bigger than
+the node, and all of it landing on the KV cache because the cache is the
+remainder. On a 159 GB model across two nodes that was 5.7 GiB per node of
+cache spent on a rounding convention. Everything the planner compares is
+decimal now (`ainode/core/units.py`); the memory guard keeps its own GiB
+arithmetic and the conversion at that boundary is explicit. `free -g` prints
+GiB and will read about 7% below these figures.
+
 **Knowing what happened** — per-phase load timings, an **error assistant**
 that explains a failure using a model already running, per-instance containers
 and logs, and a **measurement store** that records what each launch actually
 cost and prefers that to any estimate. A handful of failures whose traceback
 describes the symptom and not the mistake are named outright — a drafter
-served alone, a mixed-bit checkpoint, a missing tokenizer, and a checkpoint
+served alone, a mixed-bit checkpoint, a missing tokenizer, a checkpoint
 laid out for a different engine, which arrives as a bare `AssertionError`
-under six frames of vLLM internals and is not fixable with any flag.
+under six frames of vLLM internals and is not fixable with any flag, a
+speculative drafter handed a ragged batch (a concurrency failure that cannot
+happen with one request in flight, so it never shows in a smoke test), and a
+MoE kernel pinned against weights quantised for a different one. The planner
+adds the matching warnings at plan time: an MLA checkpoint asked to cache in
+`nvfp4` has no sparse-MLA kernel to run on at all.
 
 **Watching it** — MQTT telemetry for system, GPU, **RoCE fabric counters**
 (`/proc/net/dev` reads zero while RDMA saturates the link), models, engine

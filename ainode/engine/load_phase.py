@@ -510,6 +510,42 @@ _SHARD_ID_HINT = (
     "model from a publisher who targets vLLM."
 )
 
+# Speculative decoding that works alone and fails under load. From MiaAI-Lab's
+# two-Spark DeepSeek-V4-Flash recipe (MIT), docs/PATCHES.md patch 2:
+#
+#   ValueError: DSpark currently requires uniform flattened per-request
+#   inputs; got 41 rows for batch_size=2.   (dspark_proposer.py)
+#
+# It needs independent, staggered arrivals at max_num_seqs > 1 to appear —
+# which is to say it does not appear in a smoke test and does appear the first
+# time two people use the model. Worth naming because the traceback points at
+# the proposer and the cause is the batch, so the obvious reading (a broken
+# drafter) sends the operator after the wrong thing.
+_DSPARK_RAGGED_HINT = (
+    "the speculative drafter was handed a ragged batch: it requires the same "
+    "number of flattened rows per request, and two requests that arrived at "
+    "different times do not produce that. This is a concurrency failure, not "
+    "a bad checkpoint — it cannot happen with one request in flight, which is "
+    "why a single test prompt passes. Until the engine image carries the fix, "
+    "either serve this model with --max-num-seqs 1, or drop the speculative "
+    "config and lose the drafter rather than the server. The model itself is "
+    "fine."
+)
+
+# Weights in one format, a MoE kernel expecting another. Named by both DGX
+# Spark recipes as a thing not to do: --moe-backend marlin against a
+# checkpoint that is not NVFP4/marlin-shaped, and any --moe-backend pinned by
+# hand against an image that would have chosen correctly.
+_MOE_BACKEND_HINT = (
+    "the mixture-of-experts kernel does not match these weights. "
+    "--moe-backend names a kernel family, and a checkpoint quantised for a "
+    "different one has no path through it. Unless a model card names the "
+    "backend for THIS engine image, leave the flag out: vLLM picks from what "
+    "the checkpoint declares, and a hand-pinned value overrides a correct "
+    "choice with a guess."
+)
+
+
 _FATAL_PATTERNS = [
     # Whatever a drafter's architecture is called, serving one alone dies
     # reaching through a speculative_config that is None —
@@ -534,6 +570,14 @@ _FATAL_PATTERNS = [
     ("cudaerrorillegaladdress", "cudaerrorillegaladdress", _ILLEGAL_ADDRESS_HINT),
     ("illegal memory access", "illegalmemoryaccess", _ILLEGAL_ADDRESS_HINT),
     ("shard_id in qkv_idxs", "shard_idinqkv_idxs", _SHARD_ID_HINT),
+    ("uniform flattened per-request inputs",
+     "uniformflattenedper-requestinputs", _DSPARK_RAGGED_HINT),
+    # Both halves on the same line, because vLLM prints "moe_backend" in its
+    # config dump on every healthy launch and a bare name is not a verdict.
+    ("moe_backend", "unsupported", _MOE_BACKEND_HINT),
+    ("moe_backend", "notsupported", _MOE_BACKEND_HINT),
+    ("moe-backend", "unsupported", _MOE_BACKEND_HINT),
+    ("moe-backend", "notsupported", _MOE_BACKEND_HINT),
     ("unrecognized arguments", "unrecognizedarguments", _ARGPARSE_HINT),
     ("error: argument", "error:argument", _ARGPARSE_HINT),
 ]

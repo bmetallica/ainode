@@ -144,6 +144,66 @@ def _reachable_urls(host: str, port: int) -> list[str]:
     return urls
 
 
+def _flag_value(args, name: str) -> str:
+    """``--name value`` or ``--name=value`` out of a vLLM argument list."""
+    items = [str(a) for a in (args or [])]
+    for index, arg in enumerate(items):
+        if arg == name and index + 1 < len(items):
+            return items[index + 1]
+        if arg.startswith(name + "="):
+            return arg.split("=", 1)[1]
+    return ""
+
+
+def _backend_config(manager, model: str):
+    """The config snapshot a stacked instance's backend is running, or None."""
+    if manager is None or not model:
+        return None
+    try:
+        instance = manager.by_model(model)
+    except Exception:
+        return None
+    return getattr(getattr(instance, "backend", None), "config", None)
+
+
+def load_params(cfg, record=None) -> dict:
+    """What this instance was actually launched with.
+
+    Reported from the cluster, on a model loaded with two concurrent requests
+    and a hand-set context:
+
+        Context length 4096 · GPU layers -1 · Parallel 1
+
+    None of those came from anywhere. The Server view's Load tab was three
+    literals in a template — 4096 and -1 were typed into the HTML, and the
+    panel sat under a real model claiming to describe it. A number that is not
+    measured is worse than a blank, because a blank does not get pasted into a
+    client config.
+
+    So the row comes from the instance: the config snapshot it was built from,
+    and its own launch arguments. GPU layers is gone rather than zeroed — it
+    is a llama.cpp knob that never applied to a vLLM at all.
+    """
+    args = list(getattr(cfg, "extra_vllm_args", None) or [])
+    out = {
+        "max_model_len": int(getattr(cfg, "max_model_len", 0) or 0)
+        or (int(_flag_value(args, "--max-model-len") or 0) or None),
+        "kv_cache_dtype": str(getattr(cfg, "kv_cache_dtype", "") or "")
+        or (_flag_value(args, "--kv-cache-dtype") or None),
+        "gpu_memory_utilization": float(
+            getattr(cfg, "gpu_memory_utilization", 0) or 0) or None,
+        "max_num_seqs": int(_flag_value(args, "--max-num-seqs") or 0) or None,
+        "trust_remote_code": bool(getattr(cfg, "trust_remote_code", False)),
+        "tensor_parallel_size": int(
+            getattr(record, "tensor_parallel_size", 0)
+            or getattr(cfg, "tensor_parallel_size", 0) or 1),
+        "pipeline_parallel_size": int(
+            getattr(record, "pipeline_parallel_size", 0)
+            or getattr(cfg, "pipeline_parallel_size", 0) or 1),
+    }
+    return out
+
+
 async def _probe_loaded_models(
     session: Optional[aiohttp.ClientSession],
     api_port: int,
@@ -246,6 +306,7 @@ async def handle_server_status(request: web.Request) -> web.Response:
             "parallel": 1,
             "capabilities": ["chat", "completions"],
             "loaded_at": start_time,
+            **load_params(config),
         })
 
     # Local STACKED instances (2nd+ model on this node, ports 8001+) live in the
@@ -277,6 +338,7 @@ async def handle_server_status(request: web.Request) -> web.Response:
             "parallel": 1,
             "capabilities": ["chat", "completions"],
             "loaded_at": start_time,
+            **load_params(_backend_config(manager, rec.model), rec),
         })
 
     # Include loaded embedding models (in-process, via EmbeddingManager)

@@ -43,6 +43,7 @@ MAX_LOG_LINES = 2000
 
 def register_assist_routes(app: web.Application) -> None:
     app.router.add_get("/api/engine/log", handle_engine_log)
+    app.router.add_get("/api/engine/env", handle_engine_env)
     app.router.add_get("/api/assist/status", handle_assist_status)
     app.router.add_post("/api/assist/diagnose", handle_assist_diagnose)
 
@@ -58,6 +59,37 @@ async def handle_engine_log(request: web.Request) -> web.Response:
         "lines": lines,
         "text": text,
     })
+
+
+async def handle_engine_env(request: web.Request) -> web.Response:
+    """GET /api/engine/env?image=&names=A,B — what this image will read.
+
+    ``names`` is optional; with it the answer is only the verdict on those,
+    which is what a launch form needs. Without it the whole registry comes
+    back, which is what someone writing a recipe needs.
+    """
+    from ainode.engine.engine_env import (env_warning, known_env_names,
+                                          unregistered_names)
+
+    image = request.query.get("image") or "vllm-node:latest"
+    refresh = str(request.query.get("refresh") or "").lower() in ("1", "true")
+    known = known_env_names(image, refresh=refresh)
+    names = [n for n in (request.query.get("names") or "").split(",") if n]
+    payload = {
+        "image": image,
+        "probed": bool(known),
+        "count": len(known),
+    }
+    if names:
+        payload["unregistered"] = unregistered_names(names, known)
+        payload["warning"] = env_warning({n: "" for n in names}, image)
+    else:
+        payload["names"] = sorted(known)
+    if not known:
+        payload["note"] = (
+            f"could not ask {image} for its environment registry — no verdict "
+            f"is given rather than a wrong one")
+    return web.json_response(payload)
 
 
 async def handle_assist_status(request: web.Request) -> web.Response:
