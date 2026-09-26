@@ -178,6 +178,63 @@ class TestTheLatentGeometryIsRecognised:
         assert self._facts(**over).kv_lora_rank == 0
 
 
+class TestWhyThreeNodeTensorParallelismIsRefused:
+    """Asked after two published three-node DGX Spark recipes turned up:
+
+        ihr docs/TP3.md fährt DeepSeek-V4-Flash mit TP=3
+
+    They do, and they get there by patching the engine — MiaAI-Lab's launcher
+    carries a dsv4_tp_pad.py that pads the head count, and their GLM sibling
+    ships a cooperative_moe/tp3 extension. Neither is a serve flag and neither
+    is in the image here.
+
+    The refusal was already correct. Its stated reason was not: "head counts
+    are powers of two" is refuted by GLM-4.7-Flash at 20 and phi-4 at 40, and
+    "no model splits attention heads 3 ways" is a claim about models when the
+    truth is a claim about this engine image.
+    """
+
+    from ainode.planner.compute import _tensor_ok as _ok
+
+    def _why(self, heads, size):
+        return type(self)._ok(_facts(num_attention_heads=heads), size)
+
+    def test_three_is_still_refused(self):
+        assert self._why(64, 3)
+
+    def test_two_four_and_eight_are_not(self):
+        for size in (1, 2, 4, 8):
+            assert self._why(64, size) is None
+
+    def test_a_head_count_that_does_not_divide_says_so(self):
+        why = self._why(64, 3)
+        assert "divisible by 3" in why and "64" in why
+
+    def test_a_head_count_that_would_divide_gets_the_honest_answer(self):
+        """48 heads DO divide three ways. Telling that operator "no model
+        splits attention heads 3 ways" is false and sends them looking for a
+        different model instead of a different engine."""
+        why = self._why(48, 3)
+        assert "would divide" in why
+        assert "patch the engine" in why
+
+    def test_the_constant_records_what_was_checked(self):
+        from pathlib import Path
+
+        import ainode.planner.compute as compute
+
+        source = Path(compute.__file__).read_text()
+        # The evidence, not the conclusion: head counts of real checkpoints.
+        assert "GLM-4.7-Flash 20" in source
+        assert "phi-4 40" in source
+        assert "dsv4_tp_pad" in source
+
+    @pytest.mark.parametrize("heads", [16, 20, 32, 40, 64])
+    def test_none_of_the_sampled_checkpoints_divide_by_three(self, heads):
+        # If this ever fails, a model that could use all three nodes has
+        # arrived and TENSOR_SIZES is the one line to revisit.
+        assert heads % 3 != 0
+
 class TestTheMlaKernelCaveats:
     """Two DGX Spark recipes say the same thing about caching an MLA model in
     anything but fp8_ds_mla, and they say it from different directions.

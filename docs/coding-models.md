@@ -43,6 +43,14 @@ activations, workspace and (with `--enforce-eager`) no graph pool. Call it
 
 Two facts shape the whole list:
 
+- **Three nodes, two ranks.** Tensor parallelism needs the attention head
+  count to divide the rank count, and three divides almost nothing that
+  ships — 16, 20, 32, 40 and 64 are what the checkpoints here actually carry.
+  Published three-node recipes for this hardware exist and reach TP=3 by
+  patching the engine to pad the heads; that is not a flag, and it is not in
+  this image. So a three-node cluster runs one model across two nodes and
+  serves something else on the third.
+
 - **MoE is the design point.** GB10 decode is bandwidth-bound at 273 GB/s per
   node, so what matters is *active* parameters per token, not total. A 300B
   MoE with 3B active decodes like a 3B model and remembers like a 300B one.
