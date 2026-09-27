@@ -23,6 +23,33 @@ __all__ = ["Recorder"]
 _TERMINAL = ("ready", "failed")
 
 
+def _engine_report(backend, record=None) -> dict:
+    """The engine's own memory figures, from the log it just wrote.
+
+    Best effort and late: only on a successful load, and only from whatever the
+    backend will hand over. A log that says nothing produces {}, and the
+    host-level measurement stands alone — a partial answer must not overwrite a
+    whole one.
+    """
+    reader = getattr(backend, "logs", None)
+    if not callable(reader):
+        return {}
+    try:
+        from ainode.measure.engine_report import parse_engine_report
+
+        report = parse_engine_report(reader(4000))
+        # The split the weights figure belongs to. A weights-per-node number
+        # without it cannot be compared to anything.
+        if report.get("weights_gb"):
+            ranks = max(1, int(getattr(record, "tensor_parallel_size", 1) or 1)
+                        * int(getattr(record, "pipeline_parallel_size", 1) or 1))
+            report["rank_count"] = ranks
+        return report
+    except Exception:
+        logger.debug("could not read the engine's memory report", exc_info=True)
+        return {}
+
+
 class Recorder:
     """Turns instance state changes into measurements."""
 
@@ -109,6 +136,8 @@ class Recorder:
                 getattr(config, "gpu_memory_utilization", 0) or 0),
             max_image_size=int(getattr(config, "max_image_size", 0) or 0)
             if str(getattr(config, "engine_backend", "")) == "diffusers" else 0,
+            engine_report=_engine_report(backend, record)
+            if phase == "ready" else None,
         )
 
     def _record_speeds(self) -> None:

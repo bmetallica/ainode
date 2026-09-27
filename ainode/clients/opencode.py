@@ -102,6 +102,12 @@ def _launch_args(entry, info) -> List[str]:
 def _capabilities(info, entry=None, model_id: str = "") -> Tuple[bool, bool, bool]:
     """(tool_call, reasoning, attachment), from what the engine was told.
 
+    Two fields with different rules, deliberately. ``tool_call`` may come from
+    the catalog, because the launcher adds a parser for a family it recognises
+    even when nothing asked. ``reasoning`` may not: nothing adds a reasoning
+    parser, so a catalog claim that the model thinks is not evidence that the
+    thinking will arrive where the client looks for it.
+
     The catalog was the only source, which meant a model nobody curated got
     ``"tool_call": false`` — and on a coding agent that is not a cosmetic
     field, it is the difference between an assistant that edits files and one
@@ -122,7 +128,6 @@ def _capabilities(info, entry=None, model_id: str = "") -> Tuple[bool, bool, boo
     """
     caps = {str(c).lower() for c in (getattr(info, "capabilities", None) or [])}
     tool_call = "tool_use" in caps
-    reasoning = "reasoning" in caps
     attachment = bool(caps & {"vision", "image", "multimodal"})
 
     args = _launch_args(entry, info)
@@ -130,9 +135,24 @@ def _capabilities(info, entry=None, model_id: str = "") -> Tuple[bool, bool, boo
     if "--tool-call-parser" in args or "--enable-auto-tool-choice" in args \
             or "--tool-call-parser=" in joined:
         tool_call = True
-    if "--reasoning-parser" in args or "--reasoning-config" in args \
-            or "--reasoning-parser=" in joined:
-        reasoning = True
+
+    # reasoning is NOT taken from the catalog, and that is the difference
+    # between it and tool_call. The catalog capability says the model thinks;
+    # the client field says the reasoning arrives in its own place on the wire,
+    # and only --reasoning-parser makes vLLM put it there. Without the flag the
+    # <think> block comes back as ordinary content, and a client told to expect
+    # it separated gets a first response it cannot read.
+    #
+    # Reported from the cluster, on Smaug-Flash — catalog capabilities carry
+    # "reasoning", the recipe carries --tool-call-parser and no reasoning
+    # parser, and the generated config said "reasoning": true:
+    #
+    #     also mit "limit": {"context": 90112, ...} bricht er quasi sofort ab
+    #
+    # Same shape as the tool_call bug one field over: two parts of one program
+    # disagreeing, with the wrong one written into the client config.
+    reasoning = ("--reasoning-parser" in args or "--reasoning-config" in args
+                 or "--reasoning-parser=" in joined)
 
     # Nothing in the flags and nothing in the catalog: ask the same table the
     # launcher asks. It answers for a family rather than a repo, which is why

@@ -63,6 +63,20 @@ class Measurement:
     max_model_len: int = 0
     gpu_memory_utilization: float = 0.0
     max_image_size: int = 0
+    #: The engine's own split of ``memory_gb``, read out of its log (see
+    #: measure/engine_report.py). memory_gb is the drop in MemAvailable on the
+    #: host — the whole footprint — and comparing that against an estimate of
+    #: the WEIGHTS is what hid a nineteen-percent over-estimate behind a
+    #: coincidence. Zero means the engine did not say.
+    weights_gb: float = 0.0
+    #: How many ranks the weights were split across when weights_gb was
+    #: measured. Without it the figure is unusable: weights per node depend on
+    #: the split, so a two-node measurement says nothing about one node.
+    rank_count: int = 0
+    kv_cache_gb: float = 0.0
+    kv_tokens: int = 0
+    kv_concurrency: float = 0.0
+    kv_at_max_model_len: int = 0
     #: Serving speed, once anything has been asked of it.
     tokens_per_second: float = 0.0
     seconds_per_image: float = 0.0
@@ -151,7 +165,8 @@ class MeasurementStore:
                       load_seconds: float = 0.0, load_timeline=None,
                       memory_gb: float = 0.0, max_model_len: int = 0,
                       gpu_memory_utilization: float = 0.0,
-                      max_image_size: int = 0) -> Measurement:
+                      max_image_size: int = 0,
+                      engine_report=None) -> Measurement:
         """Write down what a launch did. Never raises."""
         current = self.load()
         entry = current.get(model) or Measurement(model=model)
@@ -175,6 +190,15 @@ class MeasurementStore:
                 entry.gpu_memory_utilization = float(gpu_memory_utilization)
             if max_image_size:
                 entry.max_image_size = int(max_image_size)
+            # The engine's own split of that one host-level number. memory_gb
+            # is the whole footprint; these say how much of it was weights and
+            # how much was the cache the engine sized to fill its pool. Kept
+            # because comparing a footprint against an estimate of the weights
+            # is what made a nineteen-percent over-estimate look like a
+            # planner that was right to within a gigabyte.
+            for field, value in (engine_report or {}).items():
+                if value and hasattr(entry, field):
+                    setattr(entry, field, value)
         else:
             entry.failures += 1
         entry.history.append({
