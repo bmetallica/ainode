@@ -267,6 +267,17 @@ API behind the previous UI: every server-side figure looked new and the
 client-side behaviour was the old one, which is the failure that sends you
 looking at the wrong code.
 
+**The cache is sized against the pool the engine gets** — `gpu_memory_utilization`
+is a fraction of each node's *total*, so it is a ceiling on the KV cache. The
+planner used to size the cache from free memory instead; the two agreed by
+construction, because it derived its own fraction from its own claim, and they
+stopped agreeing the moment anything else set one — a recipe's
+`recommended_gmu`, or the admission gate's cap on a node that has filled up
+since. A launch whose fraction is capped now has its context brought down with
+it and is told so, rather than starting with a window the cache cannot back and
+preempting every request, which from a client looks like a model that keeps
+stopping rather than like a memory error.
+
 **Weights and cache are measured apart** — the measurement store used to keep
 one number, the drop in `MemAvailable` across a load, and that is the whole
 footprint: weights, engine, and the cache the engine sized to fill its pool. It
