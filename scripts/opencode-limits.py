@@ -46,19 +46,29 @@ def limits_for(window):
     return {"context": max(512, context), "output": output}
 
 
+def _number(text) -> int:
+    """An integer out of whatever a human pasted: commas, spaces, underscores."""
+    digits = "".join(c for c in str(text) if c.isdigit())
+    return int(digits) if digits else 0
+
+
 def flag(command, name, default=0):
     m = re.search(re.escape(name) + r"[= ]+(\d+)", command)
     return int(m.group(1)) if m else default
 
 
 def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else None
+    path = (sys.argv[1] or None) if len(sys.argv) > 1 else None
     if not path:
         logs = glob.glob(os.path.expanduser("~/.ainode/logs/*.log"))
         if not logs:
             sys.exit("kein Log unter ~/.ainode/logs/")
         path = max(logs, key=os.path.getmtime)
-    kv_total = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+    # vLLM prints the figure WITH thousands separators — "GPU KV cache size:
+    # 1,109,643 tokens" — and the instruction to copy it is the instruction to
+    # paste commas. Refusing them was a script that could not read its own
+    # documented input.
+    kv_total = _number(sys.argv[2]) if len(sys.argv) > 2 else 0
 
     banner = None
     model = ""
