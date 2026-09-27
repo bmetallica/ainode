@@ -339,7 +339,9 @@ class _Candidate:
 
 
 def _evaluate(facts: ModelFacts, nodes: Sequence[NodeBudget], strategy: str,
-              bytes_per_token: int) -> Optional[_Candidate]:
+              bytes_per_token: int,
+              measured_weights_per_node: float = 0.0,
+              measured_rank_count: int = 0) -> Optional[_Candidate]:
     count = len(nodes)
     weights = facts.weights_gb
     if strategy == "tensor":
@@ -348,6 +350,21 @@ def _evaluate(facts: ModelFacts, nodes: Sequence[NodeBudget], strategy: str,
     else:
         per_node = weights / count
         tp, pp = 1, count
+    # A measurement beats this arithmetic, where there is one at this rank
+    # count. The engine reports what its weights actually took —
+    #
+    #   Model loading took 67.7 GiB memory and 421.882 seconds
+    #
+    # — against the 83.7 GB estimated for that same launch. Nineteen percent,
+    # in the direction that refuses launches which fit. TP_REPLICATION was set
+    # to 1.05 on the reasoning that tensor parallelism does not split the
+    # embedding table, which is true and is not the whole story: a
+    # mixture-of-experts under expert parallelism loads a checkpoint whose
+    # on-disk size is not its loaded size, and the two errors do not point the
+    # same way. So the constant stays as the estimate for a model nobody has
+    # measured, and gets out of the way of one that has.
+    if measured_weights_per_node > 0 and count == measured_rank_count:
+        per_node = float(measured_weights_per_node)
     overhead = ENGINE_OVERHEAD_GB + (COMM_OVERHEAD_GB if count > 1 else 0.0)
 
     # The tightest node decides: a rank cannot borrow memory from its peers.
@@ -439,8 +456,17 @@ def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,
              concurrency: int = 1,
              supports_pipeline: bool = True,
              recipe_context: int = 0,
-             recommended_gmu: float = 0.0) -> Plan:
-    """The launch this model should get on these nodes."""
+             recommended_gmu: float = 0.0,
+             measured_weights_per_node: float = 0.0,
+             measured_rank_count: int = 0) -> Plan:
+    """The launch this model should get on these nodes.
+
+    ``measured_weights_per_node`` is what the engine reported its weights
+    actually took, for a launch at ``measured_rank_count`` ranks. Where there is
+    one it replaces the estimate derived from the on-disk size, which was
+    measured nineteen percent high on a mixture-of-experts under expert
+    parallelism — in the direction that refuses launches which fit.
+    """
     plan = Plan(model=facts.repo)
     nodes = [n for n in nodes if n.total_gb > 0 or n.free_gb > 0]
     if not nodes:
@@ -500,7 +526,9 @@ def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,
                     refusals.append(
                         f"{count} node(s), pipeline: only {facts.num_layers} layers")
                     continue
-            candidate = _evaluate(facts, chosen, axis, bytes_per_token)
+            candidate = _evaluate(facts, chosen, axis, bytes_per_token,
+                                  measured_weights_per_node,
+                                  measured_rank_count)
             if candidate is None:
                 refusals.append(
                     f"{count} node(s), {axis}: the weights plus engine overhead "

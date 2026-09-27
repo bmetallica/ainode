@@ -96,15 +96,35 @@ DEEPSEEK = "deepseek-ai/DeepSeek-V4-Flash-DSpark"
 
 
 class TestTheModelsSection:
-    def test_capabilities_come_from_the_catalog(self):
+    def test_tool_calling_comes_from_the_catalog(self):
         result = _build(
             [_Entry(DEEPSEEK, max_model_len=131072)],
             {DEEPSEEK: _Info("DeepSeek V4 Flash",
                              ["tool_use", "reasoning", "code"])})
         model = result["config"]["provider"]["vllm"]["models"][DEEPSEEK]
-        assert model["reasoning"] is True
         assert model["tool_call"] is True
         assert model["attachment"] is False
+
+    def test_reasoning_does_not(self):
+        """The catalog capability says the model thinks. The client field says
+        the thinking arrives in its own place on the wire, and only
+        --reasoning-parser makes vLLM put it there. Claiming it without the flag
+        hands a client a first response it cannot read — reported from the
+        cluster on Smaug-Flash, which aborted immediately."""
+        result = _build(
+            [_Entry(DEEPSEEK, max_model_len=131072)],
+            {DEEPSEEK: _Info("DeepSeek V4 Flash",
+                             ["tool_use", "reasoning", "code"])})
+        assert result["config"]["provider"]["vllm"]["models"][DEEPSEEK][
+            "reasoning"] is False
+
+    def test_reasoning_comes_from_the_flag(self):
+        result = _build(
+            [_Entry(DEEPSEEK, max_model_len=131072,
+                    extra_vllm_args=["--reasoning-parser", "deepseek_v4"])],
+            {DEEPSEEK: _Info("DeepSeek V4 Flash", ["tool_use", "code"])})
+        assert result["config"]["provider"]["vllm"]["models"][DEEPSEEK][
+            "reasoning"] is True
 
     def test_a_vision_model_gets_attachments(self):
         result = _build([_Entry("org/eyes", max_model_len=32768)],

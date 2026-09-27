@@ -188,6 +188,26 @@ def _image_weights_gb(manager, model: str) -> float:
     return total / 1e9
 
 
+def _measured_weights(app, model: str):
+    """(weights per node, rank count) the engine actually reported, or (0, 0).
+
+    The rank count matters: weights per node depend on how many ways they were
+    split, so a figure from a two-node launch says nothing about one node. The
+    store keeps the split the measurement was taken at, and a measurement
+    without one is not used rather than assumed to be this launch's shape.
+    """
+    try:
+        from ainode.measure.recorder import measured_for
+
+        measurement = measured_for(app, model) or {}
+    except Exception:
+        logger.debug("could not read a measurement for %s", model, exc_info=True)
+        return 0.0, 0
+    weights = float(measurement.get("weights_gb") or 0)
+    ranks = int(measurement.get("rank_count") or 0)
+    return (weights, ranks) if weights > 0 and ranks > 0 else (0.0, 0)
+
+
 def _attach_measurement(app, model: str, payload: dict) -> None:
     """Put what this cluster has actually measured beside what was estimated.
 
@@ -212,22 +232,49 @@ def _attach_measurement(app, model: str, payload: dict) -> None:
         "max_model_len": measurement.get("max_model_len"),
         "tokens_per_second": measurement.get("tokens_per_second"),
         "seconds_per_image": measurement.get("seconds_per_image"),
+        # The engine's own split of memory_gb, where it said so.
+        "weights_gb": measurement.get("weights_gb"),
+        "kv_cache_gb": measurement.get("kv_cache_gb"),
+        "kv_tokens": measurement.get("kv_tokens"),
+        "kv_at_max_model_len": measurement.get("kv_at_max_model_len"),
     }
-    # Per node against per node. This compared a measurement taken on ONE node
-    # against the weights across ALL of them, so a two-node plan that was
-    # right to within a gigabyte reported itself 76 GB out:
+    # Like against like, which took two goes to get right.
     #
-    #   Measured here: 83.1 GB ... (-76.3 GB vs the plan)
+    # It first compared a measurement taken on ONE node against the weights
+    # across ALL of them, so a two-node plan reported itself 76 GB out. Fixing
+    # that to per-node made the figure read -0.6 GB, which looked like a
+    # planner accurate to within a gigabyte. It was two errors cancelling:
+    # memory_gb is the drop in MemAvailable on the host — the WHOLE footprint,
+    # weights and engine and the cache the engine sized to fill its pool —
+    # against an estimate of the weights alone. From the cluster, Smaug-Flash
+    # at TP=2, where the engine's own log said:
     #
-    # while the plan had said 83.7 GB per node. A plan that is accurate must
-    # not accuse itself, or the figure stops being read.
-    estimated = (payload.get("weights_per_node_gb")
-                 or payload.get("weights_gb") or 0)
+    #   Model loading took 67.7 GiB            (the weights, per rank)
+    #   GPU KV cache size: 1,109,643 tokens    (13.7 GB per rank)
+    #
+    # 67.7 + 13.7 + the engine is the 83.1 that was measured, and the plan's
+    # 83.7 was its guess at the 67.7. Nineteen percent over, hidden behind a
+    # coincidence.
+    #
+    # So the footprint is compared against the footprint the plan predicts, and
+    # the weights — where the engine reported them — against the weights the
+    # plan estimated. Two comparisons, each of two things that are the same
+    # kind of thing.
     actual = measurement.get("memory_gb") or 0
-    if estimated and actual:
-        payload["measured"]["vs_plan_gb"] = round(actual - estimated, 1)
-        payload["measured"]["vs_plan_basis"] = (
-            "per node" if payload.get("weights_per_node_gb") else "total")
+    predicted = payload.get("needed_per_node_gb") or 0
+    if actual and predicted:
+        payload["measured"]["vs_plan_gb"] = round(actual - predicted, 1)
+        payload["measured"]["vs_plan_basis"] = "footprint per node"
+    measured_weights = measurement.get("weights_gb") or 0
+    estimated_weights = payload.get("weights_per_node_gb") or 0
+    if measured_weights and estimated_weights:
+        payload["measured"]["weights_vs_plan_gb"] = round(
+            measured_weights - estimated_weights, 1)
+    # A measurement taken at a different window is not a measurement of this
+    # plan. Said rather than silently compared.
+    at = measurement.get("max_model_len") or 0
+    if at and payload.get("max_model_len") and at != payload["max_model_len"]:
+        payload["measured"]["different_window"] = True
 
 
 def _int(request, name, default=0):
@@ -302,6 +349,11 @@ async def handle_plan(request: web.Request) -> web.Response:
             if index + 1 < len(args):
                 kv_dtype = args[index + 1]
 
+    # What the engine said its weights took, if it has ever said. Passed in
+    # rather than looked up inside the planner: plan_for is arithmetic on its
+    # arguments and has no store, which is what makes it testable.
+    measured_weights, measured_ranks = _measured_weights(request.app, model)
+
     plan = plan_for(
         facts, nodes,
         strategy=(request.query.get("strategy") or "auto").lower(),
@@ -311,6 +363,8 @@ async def handle_plan(request: web.Request) -> web.Response:
         supports_pipeline=bool(getattr(recipe, "supports_pipeline", True)),
         recipe_context=int(getattr(recipe, "context_length", 0) or 0),
         recommended_gmu=float(getattr(recipe, "recommended_gmu", 0.0) or 0.0),
+        measured_weights_per_node=measured_weights,
+        measured_rank_count=measured_ranks,
     )
 
     payload = plan.to_dict()
