@@ -907,8 +907,12 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "256 experts with 8 active (A10B), int4 pack-quantized. ~42 tok/s "
             "across 2 Sparks (TP=2). 62 layers with 8 KV heads at head_dim "
             "128, so fp8 KV costs 124 KiB per token: at gpu_memory_utilization "
-            "0.87 two nodes leave about 85 GB for the cache, near 700k tokens "
-            "— roughly 11 concurrent sessions at 64K context each. TP=2 splits "
+            "0.87 two nodes leave about 100 GB for the cache, near 780k tokens "
+            "— roughly 11 concurrent sessions at 64K context each. (That "
+            "figure was 85 GB and 700k while the planner sized the cache from "
+            "free memory instead of from the fraction the engine is given; it "
+            "is larger now because this checkpoint turned out smaller than the "
+            "guess, not because the arithmetic got kinder.) TP=2 splits "
             "the 8 KV heads 4 and 4, with no replication."
         ),
         quantization="AWQ", min_memory_gb=130, family="minimax", params_b=230.0,

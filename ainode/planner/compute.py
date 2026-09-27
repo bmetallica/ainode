@@ -339,7 +339,8 @@ class _Candidate:
 
 
 def _evaluate(facts: ModelFacts, nodes: Sequence[NodeBudget], strategy: str,
-              bytes_per_token: int) -> Optional[_Candidate]:
+              bytes_per_token: int,
+              utilization_ceiling: float = 0.0) -> Optional[_Candidate]:
     count = len(nodes)
     weights = facts.weights_gb
     if strategy == "tensor":
@@ -352,6 +353,29 @@ def _evaluate(facts: ModelFacts, nodes: Sequence[NodeBudget], strategy: str,
 
     # The tightest node decides: a rank cannot borrow memory from its peers.
     smallest = min(n.usable_gb for n in nodes)
+    # And gpu_memory_utilization decides again, when something has imposed one.
+    #
+    # This used to size the cache from FREE MEMORY alone, while the engine is
+    # given a FRACTION OF THE TOTAL — and where the fraction is lower than what
+    # is free, the engine gets less cache than the plan promised. Nothing
+    # noticed, because the planner derives its own gmu from its own claim and
+    # the two agreed by construction. They stop agreeing the moment anything
+    # else sets the fraction: a recipe's recommended_gmu, or the admission
+    # gate's utilization cap on a node that has filled up since.
+    #
+    # Measured on the cluster, Smaug-Flash at TP=2 with the cap at 0.66:
+    #
+    #   plan: 1,048,576 context, 2,533,712 tokens of cache
+    #   0.66 x 128 GB = 84.5 GB pool, minus 87.6 of weights = NOTHING
+    #
+    # The engine was launched with --max-model-len 1048576 against a cache that
+    # could not back a fraction of one request, and spent its time preempting
+    # and recomputing — which from the client looks like a model that keeps
+    # stopping, not like a memory error.
+    if utilization_ceiling > 0:
+        tightest = min(nodes, key=lambda n: n.usable_gb)
+        pool = utilization_ceiling * (tightest.total_gb or tightest.free_gb)
+        smallest = min(smallest, pool)
     kv_per_node = smallest - per_node - overhead
     if kv_per_node <= 0:
         return None
@@ -440,7 +464,15 @@ def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,
              supports_pipeline: bool = True,
              recipe_context: int = 0,
              recommended_gmu: float = 0.0) -> Plan:
-    """The launch this model should get on these nodes."""
+    """The launch this model should get on these nodes.
+
+    ``recommended_gmu`` is a CEILING on gpu_memory_utilization and therefore a
+    ceiling on the cache: the engine is given that fraction of each node's
+    total, and a cache sized from free memory instead is a promise the engine
+    cannot keep. Both callers that impose one — a catalog recipe, and the
+    admission gate's utilization cap — must pass it here, or the context this
+    returns is derived from memory the launch will not be given.
+    """
     plan = Plan(model=facts.repo)
     nodes = [n for n in nodes if n.total_gb > 0 or n.free_gb > 0]
     if not nodes:
@@ -500,7 +532,8 @@ def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,
                     refusals.append(
                         f"{count} node(s), pipeline: only {facts.num_layers} layers")
                     continue
-            candidate = _evaluate(facts, chosen, axis, bytes_per_token)
+            candidate = _evaluate(facts, chosen, axis, bytes_per_token,
+                                  recommended_gmu)
             if candidate is None:
                 refusals.append(
                     f"{count} node(s), {axis}: the weights plus engine overhead "

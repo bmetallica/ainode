@@ -155,6 +155,17 @@ def _flag_value(args, name: str) -> str:
     return ""
 
 
+def _record_for(manager, model: str):
+    """The InstanceRecord for ``model``, or None. Carries the parallel split."""
+    if manager is None or not model:
+        return None
+    try:
+        instance = manager.by_model(model)
+    except Exception:
+        return None
+    return getattr(instance, "record", None)
+
+
 def _backend_config(manager, model: str):
     """The config snapshot a stacked instance's backend is running, or None."""
     if manager is None or not model:
@@ -306,7 +317,16 @@ async def handle_server_status(request: web.Request) -> web.Response:
             "parallel": 1,
             "capabilities": ["chat", "completions"],
             "loaded_at": start_time,
-            **load_params(config),
+            # The INSTANCE's config where there is one, and only the shared
+            # NodeConfig as a fallback. A distributed launch registers an
+            # instance and sets config.model, config.peer_ips and the parallel
+            # sizes — but never config.max_model_len, so the shared config
+            # keeps whatever a previous solo load left there. The Load tab then
+            # reported a context the running engine had never been given:
+            # 180.2K on screen against 684,032 in the client config generated
+            # from the same instance, with neither one obviously wrong.
+            **load_params(_backend_config(manager, mid) or config,
+                          _record_for(manager, mid)),
         })
 
     # Local STACKED instances (2nd+ model on this node, ports 8001+) live in the

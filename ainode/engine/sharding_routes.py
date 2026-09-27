@@ -121,6 +121,51 @@ def _remembered_placement(app, model: str):
     return placement
 
 
+def _clamp_context_to_utilization(app, model: str, chosen, gmu, overrides) -> str:
+    """Bring --max-model-len down to what ``gmu`` can actually back.
+
+    Returns a note for the operator, or "". Never raises: a plan that cannot be
+    recomputed leaves the context alone, which is the behaviour before this
+    existed.
+    """
+    wanted = int(overrides.get("max_model_len") or 0)
+    if not wanted or not gmu:
+        return ""
+    try:
+        from ainode.planner.api_routes import budgets_with_guard_reserve
+        from ainode.planner.compute import plan_for
+        from ainode.planner.facts import local_facts
+
+        manager = app.get("model_manager")
+        facts = local_facts(manager, model) if manager is not None else None
+        if facts is None or not getattr(facts, "weight_bytes", 0):
+            return ""
+        node_ids = [str(getattr(n, "node_id", "") or "") for n in chosen]
+        own = str(getattr(app.get("config"), "node_id", "") or "")
+        budgets = budgets_with_guard_reserve(
+            app, [own] + [n for n in node_ids if n])
+        replanned = plan_for(
+            facts, budgets,
+            kv_cache_dtype=str(overrides.get("kv_cache_dtype") or "") or "auto",
+            concurrency=int(overrides.get("max_num_seqs") or 1) or 1,
+            recommended_gmu=float(gmu))
+    except Exception:
+        logger.debug("could not re-plan %s against gmu %s", model, gmu,
+                     exc_info=True)
+        return ""
+
+    if not replanned.fits or not replanned.max_model_len:
+        return ""          # the admission gate owns refusals, not this
+    if replanned.max_model_len >= wanted:
+        return ""
+    overrides["max_model_len"] = int(replanned.max_model_len)
+    return (f"context lowered from {wanted:,} to "
+            f"{replanned.max_model_len:,}: at gpu-memory-utilization "
+            f"{float(gmu):.2f} the cache holds {replanned.kv_tokens:,} tokens, "
+            f"and the window it was asked for does not fit in that. Launching "
+            f"at the larger figure would start, then preempt every request.")
+
+
 async def handle_sharding_launch(request: web.Request) -> web.Response:
     """POST /api/sharding/launch — launch a model distributed across the cluster.
 
@@ -498,6 +543,20 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         # quietly asks for less than it was told to is a launch that will be
         # blamed for the wrong thing.
         plan_note = f"{plan_note} {cap_note}".strip() if plan_note else cap_note
+
+    # And the context has to come down with it. gpu_memory_utilization is the
+    # size of the pool the engine gets, so lowering it lowers the cache — while
+    # --max-model-len was derived from the pool the plan expected. Measured on
+    # the cluster, Smaug-Flash at TP=2 with the cap at 0.66: a plan for
+    # 1,048,576 context against a pool that could not back a fraction of one
+    # request. vLLM started, then spent its time preempting and recomputing,
+    # which from the client looks like a model that keeps stopping rather than
+    # like a memory error.
+    capped_note = _clamp_context_to_utilization(
+        request.app, model, chosen, capped, overrides)
+    if capped_note:
+        plan_note = f"{plan_note} {capped_note}".strip() if plan_note \
+            else capped_note
 
     # Resolved, not merged. ``config`` is the shared, mutable NodeConfig, and
     # it still carries whatever the last PRIMARY load persisted into

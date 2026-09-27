@@ -44,7 +44,13 @@ DENSE_70B = {
 }
 
 
-def _spark(node_id, free=118.0, total=122.0):
+#: A GB10 in decimal GB, which is what node_budgets reports since the units
+#: were made one (ainode/core/units.py). 122.0 was the GiB-flavoured figure
+#: these fixtures were written against, and it mattered the moment the cache
+#: started being sized against gpu_memory_utilization x TOTAL: 0.87 of 122 is
+#: 106 where 0.87 of 128 is 111, and the five gigabytes are the difference
+#: between this test's expectations and the cluster's measurement.
+def _spark(node_id, free=118.0, total=128.0):
     return NodeBudget(node_id=node_id, name=node_id.upper(),
                       total_gb=total, free_gb=free)
 
@@ -177,9 +183,12 @@ class TestTheKVFormula:
 
 class TestThePlan:
     def test_the_minimax_case_end_to_end(self):
-        # The catalog entry says: two nodes at 0.87 leave about 85 GB of
-        # cache, near 700k tokens, roughly 11 sessions at 64K. The planner
-        # has to agree with that, having been told none of it.
+        # Two nodes at 0.87. The figures moved when the cache started being
+        # sized against gpu_memory_utilization x TOTAL rather than against free
+        # memory: 0.87 of a 128 GB node is 111 GB of pool, and the cache is
+        # what is left of THAT after the weights — not what is left of the 114
+        # that happen to be free. The engine is given the fraction, so the
+        # fraction is the ceiling.
         facts = facts_from_config(MINIMAX, "MiniMaxAI/M2.7", int(130e9))
         plan = plan_for(facts, _three_sparks(), kv_cache_dtype="fp8",
                         max_model_len=65536, recipe_context=196608,
@@ -187,9 +196,9 @@ class TestThePlan:
         assert plan.fits
         assert plan.tensor_parallel_size == 2
         assert plan.node_ids == ["n1", "n2"]
-        assert 80 <= plan.kv_gb <= 90
-        assert 650_000 <= plan.kv_tokens <= 700_000
-        assert plan.concurrent_requests == 10
+        assert 75 <= plan.kv_gb <= 85
+        assert 600_000 <= plan.kv_tokens <= 660_000
+        assert plan.concurrent_requests == 9
         assert plan.gpu_memory_utilization == 0.87
 
     def test_a_model_that_fits_one_node_gets_one_node(self):
