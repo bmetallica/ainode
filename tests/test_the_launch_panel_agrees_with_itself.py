@@ -115,16 +115,18 @@ class TestTheMeasurementComparesLikeWithLike:
             recorder.measured_for = original
         return payload
 
-    def test_a_two_node_plan_is_judged_per_node(self):
-        payload = self._payload(weights_gb=159.4, weights_per_node_gb=83.7)
-        assert payload["measured"]["vs_plan_gb"] == pytest.approx(-0.6, abs=0.05)
-        assert payload["measured"]["vs_plan_basis"] == "per node"
+    def test_the_footprint_is_judged_against_the_predicted_footprint(self):
+        """The -0.6 GB this used to report was two errors cancelling: a whole
+        footprint against an estimate of the weights alone. The plan's
+        needed_per_node_gb is the footprint it predicts, and that is what a
+        measured footprint can be compared with."""
+        payload = self._payload(weights_gb=159.4, weights_per_node_gb=83.7,
+                                needed_per_node_gb=100.4)
+        assert payload["measured"]["vs_plan_gb"] == pytest.approx(-17.3, abs=0.05)
+        assert payload["measured"]["vs_plan_basis"] == "footprint per node"
 
-    def test_it_does_not_accuse_an_accurate_plan(self):
-        payload = self._payload(weights_gb=159.4, weights_per_node_gb=83.7)
-        assert abs(payload["measured"]["vs_plan_gb"]) < 5
-
-    def test_a_solo_plan_still_compares_against_the_total(self):
+    def test_nothing_is_compared_without_a_predicted_footprint(self):
+        # An older plan payload carries no forecast; a wrong comparison is
+        # worse than none.
         payload = self._payload(weights_gb=83.5)
-        assert payload["measured"]["vs_plan_gb"] == pytest.approx(-0.4, abs=0.05)
-        assert payload["measured"]["vs_plan_basis"] == "total"
+        assert "vs_plan_gb" not in payload["measured"]

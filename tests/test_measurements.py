@@ -325,13 +325,16 @@ class TestItIsVisible:
 class TestThePlannerPrefersIt:
     def test_the_plan_carries_the_measurement_beside_its_estimate(self, store):
         # Not instead of. The difference between the two is the interesting
-        # part — a plan that predicted 68 GB for something that cost 74 is a
-        # planner worth correcting.
+        # part — a plan that predicted 68 GB of footprint for something that
+        # cost 74 is a planner worth correcting.
+        #
+        # Against needed_per_node_gb, not weights_per_node_gb: memory_gb is the
+        # whole footprint the host lost, and the weights are only part of it.
         from ainode.planner.api_routes import _attach_measurement
 
         store.record_launch("org/m", ok=True, memory_gb=74.0,
                             load_seconds=292.0, max_model_len=65536)
-        payload = {"weights_gb": 68.0}
+        payload = {"weights_gb": 68.0, "needed_per_node_gb": 68.0}
         _attach_measurement({"measurement_store": store}, "org/m", payload)
         assert payload["measured"]["memory_gb"] == 74.0
         assert payload["measured"]["vs_plan_gb"] == 6.0

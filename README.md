@@ -278,6 +278,24 @@ it and is told so, rather than starting with a window the cache cannot back and
 preempting every request, which from a client looks like a model that keeps
 stopping rather than like a memory error.
 
+**Weights and cache are measured apart** — the measurement store used to keep
+one number, the drop in `MemAvailable` across a load, and that is the whole
+footprint: weights, engine, and the cache the engine sized to fill its pool. It
+was being compared against the planner's estimate of the *weights*, and the two
+agreeing to within a gigabyte looked like accuracy. It was two errors
+cancelling — the estimate was nineteen percent high on a mixture-of-experts
+under expert parallelism. vLLM reports all of it (`Model loading took … GiB`,
+`GPU KV cache size: … tokens`), so those are read back out of the engine log and
+kept separately, with the rank count they belong to. A footprint is then
+compared against the footprint the plan predicts, and a measured weight figure
+**replaces** the estimate for the next plan at that same split.
+
+**`reasoning` in a client config comes from the launch, not the catalog** — the
+catalog capability says the model thinks; the client field says the thinking
+arrives in its own place on the wire, and only `--reasoning-parser` makes vLLM
+put it there. Claiming it without the flag hands a client a first response it
+cannot read.
+
 **Knowing what happened** — per-phase load timings, an **error assistant**
 that explains a failure using a model already running, per-instance containers
 and logs, and a **measurement store** that records what each launch actually
