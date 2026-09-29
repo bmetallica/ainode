@@ -123,6 +123,32 @@ def _is_safe_env_pair(key: str, value: str) -> bool:
                 and _SAFE_PATH_RE.match(value))
 
 
+def _container_up(name: str) -> bool:
+    """Is the docker container ``name`` running? False on any doubt."""
+    if not name:
+        return False
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Running}}", name],
+            capture_output=True, text=True, timeout=10)
+        return result.returncode == 0 and result.stdout.strip() == "true"
+    except Exception:
+        return False
+
+
+def _answers(port: int) -> bool:
+    """Does an engine answer /v1/models on ``port`` here? Fast, and False on
+    any doubt — an adoption must never be a guess."""
+    if not port:
+        return False
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/v1/models", timeout=2) as response:
+            return 200 <= response.status < 300
+    except Exception:
+        return False
+
+
 class EugrBackendError(RuntimeError):
     """Raised when the backend cannot be driven (missing binary, bad config)."""
 
@@ -153,6 +179,7 @@ class EugrBackend(EngineBackend):
         self._instance_id = str(instance_id or "").strip()
         self._process: Optional[subprocess.Popen] = None
         self._ready = False
+        self._adopt_cache = None
         self._log_thread: Optional[threading.Thread] = None
         # Fabric wiring, resolved lazily on first use — see _topology().
         self._topology_cache: Optional[TopologyInfo] = None
@@ -272,6 +299,15 @@ class EugrBackend(EngineBackend):
                 "start_distributed() only runs when distributed_mode='head'. "
                 f"Current mode: {self.config.distributed_mode!r}."
             )
+        # Already serving: adopt, do not relaunch. The boot path calls this on
+        # every start of AINode, and the launcher's first act is to stop the
+        # cluster it finds — so an update of the orchestrator used to cost a
+        # full reload of whatever model was spread across the nodes.
+        if self.is_running():
+            logger.info("%s is already serving on port %s; adopting it rather "
+                        "than relaunching", self.container_name,
+                        self.config.api_port)
+            return True
         if not self.config.peer_ips:
             raise EugrBackendError(
                 "peer_ips is empty; cannot launch distributed cluster without peers."
@@ -399,6 +435,7 @@ class EugrBackend(EngineBackend):
         self._stop_peer_containers()
         self._stop_container()
         self._ready = False
+        self._adopt_cache = None
         self._phase.reset()
 
     def kill(self) -> None:
@@ -426,6 +463,7 @@ class EugrBackend(EngineBackend):
                 self._docker_kill(f"{user}@{self._transfer_ip(peer)}", name)
         self._docker_kill(None, name)
         self._ready = False
+        self._adopt_cache = None
 
     def _docker_kill(self, ssh_target: Optional[str], name: str) -> None:
         args = ["docker", "kill", name]
@@ -533,7 +571,47 @@ class EugrBackend(EngineBackend):
         return False
 
     def is_running(self) -> bool:
-        return self._process is not None and self._process.poll() is None
+        """Is this instance's engine up — whoever started it?
+
+        It used to be only "is the launcher process I spawned still alive".
+        That process lives inside the AINode container, so after any restart of
+        AINode — an update, a crash, systemctl restart — ``_process`` is None and
+        every engine read as stopped while it went on serving. Three things
+        followed from that one line: the startup path relaunched a running
+        distributed cluster (twelve minutes of reloading Smaug-Flash after every
+        update); the adoption of running containers (#203) never adopted an
+        LLM, only the image server, whose backend already asked docker; and the
+        replay relaunched stacked engines that were still up.
+
+        So: the launcher we spawned, or the container we would have started AND
+        an engine answering on our port. The container alone is not enough —
+        the launcher execs vLLM into a long-lived container, and a container
+        that outlived its engine must not read as a working model.
+        """
+        if self._process is not None and self._process.poll() is None:
+            return True
+        return self._adoptable()
+
+    def _adoptable(self) -> bool:
+        """Container up and engine answering. Cached briefly: status pages ask
+        often, and each answer costs a docker inspect and an HTTP round trip."""
+        now = time.monotonic()
+        cached = getattr(self, "_adopt_cache", None)
+        if cached is not None and now - cached[0] < 3.0:
+            return cached[1]
+        up = _container_up(self.container_name) and _answers(
+            int(getattr(self.config, "api_port", 0) or 0))
+        self._adopt_cache = (now, up)
+        if up and not self._ready:
+            # Nobody saw it load, but it is serving: say so, rather than
+            # leaving the phase on "idle" under a model that answers.
+            self._ready = True
+            try:
+                self._phase.mark_ready()
+            except Exception:
+                logger.debug("could not mark the adopted engine ready",
+                             exc_info=True)
+        return up
 
     def health_check(self) -> dict:
         """Used by ``ainode status``. Mirrors VLLMEngine.health_check."""

@@ -119,10 +119,11 @@ def save_instance_manifest(app) -> None:
     entries = []
     for inst in manager.instances():
         cfg = getattr(inst.backend, "config", None)
-        # Only persist solo instances — distributed (head) instances are out of
-        # scope for auto-replay (they need peer coordination).
-        if getattr(cfg, "distributed_mode", "solo") not in ("solo", None):
-            continue
+        # Distributed (head) instances too, marked as such. They are not
+        # replayed from here — relaunching across nodes needs every peer and is
+        # the default profile's job — but they ARE adopted when their container
+        # outlived AINode, and adoption needs to know their peers and split.
+        distributed = getattr(cfg, "distributed_mode", "solo") == "head"
         entry = {
             "model": inst.record.model,
             "gpu_memory_utilization": getattr(cfg, "gpu_memory_utilization", None),
@@ -132,6 +133,20 @@ def save_instance_manifest(app) -> None:
             # still loading has no /v1/models to answer with.
             "api_port": int(getattr(inst.record, "api_port", 0) or 0),
         }
+        if distributed:
+            entry.update(
+                distributed=True,
+                peer_ips=list(getattr(cfg, "peer_ips", None) or []),
+                peer_transfer_ips=list(
+                    getattr(cfg, "peer_transfer_ips", None) or []),
+                parallel_strategy=str(
+                    getattr(cfg, "parallel_strategy", "") or ""),
+                tensor_parallel_size=int(
+                    getattr(cfg, "tensor_parallel_size", 1) or 1),
+                pipeline_parallel_size=int(
+                    getattr(cfg, "pipeline_parallel_size", 1) or 1),
+                data_parallel_size=int(
+                    getattr(cfg, "data_parallel_size", 1) or 1))
         # round-trip per-load overrides so restart-replay restores aliases + ctx len
         for k in _OVERRIDE_KEYS:
             v = getattr(cfg, k, None)
@@ -842,7 +857,11 @@ async def _ensure_serving(app, port: int, relaunch, label: str, timeout: float =
 
 #: Engine containers whose name ends in the port they serve on. The primary
 #: keeps the unsuffixed legacy name and is owned by the boot engine.
-_ADOPTABLE_PREFIXES = ("ainode_image-", "ainode-vllm-node-solo-")
+_ADOPTABLE_PREFIXES = ("ainode_image-", "ainode-vllm-node-solo-",
+                       # eugr's own engine container, stacked instances. The
+                       # unsuffixed "vllm_node" is the primary, owned by the
+                       # boot engine and seeded in create_app.
+                       "vllm_node-")
 
 
 def _running_engine_containers() -> list:
@@ -915,9 +934,13 @@ def adopt_running_engines(app) -> int:
     from ainode.discovery.instance import InstanceRecord
     from ainode.engine.backends import get_backend
 
-    manager = app.get("instances")
     config = app.get("config")
-    if manager is None or config is None:
+    if config is None:
+        return 0
+    manager = app.get("instances")
+    if manager is None:
+        # create_app always makes one now; an app built some other way (a
+        # test, an embedding) simply has nothing to adopt into.
         return 0
 
     by_port = {}
@@ -941,9 +964,21 @@ def adopt_running_engines(app) -> int:
             logger.debug("could not check for %s", model, exc_info=True)
 
         overrides = {k: entry[k] for k in _OVERRIDE_KEYS if k in entry}
+        distributed = bool(entry.get("distributed"))
+        split = {
+            "distributed_mode": "head" if distributed else "solo",
+            "peer_ips": list(entry.get("peer_ips") or []) if distributed else [],
+        }
+        if distributed:
+            split.update(
+                peer_transfer_ips=list(entry.get("peer_transfer_ips") or []),
+                parallel_strategy=str(entry.get("parallel_strategy") or ""),
+                tensor_parallel_size=int(entry.get("tensor_parallel_size") or 1),
+                pipeline_parallel_size=int(
+                    entry.get("pipeline_parallel_size") or 1),
+                data_parallel_size=int(entry.get("data_parallel_size") or 1))
         inst_config = replace(
-            config, model=model, distributed_mode="solo", peer_ips=[],
-            api_port=port,
+            config, model=model, api_port=port, **split,
             **_resolved_overrides(entry.get("gpu_memory_utilization"), overrides))
         token = "" if port == config.api_port else str(port)
         backend = get_backend(inst_config, instance_id=token)
@@ -956,7 +991,10 @@ def adopt_running_engines(app) -> int:
         manager.add(InstanceRecord(
             instance_id=f"{config.node_id or 'head'}:{model}",
             model=model, head_node_id=config.node_id or "head",
-            peer_ips=[], api_port=port, tensor_parallel_size=1,
+            peer_ips=list(split["peer_ips"]), api_port=port,
+            tensor_parallel_size=int(split.get("tensor_parallel_size", 1)),
+            pipeline_parallel_size=int(split.get("pipeline_parallel_size", 1)),
+            data_parallel_size=int(split.get("data_parallel_size", 1)),
             status="serving",
             kind=("image" if str(getattr(inst_config, "engine_backend", "")) ==
                   "diffusers" else "llm")), backend)

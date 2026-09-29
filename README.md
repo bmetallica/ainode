@@ -211,7 +211,13 @@ from the orchestrator on purpose, so updating AINode does not take a
 fifteen-hour-old image server down with it. On startup the running ones are
 **adopted** rather than relaunched: each is asked what it serves and put back
 on the instance list before any replay or profile restore runs. Without that
-the node showed an empty **Instances** panel while it was serving.
+the node showed an empty **Instances** panel while it was serving. That holds
+for a model split across nodes too: the head's engine counts as running when
+its container is up *and* answers on its port, so the boot path adopts the
+cluster instead of relaunching it (which cost a full reload across every node
+on each AINode update), the head's primary is seeded with its peers and split,
+and a second distributed model on the head (`vllm_node-<port>`) comes back
+with the peers the manifest recorded for it.
 
 **One load cannot inherit the last one's flags** — every per-load override
 (`kv_cache_dtype`, `quantization`, `trust_remote_code`, `engine_backend`, the
