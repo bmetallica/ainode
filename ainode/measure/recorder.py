@@ -56,6 +56,51 @@ def _engine_report(backend, record=None) -> dict:
         return {}
 
 
+def _flag(args, name):
+    args = [str(a) for a in (args or [])]
+    for index, arg in enumerate(args):
+        if arg == name and index + 1 < len(args):
+            return args[index + 1]
+        if arg.startswith(name + "="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def _launch_of(record, config) -> dict:
+    """How this instance was started, in the terms a plan uses."""
+    if config is None:
+        return {}
+    args = [str(a) for a in (getattr(config, "extra_vllm_args", None) or [])]
+    tp = int(getattr(record, "tensor_parallel_size", 0) or
+             getattr(config, "tensor_parallel_size", 1) or 1)
+    pp = int(getattr(record, "pipeline_parallel_size", 0) or
+             getattr(config, "pipeline_parallel_size", 1) or 1)
+    out = {
+        "engine_backend": str(getattr(config, "engine_backend", "") or "eugr"),
+        "strategy": str(getattr(config, "parallel_strategy", "") or
+                        ("solo" if tp * pp == 1 else "")),
+        "tensor_parallel_size": tp,
+        "pipeline_parallel_size": pp,
+        "data_parallel_size": int(getattr(record, "data_parallel_size", 0) or
+                                  getattr(config, "data_parallel_size", 1) or 1),
+        "nodes": 1 + len(list(getattr(record, "peer_ips", None) or [])),
+        "max_model_len": int(getattr(config, "max_model_len", 0) or
+                             int(_flag(args, "--max-model-len") or 0)),
+        "kv_cache_dtype": str(_flag(args, "--kv-cache-dtype") or
+                              getattr(config, "kv_cache_dtype", "") or ""),
+        "gpu_memory_utilization": float(getattr(config, "gpu_memory_utilization", 0) or 0),
+        "max_num_seqs": int(_flag(args, "--max-num-seqs") or 0),
+        "quantization": str(getattr(config, "quantization", "") or ""),
+        "extra_vllm_args": args,
+    }
+    if out["engine_backend"] == "diffusers":
+        for field in ("max_image_size", "image_steps", "image_size"):
+            value = getattr(config, field, None)
+            if value:
+                out[field] = value
+    return out
+
+
 class Recorder:
     """Turns instance state changes into measurements."""
 
@@ -160,6 +205,7 @@ class Recorder:
             load_timeline=timeline,
             memory_gb=cost,
             memory_by_node=by_node,
+            launch=_launch_of(record, config),
             max_model_len=int(getattr(config, "max_model_len", 0) or 0),
             gpu_memory_utilization=float(
                 getattr(config, "gpu_memory_utilization", 0) or 0),

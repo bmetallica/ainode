@@ -95,7 +95,13 @@ class Measurement:
     #: memory_gb is then the largest of them — the node that decides whether
     #: the next launch fits.
     memory_by_node: Dict[str, float] = field(default_factory=dict)
-    #: The last few loads, newest last: [{at, seconds, memory_gb, ok}].
+    #: How the last load was started: split (tp/pp/dp, nodes), window, KV
+    #: dtype, memory fraction, --max-num-seqs, every extra flag, the backend.
+    #: A memory figure is only as useful as the launch it belongs to. Failed
+    #: launches keep theirs in ``history``, so what did NOT fit is on record
+    #: beside what did.
+    launch: Dict[str, object] = field(default_factory=dict)
+    #: The last few loads, newest last: [{at, seconds, memory_gb, ok, launch}].
     history: List[dict] = field(default_factory=list)
     #: GB of host memory that were free when the guard stopped this model,
     #: and when. A load that had to be killed is the hardest fact this store
@@ -182,7 +188,8 @@ class MeasurementStore:
                       gpu_memory_utilization: float = 0.0,
                       max_image_size: int = 0,
                       engine_report=None,
-                      memory_by_node=None) -> Measurement:
+                      memory_by_node=None,
+                      launch=None) -> Measurement:
         """Write down what a launch did. Never raises."""
         current = self.load()
         entry = current.get(model) or Measurement(model=model)
@@ -218,10 +225,15 @@ class MeasurementStore:
                     setattr(entry, field, value)
         else:
             entry.failures += 1
+        # The latest successful launch, matching the figures above; a failed
+        # one keeps its parameters in the history below.
+        if launch and ok:
+            entry.launch = dict(launch)
         entry.history.append({
             "at": round(time.time(), 1), "ok": bool(ok),
             "seconds": round(float(load_seconds or 0), 1),
             "memory_gb": round(float(memory_gb or 0), 1),
+            **({"launch": dict(launch)} if launch else {}),
         })
         del entry.history[:-HISTORY]
         current[entry.model] = entry

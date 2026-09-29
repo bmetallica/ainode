@@ -20,6 +20,19 @@ def register_measurement_routes(app: web.Application) -> None:
     app.router.add_post("/api/measurements/forget-stops", handle_forget_stops)
     app.router.add_delete("/api/measurements/{model:.+}", handle_forget)
     app.router.add_get("/api/cluster/measurements", handle_cluster)
+    app.router.add_get("/api/measurements/export", handle_export)
+
+
+async def handle_export(request: web.Request) -> web.Response:
+    """GET /api/measurements/export — everything measured, with the launch
+    parameters, checkpoint facts and the planner's prediction beside it
+    (measure/export.py). scripts/export-measurements.sh saves it to a file."""
+    from ainode.measure.export import build_export
+
+    payload = await build_export(request.app)
+    stamp = __import__("time").strftime("%Y%m%d-%H%M")
+    return web.json_response(payload, headers={
+        "Content-Disposition": f'attachment; filename="ainode-measurements-{stamp}.json"'})
 
 
 def _store(app) -> MeasurementStore:
