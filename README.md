@@ -342,7 +342,12 @@ under expert parallelism. vLLM reports all of it (`Model loading took … GiB`,
 `GPU KV cache size: … tokens`), so those are read back out of the engine log and
 kept separately, with the rank count they belong to. A footprint is then
 compared against the footprint the plan predicts, and a measured weight figure
-**replaces** the estimate for the next plan at that same split. So does the
+**replaces** the estimate for the next plan at that same split — or rather,
+the larger of it and what the pool really held besides its cache
+(memory fraction × node total − cache): the engine's weights figure can leave
+things out. Measured on the cluster, Qwen3.8-Flash-Next-NVFP4 reported 40.5 GB
+of weights per rank while 51 GB of FP8 per-layer embedding tables in the
+checkpoint were not in it, and the pool held 76 GB per node besides the cache. So does the
 **cost per token**: the engine's own cache over the tokens it said it holds,
 at the same KV dtype and split — which includes what the formula cannot see
 (DeepSeek V4's and Qwen3.8's indexer caches, a hybrid's recurrent state, the

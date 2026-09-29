@@ -206,6 +206,8 @@ class Recorder:
             memory_gb=cost,
             memory_by_node=by_node,
             launch=_launch_of(record, config),
+            error=str(getattr(backend, "load_error", "") or "") if phase != "ready" else "",
+            node_total_gb=self._node_total_gb(),
             max_model_len=int(getattr(config, "max_model_len", 0) or 0),
             gpu_memory_utilization=float(
                 getattr(config, "gpu_memory_utilization", 0) or 0),
@@ -276,10 +278,32 @@ class Recorder:
 
     def _kinds(self) -> Dict[str, str]:
         out: Dict[str, str] = {}
+        # What the other nodes run, too: requests are counted where they
+        # arrive — usually the head — and an image model running on a peer
+        # was taken for an LLM here, so its seconds per image were never
+        # written down.
+        cluster = self._app.get("cluster_state")
+        try:
+            for node in (cluster.members() if cluster is not None else []):
+                for inst in (getattr(node, "instances", None) or []):
+                    if isinstance(inst, dict) and inst.get("model"):
+                        out[inst["model"]] = str(inst.get("kind") or "llm")
+        except Exception:
+            logger.debug("could not read the cluster's instances", exc_info=True)
         for model, instance in self._instances():
             record = getattr(instance, "record", None)
             out[model] = str(getattr(record, "kind", "") or "llm")
         return out
+
+    def _node_total_gb(self) -> float:
+        collector = self._app.get("metrics_collector")
+        try:
+            from ainode.core.units import gb_from_mib
+
+            metrics = collector.get_gpu_metrics() if collector is not None else {}
+            return gb_from_mib((metrics or {}).get("memory_total_mb") or 0)
+        except Exception:
+            return 0.0
 
     # -- reading ------------------------------------------------------------
 

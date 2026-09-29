@@ -257,7 +257,50 @@ def _measured_weights(app, model: str):
         return 0.0, 0
     weights = float(measurement.get("weights_gb") or 0)
     ranks = int(measurement.get("rank_count") or 0)
-    return (weights, ranks) if weights > 0 and ranks > 0 else (0.0, 0)
+    if not (weights > 0 and ranks > 0):
+        return 0.0, 0
+    return max(weights, _fixed_from_pool(app, measurement, ranks)), ranks
+
+
+def _fixed_from_pool(app, measurement: dict, ranks: int) -> float:
+    """What the launch really held per node besides its cache, as a weights
+    figure the planner can use: the pool it was given (memory fraction x the
+    node's total) minus the cache the engine reported, minus the engine
+    overhead the planner adds back on its own. 0 when it cannot be told.
+
+    The engine's "Model loading took" is not all of it. Measured on the
+    cluster, nvidia/Qwen3.8-Flash-Next-NVFP4 at TP=2: 40.5 GB of weights per
+    rank reported, 29.2 GB of cache, in a pool of 0.83 x 130.7 = 108.5 GB —
+    38 GB per node that were neither. The checkpoint carries 51.2 GB of FP8
+    per-layer embedding tables ("ple_embedding") that the weights figure
+    leaves out; activations, CUDA graphs and a drafter are in the gap too.
+    Using the 40.5 alone had the planner promise ~36 GB per node of cache that
+    did not exist.
+    """
+    from ainode.planner.compute import COMM_OVERHEAD_GB, ENGINE_OVERHEAD_GB
+
+    gmu = float(measurement.get("gpu_memory_utilization") or 0)
+    cache = float(measurement.get("kv_cache_gb") or 0)
+    total = float(measurement.get("node_total_gb") or 0)
+    if not total:
+        total = _node_total(app, str(measurement.get("node_id") or ""))
+    if not (gmu and cache and total):
+        return 0.0
+    overhead = ENGINE_OVERHEAD_GB + (COMM_OVERHEAD_GB if ranks > 1 else 0.0)
+    return max(0.0, gmu * total - cache - overhead)
+
+
+def _node_total(app, node_id: str) -> float:
+    from ainode.core.units import node_total_gb
+
+    cluster = app.get("cluster_state")
+    try:
+        for node in (cluster.members() if cluster is not None else []):
+            if node.node_id == node_id:
+                return node_total_gb(node)
+    except Exception:
+        logger.debug("could not read node %s", node_id, exc_info=True)
+    return 0.0
 
 
 #: MoE launches with a measured weights figure needed before their median
