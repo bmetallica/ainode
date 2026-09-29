@@ -131,17 +131,35 @@ def create_app(
     # by `ainode start` and binds `ainode-vllm-node-solo` + api_port; without
     # this seed the manager would hand the same name/port to a 2nd backend and
     # the two fight (repeated docker-name Conflict, neither serving).
+    # A distributed HEAD primary too. It used to be seeded only in solo mode,
+    # so after any restart of AINode a model spread across nodes vanished from
+    # INSTANCES, the router and the planner — while it went on serving and
+    # holding the memory the planner then offered to the next launch.
+    _mode = (getattr(config, "distributed_mode", "solo") or "solo").lower()
     if engine is not None and getattr(config, "model", None) \
-            and (getattr(config, "distributed_mode", "solo") or "solo") == "solo":
+            and _mode in ("solo", "head"):
         from ainode.discovery.instance import InstanceRecord
         from ainode.engine.instance_manager import InstanceManager
         _seed = InstanceManager(base_port=config.api_port)
+        _distributed = _mode == "head"
         _seed.add(InstanceRecord(
             instance_id=f"{config.node_id or 'head'}:{config.model}",
             model=config.model, head_node_id=config.node_id or "head",
-            peer_ips=[], api_port=config.api_port, tensor_parallel_size=1,
+            peer_ips=list(getattr(config, "peer_ips", None) or [])
+            if _distributed else [],
+            api_port=config.api_port,
+            tensor_parallel_size=int(getattr(config, "tensor_parallel_size", 1)
+                                     or 1) if _distributed else 1,
+            pipeline_parallel_size=int(getattr(config, "pipeline_parallel_size",
+                                               1) or 1) if _distributed else 1,
             status="starting"), engine)
         app["instances"] = _seed
+    else:
+        # Always there, and before the app starts: adopting engines that
+        # outlived AINode happens in a startup task, and aiohttp refuses (for
+        # now: warns) state set on an application that is already running.
+        from ainode.engine.instance_manager import InstanceManager
+        app["instances"] = InstanceManager(base_port=config.api_port)
     app["start_time"] = time.time()
     app["client_session"] = None  # lazy-init in startup
     app["metrics_collector"] = collector
@@ -903,20 +921,25 @@ async def _on_cleanup(app: web.Application) -> None:
 @web.middleware
 async def cors_middleware(request: web.Request, handler):
     """Add CORS headers to every response so the dashboard can fetch freely."""
-    if request.method == "OPTIONS":
-        resp = web.Response(status=204)
-    else:
-        try:
-            resp = await handler(request)
-        except web.HTTPException as exc:
-            resp = exc
+    def _stamp(resp):
+        origin = request.headers.get("Origin", "")
+        allowed = origin if origin.startswith(("http://localhost", "http://127.0.0.1")) else ""
+        resp.headers["Access-Control-Allow-Origin"] = allowed
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        return resp
 
-    origin = request.headers.get("Origin", "")
-    allowed = origin if origin.startswith(("http://localhost", "http://127.0.0.1")) else ""
-    resp.headers["Access-Control-Allow-Origin"] = allowed
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    return resp
+    if request.method == "OPTIONS":
+        return _stamp(web.Response(status=204))
+    try:
+        resp = await handler(request)
+    except web.HTTPException as exc:
+        # Stamped and re-raised. Returning the exception as a response is
+        # deprecated in aiohttp and will stop working — and every redirect
+        # (the sign-in, onboarding) goes through here.
+        _stamp(exc)
+        raise
+    return _stamp(resp)
 
 async def handle_index(request: web.Request) -> web.Response:
     """Serve the dashboard, or redirect to onboarding if not set up."""

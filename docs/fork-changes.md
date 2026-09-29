@@ -101,7 +101,7 @@ The large ones, by how much:
 |---|---|---|
 | `web/static/js/app.js` | +2500 | Everything above that has a screen: the launch planner's hint, the instance card and its details dialog, profiles, placement, the memory-guard settings, the image panel, the cluster graphic's node detail |
 | `api/server.py` | +970 | ~120 routes where upstream has ~29; the cluster projections, the proxy's image route, the sync loop's extra duties |
-| `engine/backends/eugr.py` | +930 | Per-instance containers, scripts and logs; the parallel axes; image and weight distribution; the phase tracker; `kill()` |
+| `engine/backends/eugr.py` | +1010 | Per-instance containers, scripts and logs; the parallel axes; image and weight distribution; the phase tracker; `kill()`; an engine counts as running when its container answers, not only while this process holds the launcher — so a restart adopts it |
 | `models/registry.py` | +740 | Exact repo sizes, search by kind and its per-kind format verdict, the curated cluster catalog, modality, the size cache |
 | `models/api_routes.py` | +680 | Stacked instances, the admission gate, per-load overrides that reset rather than leak, engine detection from the checkpoint |
 | `engine/sharding_routes.py` | +465 | The real parallel plan, remembered placement, node-failure relaunch, the refusal messages |

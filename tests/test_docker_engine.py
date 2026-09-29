@@ -129,7 +129,11 @@ def test_start_solo_goes_through_the_launcher():
          patch.object(type(engine), "_launcher_env", lambda self, **kw: {}), \
          patch("ainode.engine.backends.eugr.EUGR_LAUNCHER", Path("/tmp/launch-cluster.sh")), \
          patch("pathlib.Path.exists", lambda self: True), \
-         patch("ainode.engine.backends.eugr.shutil.which", return_value=None):
+         patch("ainode.engine.backends.eugr.shutil.which", return_value=None), \
+         patch("ainode.engine.backends.eugr._container_up", return_value=False):
+        # _container_up: is_running() now also asks docker whether an engine
+        # container outlived AINode, and subprocess.run goes through the Popen
+        # patched above — it would be the first call recorded.
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
         popen.return_value = mock_proc
