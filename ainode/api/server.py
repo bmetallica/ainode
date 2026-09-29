@@ -254,6 +254,9 @@ def create_app(
 
     register_auth_routes(app)
     register_web_login(app, ui=getattr(config, "web_ui_enabled", True))
+    from ainode.api.balancer import Balancer
+
+    app["balancer"] = Balancer()
 
     # --- Metrics routes ------------------------------------------------------
     register_metrics_routes(app, collector)
@@ -2055,6 +2058,19 @@ async def proxy_to_vllm(request: web.Request) -> web.StreamResponse:
                 status=404)
         candidates = [("localhost", config.api_port)]  # back-compat: empty fleet → local
 
+    # A model on several nodes (replicas): the same conversation back to the
+    # replica that has it cached, otherwise the least busy. See api/balancer.py.
+    balancer = request.app.get("balancer")
+    if balancer is None:
+        from ainode.api.balancer import Balancer
+
+        balancer = Balancer()
+        request.app["balancer"] = balancer
+    from ainode.api.balancer import affinity_key
+
+    conversation = affinity_key(model, body_bytes) if len(candidates) > 1 else ""
+    candidates = balancer.order(candidates, conversation)
+
     # Build upstream request kwargs. Strip content-length: aiohttp recomputes it
     # from `data`, and forwarding the original alongside makes the upstream wait
     # for a body that never arrives (the proxy hangs). Strip host/transfer-encoding
@@ -2074,6 +2090,7 @@ async def proxy_to_vllm(request: web.Request) -> web.StreamResponse:
     last_err = None
     for host, port in candidates:
         vllm_url = f"http://{host}:{port}{request.path}"
+        balancer.acquire((host, port), conversation)
         try:
             async with session.request(request.method, vllm_url, **kwargs) as upstream:
                 is_sse = "text/event-stream" in upstream.headers.get("Content-Type", "")
@@ -2112,6 +2129,8 @@ async def proxy_to_vllm(request: web.Request) -> web.StreamResponse:
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             last_err = exc  # unreachable / connect-timeout (likely a ghost) — try the next
             continue
+        finally:
+            balancer.release((host, port))
     # Every candidate failed.
     collector.record_request(model, (time.time() - start_time) * 1000, error=True)
     return web.json_response(
