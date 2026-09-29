@@ -1,6 +1,6 @@
 # Profil-Wizard — Plan und Roadmap
 
-Stand: 2026-09-29, `main` nach #237. **Nur Plan — noch nichts davon gebaut.**
+Stand: 2026-09-29. Plan nach #237; Umsetzung läuft (Entscheidungen in §8).
 
 Dein Wunsch, in eigenen Worten zusammengefasst:
 
@@ -258,7 +258,22 @@ was man zum Wiederbearbeiten braucht. Ein Profil ohne `wizard`-Block
 
 ---
 
-## 8. Entscheidungen, die ich von dir brauche
+## 8. Entscheidungen
+
+**Beantwortet am 2026-09-29:**
+
+| # | Antwort |
+|---|---|
+| E1 | Jeden Node konvergieren, den das Profil benutzt; Nodes ohne Eintrag bleiben unangetastet. |
+| E2 | VRAM-Grenze wirkt auf Planung + Zulassung; der Memory-Guard bleibt unverändert. |
+| E3 | Automatische Verteilung nach Priorität, Standard gleich. |
+| E4 | Replikate + Lastverteilung im Router **gleich von Anfang an** (nicht erst Phase 6). |
+| E5 | **Nur heruntergeladene** Modelle. |
+| Einstieg | Im Profil-Bereich („Neues Profil (Wizard)“, „Im Wizard bearbeiten“). |
+| Grenze-UI | **Nur im Wizard** (pro Node in der Node-Spalte), keine eigene Config-Seite. |
+
+Ursprüngliche Fragen und Vorschläge:
+
 
 | # | Frage | Mein Vorschlag |
 |---|---|---|

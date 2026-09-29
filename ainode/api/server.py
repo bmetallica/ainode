@@ -285,6 +285,9 @@ def create_app(
     # The launch planner. Read-only: it computes what a launch would do, and
     # the launch form fills itself in from it.
     register_planner_routes(app)
+    from ainode.safety.limit_routes import register_limit_routes
+
+    register_limit_routes(app)
 
     # What each model actually cost here, so the next plan can prefer a
     # measurement to an estimate.
@@ -842,6 +845,19 @@ async def _cluster_sync_once(app: web.Application) -> None:
     except Exception:
         logger.debug("measurement poll failed", exc_info=True)
 
+    # What this node uses with nothing loaded (safety/baseline.py). docker is
+    # asked, so in an executor; it only looks once a minute.
+    baseline = app.get("idle_baseline")
+    if baseline is None:
+        from ainode.safety.baseline import IdleBaseline
+
+        baseline = IdleBaseline(app)
+        app["idle_baseline"] = baseline
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, baseline.poll)
+    except Exception:
+        logger.debug("baseline poll failed", exc_info=True)
+
     listener: Optional[BroadcastListener] = app.get("broadcast_listener")
     cluster: ClusterState = app["cluster_state"]
     if listener:
@@ -856,6 +872,8 @@ async def _cluster_sync_once(app: web.Application) -> None:
             "cluster_id": getattr(config, "cluster_id", "default"),
             "role": getattr(config, "cluster_role", "auto"),
             "distributed_mode": getattr(config, "distributed_mode", "solo") or "solo",
+            "memory_limit_gb": float(getattr(config, "memory_limit_gb", 0) or 0),
+            "baseline_used_mb": float(baseline.used_mb() or 0),
         }
         dmode = updates["distributed_mode"]
         loop = asyncio.get_event_loop()
@@ -1195,6 +1213,10 @@ async def handle_nodes(request: web.Request) -> web.Response:
                 "gpu_memory_gb": n.gpu_memory_gb,
                 "unified_memory": n.unified_memory,
                 "gpu_memory_used_pct": used_pct,
+                "memory_limit_gb": (float(getattr(config, "memory_limit_gb", 0) or 0)
+                                    if n.node_id == local_id else
+                                    float(getattr(n, "memory_limit_gb", 0) or 0)),
+                "baseline_used_mb": float(getattr(n, "baseline_used_mb", 0) or 0),
                 "gpu_utilization": round(util),
                 "gpu_temp": round(temp),
                 "status": status_str,
@@ -2537,6 +2559,7 @@ PATCHABLE_CONFIG_FIELDS = {
     "quantization",
     "trust_remote_code",
     "auto_reasoning_parser",
+    "memory_limit_gb",
     "cluster_enabled",
     "cluster_role",
     "cluster_id",
@@ -2834,6 +2857,16 @@ async def handle_patch_config(request: web.Request) -> web.Response:
         if key in ("cluster_interface", "coord_interface"):
             from ainode.cluster.topology import is_safe_device_name
             if value not in ("", None) and not is_safe_device_name(value):
+                rejected.append(key)
+                continue
+        if key == "memory_limit_gb":
+            try:
+                value = float(value or 0)
+            except (TypeError, ValueError):
+                rejected.append(key)
+                continue
+            if value < 0 or (0 < value < 8):
+                # Below a few GB no model fits; 0 means "no limit".
                 rejected.append(key)
                 continue
         if key == "rdma_hcas":

@@ -149,6 +149,10 @@ class NodeConfig:
     # image registers the parser (models/reasoning_parsers.py). Off leaves the
     # thinking in the content, as before.
     auto_reasoning_parser: bool = True
+    # The most memory models may bring this node to, in decimal GB of total
+    # use (0 = no limit). Set per node from the profile wizard; planning and
+    # admission hold to it, the memory guard does not (wizzard.md, E2).
+    memory_limit_gb: float = 0.0
     # Extra `vllm serve` flags appended verbatim to the engine command line, e.g.
     # ["--moe-backend", "marlin", "--reasoning-parser", "qwen3"]. Models whose
     # published recipe needs flags AINode doesn't model (speculative decoding,

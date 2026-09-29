@@ -66,11 +66,20 @@ def node_budgets(app, node_ids=None) -> list:
         total_gb = gb_from_mib(total_mb) if total_mb else \
             float(getattr(node, "gpu_memory_gb", 0) or 0)
         free_gb = gb_from_mib(total_mb - used_mb) if total_mb else total_gb
+        # The operator's limit for this node (wizzard.md §5, E2): total use
+        # may not pass it, so what is free is at most the limit minus what is
+        # in use. Its own node reads the config, which is fresher than the
+        # announcement it is about to send.
+        limit = float((getattr(config, "memory_limit_gb", 0) if node_id == own_id
+                       else getattr(node, "memory_limit_gb", 0)) or 0)
+        if limit > 0 and total_mb:
+            free_gb = min(free_gb, limit - gb_from_mib(used_mb))
         out.append(NodeBudget(
             node_id=node_id,
             name=str(getattr(node, "node_name", "") or node_id),
             total_gb=round(total_gb, 1),
             free_gb=round(max(0.0, free_gb), 1),
+            limit_gb=round(limit, 1) if limit > 0 else 0.0,
         ))
     return out
 
@@ -485,7 +494,8 @@ async def handle_plan(request: web.Request) -> web.Response:
     _attach_measurement(request.app, model, payload)
     payload["kv_cache_dtype"] = kv_dtype or "auto"
     payload["nodes"] = [{"node_id": n.node_id, "name": n.name,
-                         "total_gb": n.total_gb, "free_gb": n.free_gb}
+                         "total_gb": n.total_gb, "free_gb": n.free_gb,
+                         "limit_gb": n.limit_gb}
                         for n in nodes]
     payload["facts"] = {
         "architecture": facts.architecture,

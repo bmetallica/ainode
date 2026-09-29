@@ -127,6 +127,9 @@ class NodeBudget:
     name: str = ""
     total_gb: float = 0.0
     free_gb: float = 0.0
+    #: The operator's limit on this node's total use, 0 for none. Already
+    #: applied to free_gb; carried so a plan can say why a node reads small.
+    limit_gb: float = 0.0
 
     @property
     def usable_gb(self) -> float:
