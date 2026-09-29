@@ -77,6 +77,9 @@ class Item:
     #: GB on each of its nodes that do not move: weights, engine, rounding pad,
     #: an image model's peak, an embedding model.
     fixed_gb: float = 0.0
+    #: The part of ``fixed_gb`` a launch holds outside its memory fraction
+    #: (measured): counted against the node, not written into the fraction.
+    outside_gb: float = 0.0
     mode: str = "auto"
     #: For usage/size: the cache per node it is pinned to.
     pinned_gb: float = 0.0
@@ -234,8 +237,41 @@ def _without_flag(args, name) -> List[str]:
     return out
 
 
+def _outside_pool_gb(rows, node_ids, nodes: Dict[str, HouseholdNode], count: int) -> float:
+    """What a launch of this model held beyond its memory fraction, per node:
+    the measured host cost minus the fraction x the node's total.
+
+    nvidia/Qwen3.8-Flash-Next-NVFP4 at 0.84 of 130.7 GB held 114.6 GB on
+    spark-1432 — 4.8 GB beyond the 109.8 its fraction reserves (the API
+    process, Ray, NCCL). The wizard planned the fraction alone against the
+    budget, and the gate, which compares the measured 114.6, refused the
+    launch the wizard had just planned.
+    """
+    worst = 0.0
+    for row in rows or []:
+        gmu = float(row.get("gpu_memory_utilization") or 0)
+        if not gmu:
+            continue
+        launch = row.get("launch") or {}
+        ranks = int(launch.get("nodes") or row.get("rank_count") or 0)
+        if ranks and ranks != count:
+            continue            # another split, another overhead
+        per_node = dict(row.get("memory_by_node") or {})
+        if not per_node and row.get("memory_gb"):
+            per_node = {str(row.get("node_id") or ""): row["memory_gb"]}
+        for node_id, used in per_node.items():
+            if node_ids and node_id not in node_ids:
+                continue
+            total = float(row.get("node_total_gb") or 0) or float(
+                getattr(nodes.get(node_id), "total_gb", 0) or 0)
+            if total and used:
+                worst = max(worst, float(used) - gmu * total)
+    # Beyond that it is not this launch: something else shared the node.
+    return round(min(max(worst, 0.0), 12.0), 1)
+
+
 def _resolve_llm(app, spec: dict, item: Item, nodes: Dict[str, HouseholdNode],
-                 head_id: str) -> dict:
+                 head_id: str, measured: Optional[dict] = None) -> dict:
     """Fixed cost, cache limits and the arithmetic for one LLM. Returns what
     the result reports about it beyond the Item."""
     from ainode.planner import api_routes as routes
@@ -293,9 +329,12 @@ def _resolve_llm(app, spec: dict, item: Item, nodes: Dict[str, HouseholdNode],
     # The memory fraction is written with two decimals; this keeps room for
     # rounding it up so the reservation never lands past the budget.
     pad = 0.01 * (max(totals) if totals else 0.0)
-    item.fixed_gb = per_node + overhead + pad
+    item.outside_gb = _outside_pool_gb((measured or {}).get(item.model), item.node_ids,
+                                       nodes, count)
+    item.fixed_gb = per_node + overhead + pad + item.outside_gb
     info.update(weights_per_node_gb=round(per_node, 1), weights_source=weights_source,
-                overhead_gb=round(overhead, 1), bytes_per_token=int(bpt),
+                overhead_gb=round(overhead, 1), outside_pool_gb=item.outside_gb,
+                bytes_per_token=int(bpt),
                 kv_source=kv_source, count=count, tightest_total_gb=tightest,
                 weights_gb=round(facts.weights_gb, 1))
     if not bpt:
@@ -329,7 +368,7 @@ def _resolve_llm(app, spec: dict, item: Item, nodes: Dict[str, HouseholdNode],
     per_token_node_gb = bpt / count / 1e9
     gmu_cap = min(MAX_GMU, float(getattr(recipe, "recommended_gmu", 0) or 0) or MAX_GMU)
     if tightest:
-        item.cap_gb = max(0.0, gmu_cap * tightest - item.fixed_gb + pad)
+        item.cap_gb = max(0.0, gmu_cap * tightest - (item.fixed_gb - item.outside_gb) + pad)
     info["gmu_cap"] = gmu_cap
 
     sessions = max(1, int(spec.get("sessions") or 1))
@@ -464,8 +503,9 @@ def _served_name(spec: dict, entry: dict) -> None:
         entry["served_model_name"] = names
 
 
-def plan_household(app, draft: dict) -> dict:
-    """Plan a wizard draft: ``{"models": [...], "limits": {node_id: gb}}``."""
+def plan_household(app, draft: dict, measured: Optional[dict] = None) -> dict:
+    """Plan a wizard draft: ``{"models": [...], "limits": {node_id: gb}}``.
+    ``measured``: the cluster's measurements, {model: [rows]}."""
     config = app.get("config")
     head_id = str(getattr(config, "node_id", "") or "")
     nodes = household_nodes(app, (draft or {}).get("limits") or None)
@@ -504,7 +544,7 @@ def plan_household(app, draft: dict) -> dict:
         if not item.errors:
             try:
                 if item.kind == "llm":
-                    info = _resolve_llm(app, spec, item, by_id, head_id)
+                    info = _resolve_llm(app, spec, item, by_id, head_id, measured)
                 elif item.kind == "image":
                     info = _resolve_image(app, spec, item)
                 else:
@@ -529,7 +569,7 @@ def plan_household(app, draft: dict) -> dict:
                "warnings": list(info.get("warnings") or []),
                "fixed_per_node_gb": round(item.fixed_gb, 1)}
         for key in ("strategy", "launched_by", "grow", "weights_gb", "weights_per_node_gb", "weights_source",
-                    "overhead_gb", "kv_source", "bytes_per_token", "kv_cache_dtype",
+                    "overhead_gb", "outside_pool_gb", "kv_source", "bytes_per_token", "kv_cache_dtype",
                     "max_image_size"):
             if key in info:
                 out[key] = info[key]
@@ -568,7 +608,7 @@ def plan_household(app, draft: dict) -> dict:
                         f"room from the other models on this node.")
                     out["errors"] = list(item.errors)
             info["max_model_len"] = window
-            reserve = item.fixed_gb - 0.01 * max(
+            reserve = item.fixed_gb - item.outside_gb - 0.01 * max(
                 (by_id[n].total_gb for n in item.node_ids), default=0) + item.cache_gb
             tight = info.get("tightest_total_gb") or 0
             gmu = math.ceil(reserve / tight * 100) / 100 if tight else 0.0

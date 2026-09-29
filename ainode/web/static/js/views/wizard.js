@@ -572,7 +572,9 @@ Object.assign(AINode, {
         parts.push(self.formatNumber(planned.kv_tokens || 0) + ' tokens');
         parts.push((planned.sessions || 0) + ' session(s) at ' +
                    self.formatNumber(planned.max_model_len || 0));
-        parts.push('memory ' + Math.round((planned.gpu_memory_utilization || 0) * 100) + '%');
+        parts.push('memory ' + Math.round((planned.gpu_memory_utilization || 0) * 100) + '%' +
+                   (planned.outside_pool_gb ? ' + ' + planned.outside_pool_gb +
+                    ' GB beyond it (measured)' : ''));
       } else if (planned.fixed_per_node_gb) {
         parts.push('<strong>' + planned.fixed_per_node_gb + ' GB</strong> on its node');
       }
