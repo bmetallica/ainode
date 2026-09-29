@@ -1060,9 +1060,7 @@ const AINode = {
   },
 
   formatSeconds(seconds) {
-    seconds = Math.round(seconds || 0);
-    if (seconds < 60) return seconds + 's';
-    return Math.floor(seconds / 60) + 'm' + (seconds % 60 ? (seconds % 60) + 's' : '');
+    return AINodeLib.formatSeconds(seconds);
   },
 
   assistBlock(inst, errorText, readyModels) {
@@ -2252,8 +2250,7 @@ const AINode = {
   // so the next model was planned with one of the pair withheld although
   // nobody had touched either field for it.
   launchEditScope(want) {
-    want = want || this.launchPlanKey();
-    return want.model + '|' + (want.nodes || []).join(',');
+    return AINodeLib.launchEditScope(want || this.launchPlanKey());
   },
 
   launchDrove(want) {
@@ -2278,19 +2275,14 @@ const AINode = {
   // Guarded by _applyingPlan, or the write would count as an edit and the two
   // fields would chase each other.
   reflectPlanIntoFields(plan) {
-    if (!plan || plan.fits === false) return;
-    var drove = this.launchDrove();
-    if (!drove) return;                      // nothing driven yet: leave be
+    // Nothing driven yet: leave be. See AINodeLib.planFieldUpdates.
+    var updates = AINodeLib.planFieldUpdates(plan, this.launchDrove());
     var len = document.getElementById('launch-max-len');
     var seqs = document.getElementById('launch-max-seqs');
     this._applyingPlan = true;
     try {
-      if (drove !== 'len' && len && plan.max_model_len) {
-        len.value = plan.max_model_len;
-      }
-      if (drove !== 'seqs' && seqs && plan.max_num_seqs) {
-        seqs.value = plan.max_num_seqs;
-      }
+      if (len && updates.max_model_len) len.value = updates.max_model_len;
+      if (seqs && updates.max_num_seqs) seqs.value = updates.max_num_seqs;
       // The memory fraction is an input to both, never derived from them —
       // writing it back would fight the operator for the one field that is
       // purely theirs.
@@ -2303,25 +2295,14 @@ const AINode = {
     var want = this.launchPlanKey();
     if (!want.model) { this.state.launchPlan = null; return; }
     if (this.state.launchPlan && this.state.launchPlan.key === want.key) return;
-    var params = new URLSearchParams({ model: want.model });
-    if (want.nodes.length) params.set('nodes', want.nodes.join(','));
-    if (want.strategy) params.set('strategy', want.strategy);
     // Context and concurrency multiply into one cache. Sending BOTH pins both
     // and the planner has nothing left to say, so the fields could never move
     // in relation to each other. Whichever the operator last touched is the
     // constraint; the other is the answer. The forecast bar is not misled by
     // the omission: the planner forecasts a derived concurrency at the value
     // it derives, which is what lands in the field and in the launch.
-    var drove = this.launchDrove(want);
-    if (want.max_model_len && drove !== 'seqs') {
-      params.set('max_model_len', want.max_model_len);
-    }
-    if (want.concurrency && drove !== 'len') {
-      params.set('concurrency', want.concurrency);
-    }
-    // The dtype is neither: it halves or doubles the cost per token, so it is
-    // always sent and never derived.
-    if (want.kv_cache_dtype) params.set('kv_cache_dtype', want.kv_cache_dtype);
+    var params = new URLSearchParams(
+      AINodeLib.planQuery(want, this.launchDrove(want)));
     var data = await this.fetchJSON('/api/planner?' + params.toString());
     if (!data || data.error) { this.state.launchPlan = null; return; }
     data.key = want.key;
@@ -2349,12 +2330,7 @@ const AINode = {
   // running no longer matches it.
   rememberOpencodeConfig(data) {
     if (!data || !data.fingerprint) return;
-    var models = {};
-    var list = (((data.config || {}).provider || {}).vllm || {}).models || {};
-    Object.keys(list).forEach(function (id) {
-      models[id] = { context: (list[id].limit || {}).context,
-                     reasoning: !!list[id].reasoning };
-    });
+    var models = AINodeLib.opencodeModels(data);
     try {
       localStorage.setItem('ainode.opencodeCopied', JSON.stringify(
         { fingerprint: data.fingerprint, at: Date.now(), models: models }));
@@ -2365,30 +2341,9 @@ const AINode = {
   },
 
   // What changed between the config that was copied and the one that would
-  // be generated now. Pure, so it can be tested without a browser.
+  // be generated now — see AINodeLib.opencodeDrift.
   opencodeDrift(saved, current) {
-    var out = [];
-    var now = {};
-    var list = (((current || {}).config || {}).provider || {}).vllm || {};
-    Object.keys(list.models || {}).forEach(function (id) {
-      var m = list.models[id];
-      now[id] = { context: (m.limit || {}).context, reasoning: !!m.reasoning };
-    });
-    var before = (saved || {}).models || {};
-    Object.keys(before).forEach(function (id) {
-      if (!now[id]) { out.push(id + ' is no longer served'); return; }
-      if (before[id].context !== now[id].context) {
-        out.push(id + ': context ' + Number(before[id].context).toLocaleString() +
-                 ' → ' + Number(now[id].context).toLocaleString());
-      }
-      if (before[id].reasoning !== now[id].reasoning) {
-        out.push(id + ': reasoning ' + before[id].reasoning + ' → ' + now[id].reasoning);
-      }
-    });
-    Object.keys(now).forEach(function (id) {
-      if (!before[id]) out.push(id + ' is new');
-    });
-    return out;
+    return AINodeLib.opencodeDrift(saved, current);
   },
 
   async checkOpencodeDrift() {
@@ -2421,39 +2376,8 @@ const AINode = {
   },
 
   renderOccupancy(plan) {
-    if (!plan || !plan.reserved_per_node_gb || !plan.node_total_gb) return '';
-    var total = plan.node_total_gb;
-    var reserved = plan.reserved_per_node_gb;
-    var needed = plan.needed_per_node_gb;
-    var share = Math.round((reserved / total) * 100);
-    var idle = reserved - needed;
-    var bar = function (value, cls) {
-      return '<span class="occupancy-seg ' + cls + '" style="width:' +
-        Math.max(0, Math.min(100, (value / total) * 100)).toFixed(1) + '%"></span>';
-    };
-    var html = '<div class="plan-occupancy">' +
-      '<div class="occupancy-bar">' +
-        bar(plan.weights_per_node_gb, 'weights') +
-        bar(plan.overhead_per_node_gb, 'engine') +
-        bar(plan.cache_used_per_node_gb, 'cache') +
-        bar(Math.max(0, idle), 'idle') +
-      '</div>' +
-      '<div class="occupancy-text">▤ Occupies <strong>' +
-      reserved.toFixed(1) + ' GB</strong> of ' + Math.round(total) +
-      ' per node (' + share + '% — the memory fraction), of which <strong>' +
-      needed.toFixed(1) + ' GB</strong> is used: ' +
-      plan.weights_per_node_gb.toFixed(1) + ' weights + ' +
-      plan.overhead_per_node_gb.toFixed(1) + ' engine + ' +
-      plan.cache_used_per_node_gb.toFixed(1) + ' cache for ' +
-      (plan.max_model_len || 0).toLocaleString() + ' x ' +
-      (document.getElementById('launch-max-seqs') || {}).value + ' requests.';
-    if (idle > 2) {
-      html += ' <span class="occupancy-idle">' + idle.toFixed(1) +
-        ' GB of the pool is reserved and will not be used at this context and ' +
-        'concurrency — lower the memory fraction to leave it on the node, or ' +
-        'raise the concurrency to spend it.</span>';
-    }
-    return html + '</div></div>';
+    var seqs = document.getElementById('launch-max-seqs');
+    return AINodeLib.renderOccupancy(plan, seqs ? seqs.value : '');
   },
 
   // Returns true when it has drawn the hint itself.
@@ -2709,9 +2633,7 @@ const AINode = {
   // behind it — the server refuses it; the UI should not offer it either.
   // Mirrors ainode/engine/parallelism.py.
   strategyAllowed(strategy, nodeCount) {
-    if (nodeCount <= 1) return true;
-    if (strategy === 'tensor') return [1, 2, 4, 8].indexOf(nodeCount) !== -1;
-    return true;  // pipeline and data work at any node count
+    return AINodeLib.strategyAllowed(strategy, nodeCount);
   },
 
   async launchInstance() {
@@ -3922,20 +3844,7 @@ const AINode = {
   // the button is that it checks, and a silent check is indistinguishable from
   // no check at all.
   resumeCheckNote(checked) {
-    if (!checked) return '';
-    if (checked.note) return ' — ' + checked.note;
-    var parts = [];
-    if ((checked.removed || []).length) {
-      parts.push('removed ' + checked.removed.length + ' unusable file(s)' +
-        (checked.freed_bytes ? ', ' + this.formatBytes(checked.freed_bytes) : ''));
-    }
-    if ((checked.present || []).length) {
-      parts.push((checked.present || []).length + ' file(s) verified');
-    }
-    if ((checked.will_fetch || []).length) {
-      parts.push((checked.will_fetch || []).length + ' to fetch');
-    }
-    return parts.length ? ' — ' + parts.join(', ') : '';
+    return AINodeLib.resumeCheckNote(checked);
   },
 
   resumeDownload(hfRepo) {
@@ -4088,12 +3997,7 @@ const AINode = {
   },
 
   formatBytes(bytes) {
-    if (!bytes || bytes < 0) return '0 B';
-    if (bytes < 1024) return bytes.toFixed(0) + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-    if (bytes < 1024 * 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-    return (bytes / (1024 * 1024 * 1024 * 1024)).toFixed(2) + ' TB';
+    return AINodeLib.formatBytes(bytes);
   },
 
   formatDuration(seconds) {
@@ -4780,10 +4684,7 @@ const AINode = {
   // "42 stale staging files, 61.4 GB reclaimed" — worth saying out loud,
   // because that space was being held by a transfer the import replaced.
   clearedNote(out) {
-    if (!out || !out.cleared_partials) return '';
-    var gb = (out.reclaimed_bytes || 0) / 1e9;
-    return ' (cleared ' + out.cleared_partials + ' stale staging file(s)' +
-           (gb >= 0.1 ? ', ' + gb.toFixed(1) + ' GB reclaimed' : '') + ')';
+    return AINodeLib.clearedNote(out);
   },
 
   // The mirror is a job, not a reply. A 129 GB push to the peers used to be
@@ -6931,9 +6832,7 @@ const AINode = {
   },
 
   esc(str) {
-    var div = document.createElement('div');
-    div.textContent = str || '';
-    return div.innerHTML;
+    return AINodeLib.esc(str);
   },
 
   formatUptime(seconds) {

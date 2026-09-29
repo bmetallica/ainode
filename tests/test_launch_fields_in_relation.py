@@ -106,8 +106,20 @@ class TestTheFormAsksAndAnswers:
 
     def test_only_the_untouched_constraint_is_sent(self):
         # Sending both pins both, and then the planner has nothing to say.
-        assert "drove !== 'seqs'" in APP_JS
-        assert "drove !== 'len'" in APP_JS
+        from tests.jslib import call
+
+        want = {"model": "m", "nodes": ["a"], "strategy": "tensor",
+                "max_model_len": "65536", "concurrency": "4",
+                "kv_cache_dtype": "fp8"}
+        drove_len = call("planQuery", want, "len")
+        assert drove_len["max_model_len"] == "65536"
+        assert "concurrency" not in drove_len
+        drove_seqs = call("planQuery", want, "seqs")
+        assert drove_seqs["concurrency"] == "4"
+        assert "max_model_len" not in drove_seqs
+        # Nothing driven, or another field: both, as typed.
+        both = call("planQuery", want, None)
+        assert both["max_model_len"] == "65536" and both["concurrency"] == "4"
 
     def test_the_derived_value_is_written_back(self):
         assert "reflectPlanIntoFields" in APP_JS
@@ -121,12 +133,21 @@ class TestTheFormAsksAndAnswers:
         source = source[:source.index("async fetchPlan")]
         assert "launch-gmu" not in source
 
-    @pytest.mark.parametrize("field", ["launch-max-len", "launch-max-seqs"])
-    def test_a_refused_plan_writes_nothing(self, field):
+    @pytest.mark.parametrize("drove", ["len", "seqs"])
+    def test_a_refused_plan_writes_nothing(self, drove):
         # A plan that does not fit has no numbers worth pasting into a form.
-        source = APP_JS[APP_JS.index("reflectPlanIntoFields"):]
-        source = source[:source.index("async fetchPlan")]
-        assert "plan.fits === false" in source
+        from tests.jslib import call
+
+        plan = {"fits": False, "max_model_len": 4096, "max_num_seqs": 2}
+        assert call("planFieldUpdates", plan, drove) == {}
+
+    def test_only_the_derived_half_is_written(self):
+        from tests.jslib import call
+
+        plan = {"fits": True, "max_model_len": 131072, "max_num_seqs": 3}
+        assert call("planFieldUpdates", plan, "len") == {"max_num_seqs": 3}
+        assert call("planFieldUpdates", plan, "seqs") == {"max_model_len": 131072}
+        assert call("planFieldUpdates", plan, None) == {}
 
 
 class TestACheckpointThatStatesNoCeiling:

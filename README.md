@@ -1288,12 +1288,18 @@ AINode is Apache-2.0 and welcomes contributions.
 [getainode/ainode](https://github.com/getainode/ainode) — that is the
 maintained project, and most of what you might want to change lives there.
 
-**For this fork**, work on a branch, open a PR, and run both before you do:
+**For this fork**, work on a branch, open a PR, and run the checks before you
+do — the same ones CI runs:
 
 ```bash
-python -m pytest tests/ -q     # 2539 tests
-ruff check ainode tests
+scripts/dev-setup.sh   # once: ./.venv with pytest, pytest-asyncio, ruff
+scripts/test.sh        # ruff, `bash -n` on the scripts, pytest (~3,500 tests)
 ```
+
+pytest also runs the dashboard's JavaScript tests (`tests/js`, through
+`node --test`, Node 18+; skipped without node). Logic that can be a pure
+function belongs in `ainode/web/static/js/lib.js`, where those tests reach it,
+rather than inside `app.js`, where the only test is a search for a string.
 
 Anything that only makes sense on a GB10 cluster belongs here; anything that
 would work anywhere is better carried upstream, and

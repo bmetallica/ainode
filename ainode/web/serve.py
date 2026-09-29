@@ -28,7 +28,7 @@ STATIC_DIR = WEB_DIR / "static"
 TEMPLATES_DIR = WEB_DIR / "templates"
 
 #: Assets the templates reference and that must never be served stale.
-VERSIONED = ("/static/js/app.js", "/static/js/topology.js",
+VERSIONED = ("/static/js/app.js", "/static/js/lib.js", "/static/js/topology.js",
              "/static/css/style.css")
 
 
