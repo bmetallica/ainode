@@ -194,3 +194,36 @@ class TestTheRecorderKeepsTheContext:
 
         report = _engine_report(_Backend())
         assert report["kv_cache_dtype"] == "fp8_ds_mla"
+
+
+class TestTheCheckpointIsNotWalkedPerKeystroke:
+    """O1: every field change re-plans, and every plan walked and stat()ed all
+    of the checkpoint's shards."""
+
+    def _tree(self, tmp_path):
+        from ainode.planner import facts as facts_module
+
+        facts_module.forget_weight_bytes()
+        model = tmp_path / "org--m"
+        model.mkdir()
+        (model / "a.safetensors").write_bytes(b"x" * 100)
+        return model, facts_module
+
+    def test_the_second_plan_asks_the_cache(self, tmp_path, monkeypatch):
+        model, facts_module = self._tree(tmp_path)
+        walks = []
+        real = facts_module._weight_bytes
+        monkeypatch.setattr(facts_module, "_weight_bytes",
+                            lambda p: walks.append(p) or real(p))
+        assert facts_module.weight_bytes_on_disk(model) == 100
+        assert facts_module.weight_bytes_on_disk(model) == 100
+        assert len(walks) == 1
+
+    def test_a_forgotten_size_is_measured_again(self, tmp_path):
+        model, facts_module = self._tree(tmp_path)
+        assert facts_module.weight_bytes_on_disk(model) == 100
+        (model / "a.safetensors").write_bytes(b"x" * 300)
+        from ainode.models.registry import ModelManager
+
+        ModelManager.forget_size(model)     # what a download does when done
+        assert facts_module.weight_bytes_on_disk(model) == 300

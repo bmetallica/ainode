@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,26 @@ def read_config(directory: Path) -> dict:
         return {}
 
 
+#: path -> (directory mtime, bytes, when measured). Every field change in the
+#: launch form re-plans (350 ms debounce), and every plan measured the
+#: checkpoint by walking and stat()ing all its shards — tens to hundreds of
+#: files, on every keystroke. Same rule as ModelManager._dir_size_gb: the
+#: directory's mtime as the cheap hint, a TTL as the backstop, and
+#: forget_weight_bytes() from the writers that know better.
+_WEIGHT_CACHE: Dict[str, Tuple[float, int, float]] = {}
+_WEIGHT_TTL_SECONDS = 60.0
+
+
+def forget_weight_bytes(path=None) -> None:
+    """Drop cached sizes under ``path`` (all of them when None)."""
+    if path is None:
+        _WEIGHT_CACHE.clear()
+        return
+    prefix = str(path)
+    for key in [k for k in _WEIGHT_CACHE if k.startswith(prefix)]:
+        del _WEIGHT_CACHE[key]
+
+
 def weight_bytes_on_disk(directory: Path) -> int:
     """Total bytes of weight files, following the hub cache's symlinks.
 
@@ -131,6 +152,22 @@ def weight_bytes_on_disk(directory: Path) -> int:
     resolved = snapshot_dir(Path(directory)) or Path(directory)
     if not resolved.is_dir():
         return 0
+    key = str(resolved)
+    try:
+        stamp = resolved.stat().st_mtime
+    except OSError:
+        return 0
+    now = time.time()
+    cached = _WEIGHT_CACHE.get(key)
+    if cached is not None and cached[0] == stamp \
+            and now - cached[2] < _WEIGHT_TTL_SECONDS:
+        return cached[1]
+    total = _weight_bytes(resolved)
+    _WEIGHT_CACHE[key] = (stamp, total, now)
+    return total
+
+
+def _weight_bytes(resolved: Path) -> int:
     total = 0
     for entry in resolved.rglob("*"):
         if entry.suffix not in _WEIGHT_SUFFIXES:
