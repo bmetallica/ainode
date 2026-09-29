@@ -91,9 +91,18 @@ def _signed_in(request: web.Request) -> bool:
 @web.middleware
 async def web_login_middleware(request: web.Request, handler):
     path = request.path
-    if request.app.get("web_login") is None or is_public(path):
+    if request.app.get("web_login") is None:
         return await handler(request)
-    if request.method == "OPTIONS":
+    # A page on another site must not change anything here, whatever else
+    # lets the request in — loopback included: a browser on the head itself
+    # arrives as 127.0.0.1, and a form on any web page it has open can post
+    # to localhost:3000. /v1/ is exempt: browser-based chat clients on their
+    # own origin are what it is for, and it has its keys.
+    if (request.method in _MUTATING and not path.startswith(_PUBLIC_PREFIXES)
+            and not _same_origin(request)):
+        return web.json_response(
+            {"error": "cross-site request refused"}, status=403)
+    if is_public(path) or request.method == "OPTIONS":
         return await handler(request)
     # Not a browser, and trusted for reasons of their own. Loopback can be
     # switched off — the tests do, since their client is always 127.0.0.1, and
@@ -104,9 +113,6 @@ async def web_login_middleware(request: web.Request, handler):
         return await handler(request)
 
     if _signed_in(request):
-        if request.method in _MUTATING and not _same_origin(request):
-            return web.json_response(
-                {"error": "cross-site request refused"}, status=403)
         return await handler(request)
 
     if path.startswith("/api/"):

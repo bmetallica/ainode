@@ -281,6 +281,67 @@ class TestCrossSiteRequests:
         assert resp.status == 403
 
 
+    @pytest.mark.asyncio
+    async def test_loopback_is_no_way_around_it(self, tmp_path):
+        """A browser on the head itself arrives as 127.0.0.1, which needs no
+        sign-in — and any page it has open can post a form to localhost:3000.
+        The Origin check is what stops that page, so loopback must not skip it.
+        """
+        app = _app(tmp_path)
+        app["trust_loopback"] = True
+        async with TestClient(TestServer(app)) as c:
+            resp = await c.post("/api/models/unload", data='{"model":"x"}',
+                                headers={"Origin": "http://evil.example",
+                                         "Content-Type": "text/plain"})
+            assert resp.status == 403
+            # A script on the node itself sends no Origin, and still gets in.
+            resp = await c.post("/api/models/unload", json={})
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_the_sign_in_cannot_be_posted_from_elsewhere(self, client):
+        resp = await client.post("/api/login",
+                                 json={"user": "admin", "password": "admin"},
+                                 headers={"Origin": "http://evil.example"})
+        assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_v1_stays_open_to_browser_clients_on_their_own_origin(
+            self, tmp_path):
+        app = _app(tmp_path)
+
+        async def chat(request):
+            return web.json_response({"ok": True})
+
+        app.router.add_post("/v1/chat/completions", chat)
+        async with TestClient(TestServer(app)) as c:
+            resp = await c.post("/v1/chat/completions", json={},
+                                headers={"Origin": "http://chat.lan:8080"})
+            assert resp.status == 200
+
+
+class TestCorsNamesItsHosts:
+    @pytest.mark.parametrize("origin, allowed", [
+        ("http://localhost:3000", True),
+        ("http://127.0.0.1:3000", True),
+        ("http://localhost.evil.example", False),
+        ("http://127.0.0.1.evil.example", False),
+        ("http://evil.example", False),
+    ])
+    @pytest.mark.asyncio
+    async def test_by_host_name_not_prefix(self, origin, allowed):
+        from ainode.api.server import cors_middleware
+
+        async def ok(request):
+            return web.json_response({})
+
+        app = web.Application(middlewares=[cors_middleware])
+        app.router.add_get("/x", ok)
+        async with TestClient(TestServer(app)) as c:
+            resp = await c.get("/x", headers={"Origin": origin})
+            got = resp.headers.get("Access-Control-Allow-Origin", "")
+            assert (got == origin) is allowed
+
 class TestTheNodesGetPast:
     @pytest.mark.asyncio
     async def test_with_the_cluster_key(self, client):

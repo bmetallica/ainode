@@ -112,7 +112,10 @@ cover every route and locked the dashboard out of itself); requests from the
 node itself, for the CLI and scripts; and the other nodes, which present a
 shared **cluster key** (`~/.ainode/cluster.key`, copied to the peers by
 `scripts/update-cluster.sh`, or set by hand with `ainode cluster-key --set`).
-A signed-in browser refuses requests another site tries to make on its behalf.
+No request that changes something is accepted from another site's page —
+checked by `Origin`/`Referer` before any of those exceptions, so a browser
+running on the node itself cannot be used from a page it has open either
+(`/v1/*` excepted, for browser chat clients on their own origin).
 Forgot the password: `rm ~/.ainode/web-auth.json` on the node and restart
 AINode.
 
