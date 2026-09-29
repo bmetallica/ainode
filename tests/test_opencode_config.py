@@ -221,3 +221,44 @@ class TestItIsReachable:
                   "static" / "js" / "app.js").read_text()
         assert 'id="opencode-config"' in source
         assert "/api/clients/opencode?base_url=" in source
+
+
+class TestTheCacheIsSharedBetweenSessions:
+    """B4: the window was checked, the cache was not. Two sessions at 131072
+    against a cache of 180000 tokens is a preempted request mid-answer."""
+
+    def _build(self, measured, args=("--max-num-seqs", "2"), window=131072):
+        from unittest import mock
+
+        with mock.patch("ainode.measure.recorder.measured_for",
+                        return_value=measured):
+            return _build([_Entry("org/m", max_model_len=window,
+                                  extra_vllm_args=args)])
+
+    def test_the_limit_is_each_sessions_share(self):
+        out = self._build({"kv_tokens": 180000, "max_model_len": 131072})
+        limit = out["config"]["provider"]["vllm"]["models"]["org/m"]["limit"]
+        assert limit["context"] + limit["output"] <= 90000
+        assert any("90,000" in n for n in out["notes"])
+
+    def test_a_roomy_cache_changes_nothing(self):
+        out = self._build({"kv_tokens": 1_109_643, "max_model_len": 131072})
+        limit = out["config"]["provider"]["vllm"]["models"]["org/m"]["limit"]
+        assert limit == limits_for(131072)
+        assert not out["notes"]
+
+    def test_a_figure_from_another_launch_is_not_used(self):
+        out = self._build({"kv_tokens": 50000, "max_model_len": 32768})
+        limit = out["config"]["provider"]["vllm"]["models"]["org/m"]["limit"]
+        assert limit == limits_for(131072)
+
+    def test_one_session_gets_the_whole_window(self):
+        out = self._build({"kv_tokens": 180000, "max_model_len": 131072},
+                          args=("--max-num-seqs", "1"))
+        limit = out["config"]["provider"]["vllm"]["models"]["org/m"]["limit"]
+        assert limit == limits_for(131072)
+
+    def test_nothing_measured_changes_nothing(self):
+        out = self._build(None)
+        limit = out["config"]["provider"]["vllm"]["models"]["org/m"]["limit"]
+        assert limit == limits_for(131072)
