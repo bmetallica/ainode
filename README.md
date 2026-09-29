@@ -100,6 +100,22 @@ Hub when it can be reached and from the checkpoint's own index when it
 cannot — which is what a node with no route has, and enough to finish a
 partial download.
 
+**A sign-in in front of the web UI** — the UI and every `/api/*` route need a
+session; the first one is **`admin` / `admin`**, and every page says so until it
+is changed under **Config → Security** (optionally on every node at once).
+Before this, anything on the LAN could run the update, delete models or start
+containers without signing in, and the container holds the host's docker socket
+and SSH keys. The UI stays reachable on the LAN. Three things get past without a
+session, each for its own reason: `/v1/*`, because Open WebUI and opencode cannot
+sign in (it keeps its optional API keys, which now guard it alone — they used to
+cover every route and locked the dashboard out of itself); requests from the
+node itself, for the CLI and scripts; and the other nodes, which present a
+shared **cluster key** (`~/.ainode/cluster.key`, copied to the peers by
+`scripts/update-cluster.sh`, or set by hand with `ainode cluster-key --set`).
+A signed-in browser refuses requests another site tries to make on its behalf.
+Forgot the password: `rm ~/.ainode/web-auth.json` on the node and restart
+AINode.
+
 **Downloads that survive a dropped link** — a transfer is retried per **file**,
 not per repo: the pull fetches through a bounded pool that propagates the first
 error, so one timeout on one shard used to end a 160 GB transfer. Five attempts

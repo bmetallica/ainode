@@ -303,6 +303,53 @@ if [[ ( $DO_BASE -eq 1 || $DO_IMAGES -eq 1 ) && ${#NODE_LIST[@]} -gt 0 ]]; then
   done
 fi
 
+# --- 5c. the cluster key ----------------------------------------------------
+#
+# The web UI's sign-in covers /api/*, and the nodes call each other there, so
+# every node needs the same secret (ainode/auth/cluster_key.py). The head's is
+# the one: read from its container when this runs on the host (the file there is
+# root's and 0600), created if there is none yet, then written to each peer
+# BEFORE the restart below so every node comes up already agreeing.
+
+step "Cluster key"
+KEY=""
+if [[ $IN_CONTAINER -eq 1 ]]; then
+    KEY_FILE="${AINODE_HOME:-/root/.ainode}/cluster.key"
+    [[ -s "$KEY_FILE" ]] || (umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > "$KEY_FILE")
+    KEY="$(cat "$KEY_FILE" 2>/dev/null || true)"
+else
+    KEY="$(docker exec ainode cat /root/.ainode/cluster.key 2>/dev/null || true)"
+    if [[ -z "$KEY" ]]; then
+        KEY="$(cat "${HOME}/.ainode/cluster.key" 2>/dev/null || true)"
+    fi
+    if [[ -z "$KEY" && $CHECK -eq 0 ]]; then
+        KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+        (umask 077; mkdir -p "${HOME}/.ainode"; printf '%s\n' "$KEY" > "${HOME}/.ainode/cluster.key")
+        say "created a new cluster key on this node"
+    fi
+fi
+if [[ -z "$KEY" ]]; then
+    warn "no cluster key on this node — the nodes will refuse each other's API calls"
+else
+    for node in "${NODE_LIST[@]}"; do
+        if [[ $CHECK -eq 1 ]]; then
+            printf '   would copy the cluster key to %s\n' "$node"
+            continue
+        fi
+        # As the SSH user first; a file the peer's container created is root's,
+        # and then only sudo can replace it.
+        if printf '%s\n' "$KEY" | ssh -o BatchMode=yes "$node" \
+                'umask 077; mkdir -p ~/.ainode; rm -f ~/.ainode/cluster.key 2>/dev/null; cat > ~/.ainode/cluster.key' 2>/dev/null; then
+            say "${node}: cluster key in place"
+        elif printf '%s\n' "$KEY" | ssh -o BatchMode=yes "$node" \
+                'sudo -n tee ~/.ainode/cluster.key >/dev/null && sudo -n chmod 600 ~/.ainode/cluster.key' 2>/dev/null; then
+            say "${node}: cluster key in place (via sudo)"
+        else
+            warn "${node}: could not write the cluster key — it will refuse this node's API calls"
+        fi
+    done
+fi
+
 # --- 6. restart -------------------------------------------------------------
 #
 # Members first: the head forms the cluster from what it discovers, so it

@@ -109,6 +109,25 @@ async def auth_middleware(request: web.Request, handler):
         return await handler(request)
     if _should_skip(request):
         return await handler(request)
+    # API keys govern the OpenAI-compatible proxy and nothing else. They used
+    # to cover every route, and the dashboard never sends one — so switching
+    # them on returned 401 to every request the UI made, the switch to turn
+    # them off included, and the only way back was editing auth.json on the
+    # host. The UI and /api/* are behind the web sign-in now
+    # (auth/web_routes.py), which also accepts a valid key for automation.
+    if not request.path.startswith("/v1/"):
+        return await handler(request)
+    # The dashboard's own chat and model list call /v1/* too, from a browser
+    # that is signed in but holds no API key. A valid web session counts.
+    web_login = request.app.get("web_login")
+    if web_login is not None:
+        from ainode.auth.web_login import COOKIE_NAME
+
+        try:
+            if web_login.check(request.cookies.get(COOKIE_NAME, "")):
+                return await handler(request)
+        except Exception:
+            pass
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         return web.json_response(

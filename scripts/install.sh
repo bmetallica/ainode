@@ -294,6 +294,27 @@ if [ "$SETUP_SSH" = "true" ] || [ -n "$AINODE_PEERS" ]; then
             warn "  passwordless SSH to $peer NOT working — distributed launch will fail"
         fi
     done
+
+    # The cluster key: the web UI's sign-in covers /api/*, and the nodes call
+    # each other there, so they need one shared secret to get past it. Created
+    # here if this is the first node, and copied to every peer over the SSH
+    # just set up. See ainode/auth/cluster_key.py.
+    mkdir -p "$AINODE_HOME"
+    if [ ! -s "$AINODE_HOME/cluster.key" ]; then
+        (umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(32))' \
+            > "$AINODE_HOME/cluster.key")
+        log "Created the cluster key at $AINODE_HOME/cluster.key"
+    fi
+    for peer in "${PEER_LIST[@]}"; do
+        [ -z "$peer" ] && continue
+        if ssh -o BatchMode=yes -o ConnectTimeout=5 "${AINODE_SSH_USER}@${peer}" \
+                'umask 077; mkdir -p ~/.ainode; rm -f ~/.ainode/cluster.key; cat > ~/.ainode/cluster.key' \
+                < "$AINODE_HOME/cluster.key"; then
+            log "  cluster key copied to $peer"
+        else
+            warn "  could not copy the cluster key to $peer — the nodes will refuse each other's API calls"
+        fi
+    done
 fi
 
 # -- 4. Install systemd unit ------------------------------------------------

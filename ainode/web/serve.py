@@ -69,6 +69,11 @@ def get_index_html() -> str:
     return _stamp(index.read_text())
 
 
+def get_login_html() -> str:
+    """Return the sign-in page."""
+    return _stamp((TEMPLATES_DIR / "login.html").read_text())
+
+
 def get_onboarding_html() -> str:
     """Return the onboarding wizard HTML."""
     onboarding = TEMPLATES_DIR / "onboarding.html"

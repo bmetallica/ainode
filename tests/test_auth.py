@@ -225,10 +225,20 @@ class TestMiddlewareEnabled:
 
     @pytest.mark.asyncio
     async def test_status_requires_auth(self, client_and_key):
-        """Non-exempt paths require auth."""
+        """API keys guard the OpenAI-compatible proxy, /v1/*.
+
+        They used to guard every route. The dashboard never sends one, so
+        switching them on locked it out — including the switch to turn them
+        off. /api/* is behind the web sign-in now (test_web_login.py)."""
+        client, _ = client_and_key
+        resp = await client.get("/v1/models")
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_api_routes_are_not_the_keys_business(self, client_and_key):
         client, _ = client_and_key
         resp = await client.get("/api/status")
-        assert resp.status == 401
+        assert resp.status != 401
 
 
 # =============================================================================

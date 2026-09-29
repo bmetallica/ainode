@@ -106,8 +106,12 @@ def model_is_local(model: str, models_dir: str) -> bool:
 def _peer_has(host: str, port: int, model: str) -> bool:
     """Ask a peer's /api/models/downloaded whether it has ``model``."""
     url = f"http://{host}:{port}/api/models/downloaded"
+    from ainode.auth.cluster_key import cluster_headers
+
     try:
-        with urllib.request.urlopen(url, timeout=PEER_QUERY_TIMEOUT) as response:
+        with urllib.request.urlopen(
+                urllib.request.Request(url, headers=cluster_headers()),
+                timeout=PEER_QUERY_TIMEOUT) as response:
             payload = json.loads(response.read().decode())
     except Exception:
         logger.debug("could not ask %s what it has", host, exc_info=True)

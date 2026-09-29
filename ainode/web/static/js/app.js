@@ -57,6 +57,8 @@ const AINode = {
   // ========================================================================
 
   init() {
+    this.watchForSignOut();
+    this.checkDefaultPassword();
     this.loadConversations();
     this.bindNav();
     this.bindChat();
@@ -523,6 +525,69 @@ const AINode = {
       trainSide.style.display = 'none';
       chatSide.style.display = '';
     }
+  },
+
+  // ========================================================================
+  //  SIGN-IN
+  // ========================================================================
+
+  // Every fetch in this file, not only fetchJSON: a session that expires while
+  // the page is open should land on the sign-in page, not leave panels that
+  // quietly stop updating. Wrapped once, at the source, so a fetch written next
+  // month is covered without anyone remembering to.
+  watchForSignOut() {
+    if (window.__ainodeFetchWrapped) return;
+    window.__ainodeFetchWrapped = true;
+    var original = window.fetch.bind(window);
+    window.fetch = async function (input, init) {
+      var response = await original(input, init);
+      if (response.status === 401) {
+        var url = typeof input === 'string' ? input : (input && input.url) || '';
+        if (url.indexOf('/api/') === 0 || url.indexOf(location.origin + '/api/') === 0) {
+          var body = await response.clone().json().catch(function () { return {}; });
+          if (body && body.login) {
+            location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+          }
+        }
+      }
+      return response;
+    };
+  },
+
+  async signOut() {
+    await fetch('/api/logout', { method: 'POST' }).catch(function () {});
+    location.href = '/login';
+  },
+
+  async checkDefaultPassword() {
+    var status = await this.fetchJSON('/api/auth/web/status');
+    this.state.webDefaultPassword = !!(status && status.is_default);
+    this.state.webUser = (status && status.user) || '';
+    this.renderDefaultPasswordBanner();
+  },
+
+  // On every page until it is changed. admin/admin on a node that holds the
+  // docker socket is the one setting that should not be easy to live with.
+  renderDefaultPasswordBanner() {
+    var existing = document.getElementById('default-password-banner');
+    if (!this.state.webDefaultPassword) {
+      if (existing) existing.remove();
+      return;
+    }
+    if (existing) return;
+    var banner = document.createElement('div');
+    banner.id = 'default-password-banner';
+    banner.className = 'default-password-banner';
+    banner.innerHTML = '⚠ This node still uses the default password <span class="mono">admin / admin</span>. ' +
+      '<button class="config-btn" id="default-password-fix">Change it</button>';
+    var shell = document.querySelector('.command-center') || document.body;
+    shell.insertBefore(banner, shell.firstChild.nextSibling);
+    var self = this;
+    document.getElementById('default-password-fix').addEventListener('click', function () {
+      // The section first: navigate('config') renders whichever is current.
+      self.state.configSection = 'security';
+      self.navigate('config');
+    });
   },
 
   // ========================================================================
@@ -6895,14 +6960,46 @@ const AINode = {
     var on = !!data.enabled;
     var keys = data.keys || [];
 
+    var web = (await this.fetchJSON('/api/auth/web/status')) || {};
+
     var html = '';
     html += '<h2 class="config-section-title">Security</h2>';
-    html += '<p class="config-section-desc">API keys guard every endpoint except the health check and the onboarding flow. ' +
-            '<strong>Authentication is off by default</strong>, which means anyone who can reach this node on the network can load and unload models, read the config, and change cluster settings. ' +
-            'Turn it on whenever more than one person uses this cluster, or whenever it is reachable beyond a trusted LAN.</p>';
+    html += '<p class="config-section-desc">The web UI and every <span class="mono">/api/</span> route are behind a ' +
+            'sign-in. The other nodes get past it with a shared cluster key, and this node\'s own scripts from ' +
+            'localhost. The OpenAI-compatible endpoint <span class="mono">/v1/</span> is separate: clients such as ' +
+            'Open WebUI cannot sign in to a web page, so it is guarded by the optional API keys below.</p>';
 
     html += '<div class="config-card">';
-    html += '<h3 class="config-card-title">Status</h3>';
+    html += '<h3 class="config-card-title">Web sign-in</h3>';
+    if (web.is_default) {
+      html += '<div class="config-warning">This node still uses the default password. Anyone on the ' +
+              'network who guesses <span class="mono">admin / admin</span> can control it — change it below.</div>';
+    }
+    html += '<div class="config-row"><div>Signed in as <strong class="mono">' +
+            self.esc(web.user || '') + '</strong></div>' +
+            '<button class="config-btn secondary" id="cfg-web-logout">Sign out</button></div>';
+    html += '<div class="config-password-form">';
+    html += '  <label class="form-label" for="cfg-web-user">User name</label>';
+    html += '  <input class="form-input" id="cfg-web-user" autocomplete="username" value="' + self.esc(web.user || 'admin') + '">';
+    html += '  <label class="form-label" for="cfg-web-current">Current password</label>';
+    html += '  <input class="form-input" id="cfg-web-current" type="password" autocomplete="current-password">';
+    html += '  <label class="form-label" for="cfg-web-new">New password</label>';
+    html += '  <input class="form-input" id="cfg-web-new" type="password" autocomplete="new-password" placeholder="at least 8 characters">';
+    html += '  <label class="form-label" for="cfg-web-repeat">Repeat new password</label>';
+    html += '  <input class="form-input" id="cfg-web-repeat" type="password" autocomplete="new-password">';
+    html += '  <label class="config-check"><input type="checkbox" id="cfg-web-all" checked> Set it on every node of the cluster</label>';
+    html += '  <button class="config-btn primary" id="cfg-web-save">Change password</button>';
+    html += '  <div class="config-field-hint" id="cfg-web-result"></div>';
+    html += '</div>';
+    html += '<p class="config-card-desc">Changing the password signs every other browser out. Forgotten it? ' +
+            'On the node: <span class="mono">rm ~/.ainode/web-auth.json</span> and restart AINode — it comes back as ' +
+            '<span class="mono">admin / admin</span>.</p>';
+    html += '</div>';
+
+    html += '<div class="config-card">';
+    html += '<h3 class="config-card-title">API keys for /v1/</h3>';
+    html += '<p class="config-card-desc">Off by default. When on, OpenAI-compatible clients must send a key; ' +
+            'the dashboard itself does not need one, because it is signed in.</p>';
     html += '<div class="config-row">';
     html += '  <div><span class="config-auth-state ' + (on ? 'on' : 'off') + '">' +
             (on ? 'ENABLED' : 'DISABLED') + '</span>' +
@@ -6943,7 +7040,9 @@ const AINode = {
       html += '<div class="config-card">';
       html += '<h3 class="config-card-title">Using a key</h3>';
       html += '<p class="config-card-desc">Any OpenAI-compatible client works — point it at this node and pass the key as the API key.</p>';
-      html += '<pre class="config-code mono">curl ' + self.esc(location.origin.replace(/:\d+$/, ':8000')) +
+      // Port 3000, the port AINode listens on — not 8000, which is one engine's
+      // own listener and knows nothing of the keys, the router or the fleet.
+      html += '<pre class="config-code mono">curl ' + self.esc(location.origin) +
               '/v1/chat/completions \\\n  -H "Authorization: Bearer &lt;your-key&gt;" \\\n' +
               '  -H "Content-Type: application/json" \\\n  -d \'{"model":"...","messages":[...]}\'</pre>';
       html += '</div>';
@@ -6951,11 +7050,54 @@ const AINode = {
 
     mount.innerHTML = html;
 
+    var logout = document.getElementById('cfg-web-logout');
+    if (logout) logout.addEventListener('click', function () { self.signOut(); });
+
+    var save = document.getElementById('cfg-web-save');
+    if (save) {
+      save.addEventListener('click', async function () {
+        var value = function (id) { var el = document.getElementById(id); return el ? el.value : ''; };
+        var result = document.getElementById('cfg-web-result');
+        if (value('cfg-web-new') !== value('cfg-web-repeat')) {
+          result.textContent = 'The two new passwords do not match.';
+          return;
+        }
+        save.disabled = true;
+        var resp = await fetch('/api/auth/web/password', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user: value('cfg-web-user'), current: value('cfg-web-current'),
+            new: value('cfg-web-new'),
+            all_nodes: !!(document.getElementById('cfg-web-all') || {}).checked,
+          }),
+        });
+        var body = await resp.json().catch(function () { return {}; });
+        save.disabled = false;
+        if (!resp.ok) {
+          result.textContent = body.error || 'Could not change the password.';
+          return;
+        }
+        var nodes = body.nodes || {};
+        var failed = Object.keys(nodes).filter(function (k) { return nodes[k] !== 'ok'; });
+        self.toast('Password changed' + (Object.keys(nodes).length
+          ? ' on this node and ' + (Object.keys(nodes).length - failed.length) + ' other(s)' : ''),
+          failed.length ? 'info' : 'success');
+        if (failed.length) {
+          result.textContent = 'Not set on: ' + failed.map(function (k) {
+            return k + ' (' + nodes[k] + ')';
+          }).join(', ') + '. Those keep their old password until they are reachable and it is set again.';
+        }
+        self.state.webDefaultPassword = false;
+        self.renderDefaultPasswordBanner();
+        self.renderConfigSecurity();
+      });
+    }
+
     var toggle = document.getElementById('cfg-auth-toggle');
     if (toggle) {
       toggle.addEventListener('click', async function () {
         if (on) {
-          if (!confirm('Disable authentication? Every endpoint becomes reachable without a key.')) return;
+          if (!confirm('Turn off API keys? /v1/ becomes reachable without a key. The web sign-in stays.')) return;
           await fetch('/api/auth/disable', { method: 'POST' });
           self.toast('Authentication disabled', 'info');
           self.renderConfigSecurity();

@@ -6280,3 +6280,84 @@ select {
 .profile-report-line.error {
   color: #ff6b6b;
 }
+
+/* === Web sign-in (auth/web_routes.py) ===================================== */
+/* Amber, not red: the default password is a setting to change, not a failure
+   in progress — and a red bar on every page trains people to stop reading it. */
+.default-password-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 7px 16px;
+  background: var(--amber-glow);
+  border-bottom: 1px solid rgba(255, 184, 0, 0.35);
+  color: var(--amber);
+  font-size: 12px;
+}
+
+.default-password-banner .config-btn {
+  padding: 4px 12px;
+  font-size: 11px;
+}
+
+.top-bar-signout {
+  background: transparent;
+  border: 1px solid var(--border-hover);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  padding: 5px 11px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  margin-left: auto;
+  margin-right: 12px;
+  transition: all 0.15s ease;
+}
+
+.top-bar-signout:hover {
+  border-color: var(--nvidia-green);
+  color: var(--nvidia-green);
+}
+
+.config-warning {
+  margin: 4px 0 14px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--amber-glow);
+  border: 1px solid rgba(255, 184, 0, 0.35);
+  color: var(--amber);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.config-password-form {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  max-width: 380px;
+  margin: 14px 0 10px;
+}
+
+.config-password-form .form-label {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.config-password-form .config-btn {
+  margin-top: 10px;
+  justify-self: start;
+}
+
+.config-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
