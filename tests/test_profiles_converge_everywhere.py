@@ -173,3 +173,15 @@ class TestReplicas:
         draft = {"version": 1, "models": [{"id": "m1", "model": "coder"}]}
         profile = Profile.from_dict({"name": "p", "entries": [], "wizard": draft})
         assert Profile.from_dict(profile.to_dict()).wizard == draft
+
+
+class TestASplitThatLeavesTheHeadOut:
+    def test_it_goes_to_the_node_that_leads_it(self, app, launches, peers):
+        _apply(app, Profile(name="p", entries=[
+            {"model": "big", "node_ids": ["s2", "s3"], "strategy": "tensor"}]))
+        starts = [(n, m) for n, p, m in peers if p == "start"]
+        assert starts == [("s2", ["big"])]
+        # Not launched from here.
+        assert launches["distributed"] == []
+        # And both of its nodes were cleared first.
+        assert {n for n, p, _ in peers if p == "stop"} == {"s2", "s3"}

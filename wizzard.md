@@ -321,9 +321,9 @@ und alles Weitere steht auf ihnen.
 
 **Abweichungen vom Plan, bewusst:**
 
-- Ein Modell über mehrere Nodes muss den **Head einschließen**: die verteilte
-  Engine wird immer vom Head gestartet. Der Wizard sagt das, statt es zu
-  versuchen.
+- ~~Ein Modell über mehrere Nodes muss den Head einschließen~~ — aufgehoben
+  (#248): eine Auswahl ohne Head wird vom ersten ihrer Nodes geleitet; der
+  braucht SSH zu den anderen. Der Wizard weist darauf hin.
 - Der Schieber für eine feste Cache-Größe endet dort, wo der Plan gerade noch
   passt (die automatischen Nachbarn auf ihrem Minimum) — im Browser-Test ließ
   sich sonst mit einem Zug ein Konflikt erzeugen.

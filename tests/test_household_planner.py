@@ -205,9 +205,13 @@ class TestPlanningADraft:
         assert result["models"][0]["strategy"] == "tensor"
         assert result["entries"][0]["node_ids"] == ["s1", "s2"]
 
-    def test_a_split_without_the_head_is_refused(self, app):
+    def test_a_split_without_the_head_is_led_by_its_first_node(self, app):
+        """It used to be refused: 'das muss doch auch ohne den head gehen'."""
         result = _plan(app, {"id": "x", "model": "org/big", "node_ids": ["s2", "s3"]})
-        assert any("head" in e for e in result["models"][0]["errors"])
+        model = result["models"][0]
+        assert result["ok"] and not model["errors"]
+        assert model["launched_by"] == "s2"
+        assert any("SSH" in w for w in model["warnings"])
 
     def test_a_replica_on_another_node_is_fine(self, app):
         result = _plan(app, {"id": "a1", "model": "org/a", "node_ids": ["s1"]},

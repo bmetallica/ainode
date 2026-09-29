@@ -569,3 +569,77 @@ class TestTheSharedConfigCarriesThePerLoadValues:
         config = self._launch({"model": "m", "min_nodes": 2})
         assert config.kv_cache_dtype == NodeConfig().kv_cache_dtype
         assert config.max_model_len == _FakeBackend.last["config"].max_model_len
+
+
+class TestASplitWithoutThisNode:
+    """'das muss doch auch ohne den head gehen'. Picking Spark2 + Spark3 used
+    to add this node as rank 0 silently — three nodes, not two."""
+
+    def _run(self, body, members, answer=None, status=200):
+        calls = []
+
+        class _Resp:
+            def __init__(self):
+                self.status = status
+
+            async def json(self, content_type=None):
+                return answer if answer is not None else {"status": "launching"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class _Session:
+            def post(self, url, json=None, timeout=None):
+                calls.append((url, json))
+                return _Resp()
+
+        _FakeBackend.last = {}
+        config = NodeConfig(node_id="head")
+        config.save = lambda *a, **k: None
+        cluster = ClusterState(local_announcement=_local_ann("head"))
+        for m in members:
+            cluster.add_node(m)
+        app = {"cluster_state": cluster, "config": config, "engine": None,
+               "client_session": _Session()}
+
+        class _Req:
+            def __init__(self):
+                self.app = app
+
+            async def json(self):
+                return body
+
+        with patch.object(backends, "get_backend", _FakeBackend):
+            resp = asyncio.run(handle_sharding_launch(_Req()))
+        return resp, calls
+
+    def test_it_is_led_by_the_first_of_them(self):
+        resp, calls = self._run(
+            {"model": "m", "node_ids": ["m2", "m3"], "strategy": "tensor"},
+            [_member("m2", "10.100.0.15"), _member("m3", "10.100.0.17")])
+        assert resp.status == 200
+        (url, sent), = calls
+        assert url == "http://10.100.0.15:3000/api/sharding/launch"
+        assert sent["node_ids"] == ["m2", "m3"] and sent["strategy"] == "tensor"
+        # Nothing was launched here.
+        assert _FakeBackend.last == {}
+        assert json.loads(resp.body)["launched_by"] == "m2"
+
+    def test_a_missing_ssh_key_there_is_explained(self):
+        resp, _ = self._run(
+            {"model": "m", "node_ids": ["m2", "m3"]},
+            [_member("m2", "10.100.0.15"), _member("m3", "10.100.0.17")],
+            answer={"error": "Distributed launch failed: ssh 10.100.0.17: Permission denied"},
+            status=500)
+        body = json.loads(resp.body)
+        assert resp.status == 500 and "ssh-copy-id" in body["hint"]
+
+    def test_with_this_node_in_the_set_it_launches_here(self):
+        resp, calls = self._run(
+            {"model": "m", "node_ids": ["head", "m2"]},
+            [_member("m2", "10.100.0.15")])
+        assert resp.status == 200 and calls == []
+        assert _FakeBackend.last["launched"] is True
