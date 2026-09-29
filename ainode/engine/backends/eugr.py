@@ -323,6 +323,7 @@ class EugrBackend(EngineBackend):
         # look like a launch that had not started.
         self._phase.reset()
         self._ensure_ssh_user()
+        self._ensure_ssh_aliases()
         self._write_eugr_env()
         launch_script = self._write_distributed_launch_script()
         self._distribute_engine_image_to_peers()
@@ -1148,6 +1149,20 @@ class EugrBackend(EngineBackend):
             logger.info("ssh from this container will use the %s account", ssh_user)
         except OSError:
             logger.exception("could not write /root/.ssh/config")
+
+    def _ensure_ssh_aliases(self) -> None:
+        """Let ``ssh <peer ip>`` use the operator's alias for that peer
+        (cluster/ssh_aliases.py). The launcher connects by address; the
+        operator's keys and user are set up under names like ``Spark3``."""
+        groups = getattr(self, "ssh_peer_addresses", None) or [
+            [ip] for ip in (self.config.peer_ips or [])]
+        try:
+            from ainode.cluster.ssh_aliases import ensure_ip_aliases
+
+            ensure_ip_aliases(groups)
+        except Exception:
+            logger.debug("could not map the peers' addresses to ssh aliases",
+                         exc_info=True)
 
     def _distribute_engine_image_to_peers(self) -> None:
         """Place the engine image on every peer before the launcher looks.
