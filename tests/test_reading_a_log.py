@@ -79,3 +79,58 @@ class TestEveryBackendUsesIt:
         for backend in (EugrBackend, DiffusersBackend):
             source = inspect.getsource(backend.logs)
             assert "read_text()" not in source
+
+
+class TestLogsAreRotated:
+    """R1: every launch appended to one file forever — 35 MB of
+    distributed.log on the head after a few weeks."""
+
+    def test_a_small_log_is_left_alone(self, tmp_path):
+        from ainode.engine.logs import rotate_log
+
+        log = tmp_path / "distributed.log"
+        log.write_text("x" * 10)
+        assert rotate_log(log, max_bytes=100) is False
+        assert log.read_text() == "x" * 10
+
+    def test_a_large_one_moves_aside(self, tmp_path):
+        from ainode.engine.logs import rotate_log
+
+        log = tmp_path / "distributed.log"
+        log.write_text("old launch")
+        assert rotate_log(log, max_bytes=5) is True
+        assert not log.exists()
+        assert (tmp_path / "distributed.log.1").read_text() == "old launch"
+
+    def test_only_so_many_are_kept(self, tmp_path):
+        from ainode.engine.logs import rotate_log
+
+        log = tmp_path / "vllm.log"
+        for generation in range(7):
+            log.write_text(f"launch {generation}")
+            rotate_log(log, max_bytes=1, keep=3)
+        names = sorted(p.name for p in tmp_path.iterdir())
+        assert names == ["vllm.log.1", "vllm.log.2", "vllm.log.3"]
+        assert (tmp_path / "vllm.log.1").read_text() == "launch 6"
+        assert (tmp_path / "vllm.log.3").read_text() == "launch 4"
+
+    def test_a_missing_log_is_not_an_error(self, tmp_path):
+        from ainode.engine.logs import rotate_log
+
+        assert rotate_log(tmp_path / "nothing.log") is False
+
+    def test_the_eugr_launch_banner_rotates_first(self, tmp_path):
+        from unittest.mock import patch
+
+        from ainode.core.config import NodeConfig
+        from ainode.engine.backends.eugr import EugrBackend
+
+        log = tmp_path / "distributed.log"
+        log.write_text("y" * 64)
+        script = tmp_path / "launch.sh"
+        script.write_text("vllm serve org/m --max-model-len 4096\n")
+        backend = EugrBackend(NodeConfig(model="org/m"))
+        with patch("ainode.engine.logs.rotate_log.__defaults__", (10, 5)):
+            backend._log_serve_command(script, log)
+        assert (tmp_path / "distributed.log.1").exists()
+        assert "===== launch org/m" in log.read_text()

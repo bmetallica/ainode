@@ -315,6 +315,9 @@ class DiffusersBackend(EngineBackend):
     def _stream_logs(self, process: subprocess.Popen, target: Path) -> None:
         if not process.stdout:
             return
+        from ainode.engine.logs import rotate_log
+
+        rotate_log(target)
         with open(target, "a") as sink:
             for line in process.stdout:
                 sink.write(line)

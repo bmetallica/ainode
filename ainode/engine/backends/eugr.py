@@ -1534,6 +1534,11 @@ class EugrBackend(EngineBackend):
                      if ignored else ""))
         try:
             log_file.parent.mkdir(parents=True, exist_ok=True)
+            # The banner opens every launch, so this is where an old log is
+            # moved aside: the file then starts with the launch it is about.
+            from ainode.engine.logs import rotate_log
+
+            rotate_log(log_file)
             with open(log_file, "a") as sink:
                 sink.write(banner)
         except OSError:

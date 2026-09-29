@@ -1578,6 +1578,9 @@ class NvidiaBackend(EngineBackend):
         self._phase.reset()
         # A fresh log stream means a fresh launch — start the phase clock over.
         self._load_phase = "starting"
+        from ainode.engine.logs import rotate_log
+
+        rotate_log(target)
         with open(target, "a") as sink:
             for line in process.stdout:
                 sink.write(line)
