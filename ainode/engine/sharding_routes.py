@@ -264,6 +264,17 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     cluster: ClusterState = request.app["cluster_state"]
     config: NodeConfig = request.app["config"]
 
+    # A set of nodes that does not include this one is launched by the first
+    # of them. This node used to add itself as rank 0 regardless — so picking
+    # Spark2 + Spark3 ran the model on all three — and the profile wizard
+    # refused such a placement outright. Any node can lead a distributed
+    # launch: every node has the launcher, the engine image and the weights.
+    # What it needs besides is passwordless SSH to the others, which the
+    # installer sets up from the head only; the forwarded launch says so if
+    # it is missing.
+    if node_ids and config.node_id and config.node_id not in node_ids:
+        return await _launch_from(request, cluster, node_ids, body)
+
     # The same gate the solo path uses. This path had none at all, and it is
     # the one that took two nodes down: it launches on machines the head
     # cannot see the memory of, so nothing discovered the overcommit until the
@@ -651,6 +662,52 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         # watching the dashboard.
         "note": plan_note,
     })
+
+
+#: How long a forwarded launch may take to answer. The launching node places
+#: the engine image and the weights on its peers before it answers — minutes
+#: on a first launch.
+FORWARD_TIMEOUT = 3600
+
+
+async def _launch_from(request, cluster, node_ids, body) -> web.Response:
+    """Hand a distributed launch to the first of ``node_ids``, which leads it."""
+    import aiohttp
+
+    leader = next((n for n in cluster.members() if n.node_id == node_ids[0]), None)
+    if leader is None:
+        return web.json_response(
+            {"error": f"{node_ids[0]} is not in the cluster; it would have led "
+                      f"this launch."}, status=422)
+    host = (getattr(leader, "fabric_ip", "") or getattr(leader, "peer_ip", "") or "").strip()
+    session = request.app.get("client_session")
+    if not host or session is None:
+        return web.json_response(
+            {"error": f"{leader.node_name or leader.node_id} cannot be reached to "
+                      f"lead this launch."}, status=502)
+    url = f"http://{host}:{getattr(leader, 'web_port', 3000) or 3000}/api/sharding/launch"
+    forwarded = dict(body, node_ids=list(node_ids))
+    try:
+        # The cluster key rides along (auth/cluster_key.py): the leader's
+        # sign-in lets another node in with it.
+        async with session.post(url, json=forwarded,
+                                timeout=aiohttp.ClientTimeout(total=FORWARD_TIMEOUT)) as resp:
+            payload = await resp.json(content_type=None)
+            status = resp.status
+    except Exception as exc:
+        return web.json_response(
+            {"error": f"{leader.node_name or leader.node_id} did not answer the "
+                      f"launch: {exc.__class__.__name__}"}, status=502)
+    if isinstance(payload, dict):
+        payload.setdefault("launched_by", leader.node_id)
+        if status >= 400 and "ssh" in str(payload.get("error", "")).lower():
+            payload["hint"] = (
+                f"The launch is led by {leader.node_name or leader.node_id}, which "
+                f"needs passwordless SSH to the other nodes of the launch. The "
+                f"installer sets that up from the head only: on "
+                f"{leader.node_name or leader.node_id} run ssh-copy-id <user>@<node> "
+                f"for each of them.")
+    return web.json_response(payload, status=status)
 
 
 async def handle_sharding_relaunch(request: web.Request) -> web.Response:

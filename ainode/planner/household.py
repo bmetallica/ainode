@@ -259,9 +259,13 @@ def _resolve_llm(app, spec: dict, item: Item, nodes: Dict[str, HouseholdNode],
         strategy = "tensor" if not _tensor_ok(facts, count) else "pipeline"
     info["strategy"] = strategy
     if count > 1 and head_id and head_id not in item.node_ids:
-        item.errors.append(
-            "A model across several nodes has to include the head — the "
-            "distributed engine is launched from there.")
+        # Led by the first of its nodes rather than the head
+        # (sharding_routes._launch_from) — which needs SSH from there.
+        info["launched_by"] = item.node_ids[0]
+        info["warnings"].append(
+            f"Launched from {nodes[item.node_ids[0]].name if item.node_ids[0] in nodes else item.node_ids[0]}, "
+            f"not the head: that node needs passwordless SSH to the others "
+            f"(the installer sets it up from the head only).")
     if strategy == "tensor":
         why = _tensor_ok(facts, count)
         if why:
@@ -468,7 +472,7 @@ def plan_household(app, draft: dict) -> dict:
                "priority": item.priority, "errors": list(item.errors),
                "warnings": list(info.get("warnings") or []),
                "fixed_per_node_gb": round(item.fixed_gb, 1)}
-        for key in ("strategy", "weights_gb", "weights_per_node_gb", "weights_source",
+        for key in ("strategy", "launched_by", "weights_gb", "weights_per_node_gb", "weights_source",
                     "overhead_gb", "kv_source", "bytes_per_token", "kv_cache_dtype",
                     "max_image_size"):
             if key in info:

@@ -315,10 +315,11 @@ async def apply_profile(app, profile: Profile, *, wait: bool = True,
     local: List[ProfileEntry] = []
     by_peer: dict = {}
     for entry in profile.entries:
-        if _entry_runs_here(app, entry) or entry.is_distributed:
-            # A distributed entry is launched from here whatever it names.
+        if _entry_runs_here(app, entry):
             local.append(entry)
         else:
+            # A peer's own entry — or a distributed one this node is not part
+            # of, which its first node leads (sharding_routes._launch_from).
             by_peer.setdefault(entry.node_ids[0], []).append(entry)
     peers = sorted({n for e in profile.entries for n in (e.node_ids or [])
                     if n and n != own})

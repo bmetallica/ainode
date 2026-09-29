@@ -1214,8 +1214,10 @@ models on that node, and through a model split across two nodes, from the
 other node too. Image and embedding models are fixed blocks. The arithmetic is
 `POST /api/planner/household`: every node planned as its total minus its
 measured idle use and its limit, weights measured where they have been, the
-same functions as the launch planner. A model across several nodes has to
-include the head — that is where a distributed engine is launched from. The
+same functions as the launch planner. A model across several nodes need not
+include the head: a set without it is led by its first node (the head
+forwards the launch there), which needs passwordless SSH to the others — the
+installer sets that up from the head only (`ssh-copy-id` on that node). The
 wizard keeps its draft in the profile, so a saved profile opens exactly as it
 was left; a captured profile opens too, each cache fixed at what it was
 launched with.

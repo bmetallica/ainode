@@ -209,10 +209,10 @@ async def _stop_profile_models(app, profile) -> list:
 
     own = str(getattr(app.get("config"), "node_id", "") or "")
     stopped = _unload_listed(app, [e for e in profile.entries
-                                   if _entry_runs_here(app, e) or e.is_distributed])
+                                   if _entry_runs_here(app, e)])
     by_peer: dict = {}
     for entry in profile.entries:
-        if not _entry_runs_here(app, entry) and not entry.is_distributed:
+        if not _entry_runs_here(app, entry):
             by_peer.setdefault(entry.node_ids[0], []).append(entry)
     for node_id, entries in by_peer.items():
         if node_id == own:
