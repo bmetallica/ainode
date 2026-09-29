@@ -8,6 +8,7 @@ import aiohttp
 import json
 import logging
 import shlex
+import re
 import shutil
 import time
 import uuid
@@ -180,7 +181,7 @@ _OVERRIDE_KEYS = ("served_model_name", "max_model_len", "kv_cache_dtype",
                   # defaults like everything else here, so loading a text
                   # model after an image one cannot inherit "diffusers".
                   "engine_backend", "max_image_size", "image_steps",
-                  "image_size", "image_dtype")
+                  "image_size", "image_dtype", "image_guidance")
 
 
 def drafter_base_model(model: str) -> str:
@@ -500,6 +501,64 @@ def _persist_primary_overrides(config, gmu, overrides) -> None:
         setattr(config, k, v)
 
 
+def _reserved_share(app, instance) -> Optional[float]:
+    """The share of this node an instance holds, for the stacked-load check.
+
+    A vLLM instance holds its memory fraction: that is what it reserves. An
+    image model does not — the diffusers engine ignores the fraction — and it
+    inherited the node default of 0.50 on paper while holding ~0.24 in
+    reality, so a 27B model planned beside it was refused:
+
+        Refusing stacked load: this node already reserves 0.50 of GPU memory
+        across 1 instance(s); the requested 0.48 would total 0.98
+
+    For an image model: what it measurably took, else what the planner
+    estimates for it (weights + the peak of its largest picture).
+    """
+    config = getattr(getattr(instance, "backend", None), "config", None)
+    if config is None:
+        return None
+    g = getattr(config, "gpu_memory_utilization", None)
+    on_paper = float(g) if g is not None else None
+    if str(getattr(config, "engine_backend", "") or "") != "diffusers":
+        return on_paper
+    total = _node_total_gb(app)
+    if not total:
+        return on_paper
+    model = str(getattr(getattr(instance, "record", None), "model", "") or "")
+    try:
+        from ainode.measure.recorder import measured_for
+
+        measured = float((measured_for(app, model) or {}).get("memory_gb") or 0)
+    except Exception:
+        measured = 0.0
+    if measured:
+        return measured / total
+    try:
+        from ainode.planner.api_routes import _image_weights_gb
+        from ainode.planner.compute import (ENGINE_OVERHEAD_GB, IMAGE_OVERHEAD_GB,
+                                            IMAGE_REFERENCE_PIXELS)
+
+        size = int(getattr(config, "max_image_size", 1536) or 1536)
+        weights = _image_weights_gb(app.get("model_manager"), model)
+        need = weights + ENGINE_OVERHEAD_GB + IMAGE_OVERHEAD_GB * (
+            size * size / IMAGE_REFERENCE_PIXELS)
+        return need / total if weights else on_paper
+    except Exception:
+        return on_paper
+
+
+def _node_total_gb(app) -> float:
+    collector = app.get("metrics_collector")
+    try:
+        from ainode.core.units import gb_from_mib
+
+        metrics = collector.get_gpu_metrics() if collector is not None else {}
+        return gb_from_mib((metrics or {}).get("memory_total_mb") or 0)
+    except Exception:
+        return 0.0
+
+
 def _fetch_weights_from_a_peer(app, backend, model: str, config) -> Optional[str]:
     """Copy `model` here from a peer that has it.
 
@@ -653,9 +712,9 @@ def append_solo_instance(app, model: str, gmu=None, *, overrides=None,
                               "unified memory.")}
         existing_total = 0.0
         for inst in others:
-            g = getattr(getattr(inst.backend, "config", None), "gpu_memory_utilization", None)
-            if g is not None:
-                existing_total += float(g)
+            share = _reserved_share(app, inst)
+            if share is not None:
+                existing_total += share
         projected = existing_total + gmu
         if projected > 0.9:
             return {"ok": False, "status": 409,
@@ -1198,9 +1257,29 @@ def parse_load_overrides(body: dict):
                     {"error": f"{field} must be between {low} and {high}"},
                     status=400)
             overrides[field] = value
+    if body.get("image_guidance") is not None:
+        try:
+            guidance = float(body["image_guidance"])
+        except (TypeError, ValueError):
+            return None, web.json_response(
+                {"error": "image_guidance must be a number"}, status=400)
+        if not 0 <= guidance <= 30:
+            return None, web.json_response(
+                {"error": "image_guidance must be between 0 and 30"}, status=400)
+        overrides["image_guidance"] = guidance
     for field in ("image_size", "image_dtype"):
         if body.get(field) is not None:
             overrides[field] = str(body[field]).strip()
+    # Both reach the image server's command line: a shape, and a dtype torch
+    # knows. Anything else is a 400 here rather than a crash in the engine.
+    if overrides.get("image_size") and not re.fullmatch(
+            r"\d{2,5}x\d{2,5}", overrides["image_size"]):
+        return None, web.json_response(
+            {"error": "image_size must look like 1024x1024"}, status=400)
+    if overrides.get("image_dtype") and overrides["image_dtype"] not in (
+            "bfloat16", "float16", "float32"):
+        return None, web.json_response(
+            {"error": "image_dtype must be bfloat16, float16 or float32"}, status=400)
     return overrides, None
 
 

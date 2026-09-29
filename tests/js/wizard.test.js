@@ -89,3 +89,20 @@ test('the stop preview names what the profile does not keep', () => {
   const models = [{ model: 'keep', node_ids: ['s1'] }, { model: 'new', node_ids: ['s2'] }];
   assert.deepEqual(L.wizardStopPreview(running, models).map(r => r.id), ['old']);
 });
+
+test('a captured profile brings every setting into the wizard', () => {
+  const out = L.wizardDraftFromProfile({ name: 'C', entries: [
+    { model: 'org/a', node_ids: ['s1'], tool_calling: 'off', quantization: 'fp8',
+      trust_remote_code: true, extra_env: { VLLM_X: '1' }, served_model_name: ['coder'] },
+    { model: 'org/flux', kind: 'image', node_ids: ['s3'], max_image_size: 1024,
+      image_steps: 28, image_size: '768x768', image_dtype: 'float16', image_guidance: 4.5 },
+  ] });
+  const [a, img] = out.models;
+  assert.equal(a.tool_calling, 'off');
+  assert.equal(a.quantization, 'fp8');
+  assert.equal(a.trust_remote_code, true);
+  assert.deepEqual(a.extra_env, { VLLM_X: '1' });
+  assert.deepEqual(a.served_model_name, ['coder']);
+  assert.deepEqual([img.image_steps, img.image_size, img.image_dtype, img.image_guidance],
+                   [28, '768x768', 'float16', 4.5]);
+});

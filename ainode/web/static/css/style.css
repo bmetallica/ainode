@@ -6488,3 +6488,16 @@ select {
   max-height: 320px; overflow: auto; background: var(--bg-input, #111); padding: 10px;
   border-radius: 4px; font-size: 11px;
 }
+
+/* Profile wizard: the settings behind "More settings" */
+.pw-more { margin-top: 8px; font-size: 12px; }
+.pw-more > summary { cursor: pointer; color: var(--text-secondary); margin-bottom: 6px; }
+.pw-more .pw-row { margin-bottom: 6px; }
+.pw-wide { flex: 1 1 100%; }
+.pw-wide .form-input { flex: 1; width: 100%; }
+.pw-check { gap: 4px !important; }
+.pw-help {
+  display: inline-block; width: 14px; height: 14px; line-height: 14px; text-align: center;
+  border-radius: 50%; border: 1px solid var(--border); font-size: 10px; cursor: help;
+  color: var(--text-muted);
+}

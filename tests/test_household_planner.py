@@ -347,3 +347,109 @@ class TestATooSmallPinStaysInTheArithmetic:
         # A still holds its weights and its half gigabyte: B does not get them.
         assert {seg["id"] for seg in s1["segments"]} == {"a", "b"}
         assert s1["used_gb"] == pytest.approx(s1["budget_gb"], abs=0.2)
+
+
+class TestTheContextGrowsWithTheRoom:
+    """Reported: shrinking the image model on the same node did not change
+    the small Qwen's context — an automatic cache grew its session count."""
+
+    def _plan(self, app, image_size, **llm):
+        from ainode.planner.household import plan_household
+
+        return plan_household(app, {"models": [
+            {"id": "i", "model": "org/flux", "kind": "image", "node_ids": ["s1"],
+             "max_image_size": image_size},
+            {"id": "q", "model": "org/b", "node_ids": ["s1"], **llm}]})["models"][1]
+
+    def test_by_default_the_context_grows(self, app):
+        big = self._plan(app, 2048, sessions=8)
+        small = self._plan(app, 768, sessions=8)
+        assert small["max_model_len"] > big["max_model_len"]
+        assert small["sessions"] == big["sessions"] == 8
+
+    def test_up_to_the_checkpoint_then_more_sessions(self, app):
+        from ainode.planner.household import plan_household
+
+        out = plan_household(app, {"models": [
+            {"id": "q", "model": "org/b", "node_ids": ["s2"]}]})["models"][0]
+        assert out["max_model_len"] == 262144
+        assert out["sessions"] > 1
+
+    def test_or_the_sessions_grow_at_a_fixed_context(self, app):
+        big = self._plan(app, 2048, grow="sessions", max_model_len=32768)
+        small = self._plan(app, 768, grow="sessions", max_model_len=32768)
+        assert small["max_model_len"] == big["max_model_len"] == 32768
+        assert small["sessions"] > big["sessions"]
+
+    def test_several_sessions_share_the_growth(self, app):
+        one = self._plan(app, 1024, sessions=1)
+        two = self._plan(app, 1024, sessions=2)
+        assert two["sessions"] == 2
+        assert two["max_model_len"] < one["max_model_len"]
+
+
+class TestEverySettingReachesTheEntry:
+    def test_llm_settings(self, app):
+        from ainode.planner.household import plan_household
+
+        result = plan_household(app, {"models": [{
+            "id": "a", "model": "org/a", "node_ids": ["s1"], "mode": "usage",
+            "max_model_len": 32768, "sessions": 2, "tool_calling": "off",
+            "trust_remote_code": True, "served_model_name": "coder, qwen",
+            "extra_vllm_args": ('--enable-prefix-caching --speculative-config '
+                                '\'{"method":"mtp"}\''),
+            "extra_env": {"VLLM_X": "1"}}]})
+        entry = result["entries"][0]
+        assert entry["tool_calling"] == "off" and entry["trust_remote_code"] is True
+        assert entry["served_model_name"] == ["coder", "qwen"]
+        assert entry["extra_vllm_args"][:3] == ["--enable-prefix-caching",
+                                                "--speculative-config", '{"method":"mtp"}']
+        assert entry["extra_env"] == {"VLLM_X": "1"}
+
+    def test_image_settings(self, app):
+        from ainode.planner.household import plan_household
+
+        result = plan_household(app, {"models": [{
+            "id": "i", "model": "org/flux", "kind": "image", "node_ids": ["s1"],
+            "max_image_size": 1024, "image_steps": 28, "image_size": "768x768",
+            "image_dtype": "float16", "image_guidance": 4.5}]})
+        entry = result["entries"][0]
+        assert (entry["image_steps"], entry["image_size"], entry["image_dtype"],
+                entry["image_guidance"]) == (28, "768x768", "float16", 4.5)
+
+    def test_the_profile_entry_carries_them_to_the_load(self):
+        from ainode.profiles.store import ProfileEntry
+
+        body = ProfileEntry(model="m", kind="image", image_dtype="float16",
+                            image_guidance=4.5, tool_calling="off").launch_body()
+        assert body["image_dtype"] == "float16" and body["image_guidance"] == 4.5
+        assert body["tool_calling"] == "off"
+
+
+class TestAnImageModelOnTheBooks:
+    """'Refusing stacked load: this node already reserves 0.50 … the requested
+    0.48 would total 0.98' — the image model held ~0.24 in reality."""
+
+    def test_it_counts_what_it_holds(self, tmp_path, monkeypatch):
+        from ainode.measure.store import Measurement, MeasurementStore
+        from ainode.models import api_routes
+
+        store = MeasurementStore(tmp_path / "m.json")
+        store._write({"org/flux": Measurement(model="org/flux", launches=1,
+                                              last_ok=1.0, memory_gb=31.7)})
+        collector = type("C", (), {"get_gpu_metrics":
+                                   lambda self: {"memory_total_mb": 124650}})()
+        app = {"measurement_store": store, "metrics_collector": collector}
+        inst = type("I", (), {})()
+        inst.record = type("R", (), {"model": "org/flux"})()
+        inst.backend = type("B", (), {"config": NodeConfig(
+            engine_backend="diffusers", gpu_memory_utilization=0.5)})()
+        assert api_routes._reserved_share(app, inst) == pytest.approx(31.7 / 130.7, abs=0.01)
+
+    def test_a_vllm_instance_still_counts_its_fraction(self):
+        from ainode.models import api_routes
+
+        inst = type("I", (), {})()
+        inst.record = type("R", (), {"model": "m"})()
+        inst.backend = type("B", (), {"config": NodeConfig(gpu_memory_utilization=0.48)})()
+        assert api_routes._reserved_share({}, inst) == 0.48

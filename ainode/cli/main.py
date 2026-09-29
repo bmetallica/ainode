@@ -129,9 +129,40 @@ def cmd_cluster_key(args):
     return 0
 
 
+def setup_logging() -> None:
+    """Send AINode's own log lines to stderr — the container log, the journal.
+
+    Nothing configured logging before: Python then prints warnings and errors
+    only, and every INFO line AINode writes — each launch step, an adoption, a
+    profile being applied, the "update |" lines the README tells you to grep
+    for — went nowhere. Reported from a node whose distributed launch was
+    being started: `docker logs ainode` showed the banner and nothing else.
+
+    AINODE_LOG_LEVEL (DEBUG, INFO, WARNING …) sets the level; libraries keep
+    their default of warnings only.
+    """
+    import logging
+    import os
+
+    logger = logging.getLogger("ainode")
+    if any(getattr(h, "_ainode_stderr", False) for h in logger.handlers):
+        return
+    level = getattr(logging, os.environ.get("AINODE_LOG_LEVEL", "INFO").upper(),
+                    logging.INFO)
+    handler = logging.StreamHandler()
+    handler._ainode_stderr = True
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S"))
+    handler.setLevel(level)
+    logger.addHandler(handler)
+    if logger.level == logging.NOTSET or logger.level > level:
+        logger.setLevel(level)
+
+
 def cmd_start(args):
     """Start AINode."""
     from ainode.core.gpu import detect_gpu
+    setup_logging()
     console.print(_banner())
     ensure_dirs()
 

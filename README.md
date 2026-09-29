@@ -1216,7 +1216,14 @@ language model's KV cache is fixed by context × sessions, fixed by size (a
 slider that ends where the plan would stop fitting), or shares what is left by
 priority — so raising one model's cache on a node takes it from the automatic
 models on that node, and through a model split across two nodes, from the
-other node too. Image and embedding models are fixed blocks. The arithmetic is
+other node too. What more room becomes is a choice per model: a **longer
+context** for the same sessions (the default, up to what the checkpoint
+supports, then more sessions) or **more sessions** at a fixed context. Under
+*More settings*: tool calling (automatic, off, or a named parser), API names,
+quantization, trust remote code, extra vLLM flags (checked against the engine
+image at launch) and environment. Image models: largest image (which sets
+their memory), default size, default steps, default guidance and precision.
+Image and embedding models are fixed blocks. The arithmetic is
 `POST /api/planner/household`: every node planned as its total minus its
 measured idle use and its limit, weights measured where they have been, the
 same functions as the launch planner. A model across several nodes need not
