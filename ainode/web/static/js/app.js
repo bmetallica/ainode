@@ -1817,6 +1817,9 @@ const AINode = {
         field.addEventListener(event, function () {
           if (self._applyingPlan) return;   // our own write-back, not an edit
           self.state.launchLastEdited = pair[1];
+          // For THIS model on THESE nodes. A context typed for one model is
+          // no statement about the next one — see launchDrove.
+          self.state.launchLastEditedFor = self.launchEditScope();
           self.schedulePlan();
         });
       });
@@ -2244,6 +2247,23 @@ const AINode = {
     };
   },
 
+  // Which field the operator drove — but only while the model and the nodes
+  // are still the ones it was driven for. It used to outlive a model change,
+  // so the next model was planned with one of the pair withheld although
+  // nobody had touched either field for it.
+  launchEditScope(want) {
+    want = want || this.launchPlanKey();
+    return want.model + '|' + (want.nodes || []).join(',');
+  },
+
+  launchDrove(want) {
+    if (this.state.launchLastEditedFor !== this.launchEditScope(want)) {
+      this.state.launchLastEdited = null;
+      this.state.launchLastEditedFor = null;
+    }
+    return this.state.launchLastEdited;
+  },
+
   // Debounced: clicking three node dots in a row should ask once, not three
   // times, and the answer takes a directory walk over the weights.
   schedulePlan(delay) {
@@ -2259,7 +2279,7 @@ const AINode = {
   // fields would chase each other.
   reflectPlanIntoFields(plan) {
     if (!plan || plan.fits === false) return;
-    var drove = this.state.launchLastEdited;
+    var drove = this.launchDrove();
     if (!drove) return;                      // nothing driven yet: leave be
     var len = document.getElementById('launch-max-len');
     var seqs = document.getElementById('launch-max-seqs');
@@ -2289,8 +2309,10 @@ const AINode = {
     // Context and concurrency multiply into one cache. Sending BOTH pins both
     // and the planner has nothing left to say, so the fields could never move
     // in relation to each other. Whichever the operator last touched is the
-    // constraint; the other is the answer.
-    var drove = this.state.launchLastEdited;
+    // constraint; the other is the answer. The forecast bar is not misled by
+    // the omission: the planner forecasts a derived concurrency at the value
+    // it derives, which is what lands in the field and in the launch.
+    var drove = this.launchDrove(want);
     if (want.max_model_len && drove !== 'seqs') {
       params.set('max_model_len', want.max_model_len);
     }

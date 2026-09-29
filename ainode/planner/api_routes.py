@@ -365,6 +365,10 @@ async def handle_plan(request: web.Request) -> web.Response:
         recommended_gmu=float(getattr(recipe, "recommended_gmu", 0.0) or 0.0),
         measured_weights_per_node=measured_weights,
         measured_rank_count=measured_ranks,
+        # A window without a concurrency is the launch form asking "how many
+        # sessions at this length": the answer is the concurrency it launches.
+        concurrency_derived=(not request.query.get("concurrency")
+                             and bool(_int(request, "max_model_len"))),
     )
 
     payload = plan.to_dict()

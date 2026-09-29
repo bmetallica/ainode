@@ -482,8 +482,15 @@ def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,
              recipe_context: int = 0,
              recommended_gmu: float = 0.0,
              measured_weights_per_node: float = 0.0,
-             measured_rank_count: int = 0) -> Plan:
+             measured_rank_count: int = 0,
+             concurrency_derived: bool = False) -> Plan:
     """The launch this model should get on these nodes.
+
+    ``concurrency_derived`` says the caller did not name a concurrency and
+    will take the one this plan derives (the launch form, when the operator
+    drove the context length). The forecast then counts that one — it is what
+    lands in --max-num-seqs — rather than the placeholder of 1, which made the
+    "used" bar read low exactly while the window was being pulled larger.
 
     ``measured_weights_per_node`` is what the engine reported its weights
     actually took, for a launch at ``measured_rank_count`` ranks. Where there is
@@ -653,7 +660,9 @@ def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,
             plan.notes = _explain(facts, plan, best, bytes_per_token,
                                   kv_cache_dtype)
             return plan
-    _forecast(plan, best, smallest, bytes_per_token, concurrency)
+    _forecast(plan, best, smallest, bytes_per_token,
+              plan.max_num_seqs if concurrency_derived and plan.max_num_seqs
+              else concurrency)
     plan.notes = _explain(facts, plan, best, bytes_per_token, kv_cache_dtype)
     plan.warnings.extend(_caveats(facts, len(best.nodes),
                                   kv_cache_dtype))
