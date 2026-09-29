@@ -1157,6 +1157,10 @@ then each peer starts its own — one at a time per node, and a model already
 running as the profile describes is left running. Nodes the profile does not
 name are left alone; a peer on an older build is started through the old load
 routes but not cleared. The same model may appear once per node — replicas.
+The proxy then spreads requests over them: a conversation goes back to the
+replica that served its previous step (identified by its opening messages, so
+that replica's prefix cache is used) unless that one is clearly busier, and
+anything else goes to the replica with the fewest requests in flight.
 A default profile is applied at startup and replaces the instance-manifest
 replay, which could only record single-node instances. Deleting a profile with
 `DELETE /api/profiles/<name>?stop=1` stops its own models on every node it
