@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import socket
+import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -510,6 +511,23 @@ async def _on_startup(app: web.Application) -> None:
         guard.start()
     except Exception:
         logger.exception("could not start the host memory guard")
+
+    # Ask the engine image what it accepts (engine/image_probe.py) once, in the
+    # background, so the first launch after an engine rebuild does not wait
+    # half a minute for the answer. Cached by image id; a no-op on a node
+    # without the image.
+    def _warm_engine_probe() -> None:
+        time.sleep(90)
+        try:
+            from ainode.engine.image_probe import probe
+
+            # The image the eugr backend serves on (_engine_image_for_env).
+            probe("vllm-node:latest")
+        except Exception:
+            logger.debug("engine image probe failed", exc_info=True)
+
+    threading.Thread(target=_warm_engine_probe, daemon=True,
+                     name="engine-probe").start()
 
     # Telemetry, if it is configured. Started before the engine work below so
     # a node that fails to bring a model up still reports why it is unhappy.
@@ -2518,6 +2536,7 @@ PATCHABLE_CONFIG_FIELDS = {
     "gpu_memory_utilization",
     "quantization",
     "trust_remote_code",
+    "auto_reasoning_parser",
     "cluster_enabled",
     "cluster_role",
     "cluster_id",

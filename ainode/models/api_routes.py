@@ -749,6 +749,10 @@ def append_solo_instance(app, model: str, gmu=None, *, overrides=None,
                 pass
 
     backend = get_backend(inst_config, instance_id=name_token)
+    # "Launch anyway" also skips the check of the flags against the engine
+    # image (engine/serve_flags.py): the operator has overruled the checks.
+    if force:
+        backend.skip_flag_check = True
     # Weights from a neighbour before the engine reaches for the internet. A
     # distributed launch already pushes them head→peer; a solo launch on a node
     # that does not have them had no equivalent, so it downloaded — measured

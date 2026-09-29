@@ -583,6 +583,9 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
                           data_parallel_size=plan.data_parallel_size,
                           api_port=port, **resolved)
     backend = get_backend(inst_config, instance_id=name_token)
+    if body.get("force"):
+        # Launch anyway: past the engine-image flag check too.
+        backend.skip_flag_check = True
     try:
         # In a worker thread: start_distributed SSHes to every peer, compares
         # engine images, mirrors the weights and forms the Ray cluster — all
