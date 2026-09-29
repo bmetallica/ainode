@@ -31,7 +31,7 @@ TEMPLATES_DIR = WEB_DIR / "templates"
 VERSIONED = ("/static/js/app.js", "/static/js/lib.js", "/static/js/topology.js",
              "/static/css/style.css") + tuple(
     f"/static/js/views/{name}.js" for name in
-    ("launch", "chat", "downloads", "training", "config", "server"))
+    ("launch", "chat", "downloads", "training", "config", "server", "wizard"))
 
 
 def asset_token(relative: str) -> str:

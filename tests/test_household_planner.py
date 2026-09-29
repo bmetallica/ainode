@@ -87,8 +87,8 @@ class TestTheVerteiler:
         b = Item("b", "B", node_ids=["n1"], fixed_gb=30, mode="usage", pinned_gb=10)
         conflicts = solve([a, b], _nodes(100))
         assert len(conflicts) == 1
-        assert "Spark1" in conflicts[0] and "30.0 GB zu viel" in conflicts[0]
-        assert "(fest)" in conflicts[0]
+        assert "Spark1" in conflicts[0] and "30.0 GB too much" in conflicts[0]
+        assert "(fixed)" in conflicts[0]
 
     def test_an_item_with_errors_takes_nothing(self):
         bad = Item("x", "X", node_ids=["n1"], fixed_gb=500, errors=["kaputt"])
@@ -207,7 +207,7 @@ class TestPlanningADraft:
 
     def test_a_split_without_the_head_is_refused(self, app):
         result = _plan(app, {"id": "x", "model": "org/big", "node_ids": ["s2", "s3"]})
-        assert any("Head" in e for e in result["models"][0]["errors"])
+        assert any("head" in e for e in result["models"][0]["errors"])
 
     def test_a_replica_on_another_node_is_fine(self, app):
         result = _plan(app, {"id": "a1", "model": "org/a", "node_ids": ["s1"]},
@@ -222,7 +222,7 @@ class TestPlanningADraft:
 
     def test_a_model_not_on_disk_is_named(self, app):
         result = _plan(app, {"id": "q", "model": "org/nothere", "node_ids": ["s1"]})
-        assert "nicht heruntergeladen" in result["models"][0]["errors"][0]
+        assert "not downloaded" in result["models"][0]["errors"][0]
 
     def test_image_and_embedding_take_their_blocks(self, app):
         result = _plan(app,
@@ -270,3 +270,76 @@ async def test_the_route_plans_and_launches_nothing(app):
         data = await resp.json()
         assert data["ok"] and data["entries"][0]["model"] == "org/a"
         assert (await client.post("/api/planner/household", data="x")).status == 400
+
+
+class TestWhatTheWizardOffers:
+    def test_kinds_are_read_off_the_disk(self, tmp_path):
+        from ainode.planner.household import kind_on_disk
+
+        image = tmp_path / "flux"
+        image.mkdir()
+        (image / "model_index.json").write_text("{}")
+        emb = tmp_path / "bge"
+        emb.mkdir()
+        (emb / "modules.json").write_text("[]")
+        llm = tmp_path / "qwen"
+        llm.mkdir()
+        (llm / "config.json").write_text("{}")
+        assert kind_on_disk(image) == "image"
+        assert kind_on_disk(emb) == "embedding"
+        assert kind_on_disk(llm) == "llm"
+
+    def test_the_listing_groups_by_kind(self, tmp_path):
+        from ainode.planner.household import wizard_models
+
+        flux = tmp_path / "flux"
+        flux.mkdir()
+        (flux / "model_index.json").write_text("{}")
+
+        class _M:
+            def list_downloaded(self):
+                return [{"hf_repo": "org/flux", "size_gb": 20},
+                        {"hf_repo": "org/qwen", "size_gb": 60, "complete": False,
+                         "incomplete_reason": "2 shards missing"},
+                        {"hf_repo": "BAAI/bge-large-en-v1.5", "size_gb": 1.3}]
+
+            def model_dirs_for_repo(self, repo):
+                return [flux] if repo == "org/flux" else [tmp_path / "none"]
+
+        models = wizard_models({"model_manager": _M()})
+        assert [(m["model"], m["kind"]) for m in models] == [
+            ("org/qwen", "llm"), ("BAAI/bge-large-en-v1.5", "embedding"),
+            ("org/flux", "image")]
+        assert models[0]["complete"] is False
+
+
+class TestHowFarASliderMayGo:
+    def test_room_is_what_the_automatic_neighbours_can_give(self):
+        a = Item("a", "A", node_ids=["n1"], fixed_gb=30, mode="size", pinned_gb=10)
+        b = Item("b", "B", node_ids=["n1"], fixed_gb=20, mode="auto", min_gb=5)
+        solve([a, b], _nodes(100))
+        # 100 - 30 - 20 - B's minimum 5 = 45 for A.
+        assert a.room_gb == pytest.approx(45)
+        assert b.cache_gb == pytest.approx(40)
+
+    def test_a_spanning_model_is_bound_by_its_tightest_node(self):
+        c = Item("c", "C", node_ids=["n1", "n2"], fixed_gb=40, mode="size", pinned_gb=5)
+        solve([c], _nodes(100, 60))
+        assert c.room_gb == pytest.approx(20)
+
+
+class TestATooSmallPinStaysInTheArithmetic:
+    def test_it_is_an_error_but_still_counted(self, app):
+        from ainode.planner.household import plan_household
+
+        result = plan_household(app, {"models": [
+            {"id": "a", "model": "org/a", "node_ids": ["s1"], "mode": "size",
+             "cache_gb": 0.5, "max_model_len": 131072},
+            {"id": "b", "model": "org/b", "node_ids": ["s1"], "mode": "auto",
+             "max_model_len": 32768}]})
+        a, b = result["models"]
+        assert any("less than one" in e for e in a["errors"])
+        s1 = result["nodes"][0]
+        # A still holds its weights and its half gigabyte: B does not get them.
+        assert {seg["id"] for seg in s1["segments"]} == {"a", "b"}
+        assert s1["used_gb"] == pytest.approx(s1["budget_gb"], abs=0.2)

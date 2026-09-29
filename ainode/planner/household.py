@@ -35,7 +35,7 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["HouseholdNode", "Item", "solve", "plan_household", "MODES"]
+__all__ = ["HouseholdNode", "Item", "solve", "plan_household", "wizard_models", "MODES"]
 
 MODES = ("usage", "size", "auto")
 
@@ -85,8 +85,11 @@ class Item:
     min_gb: float = 0.0
     cap_gb: float = math.inf
     priority: float = 1.0
-    #: Filled by solve().
+    #: Filled by solve(): the cache it gets, and the most it could have with
+    #: every automatic model on its nodes shrunk to its minimum — what a
+    #: slider for it may reach without a conflict.
     cache_gb: float = 0.0
+    room_gb: float = 0.0
     errors: List[str] = field(default_factory=list)
 
     @property
@@ -123,11 +126,18 @@ def solve(items: List[Item], nodes: List[HouseholdNode]) -> List[str]:
             on_node = [i for i in placed if node_id in i.node_ids]
             parts = ", ".join(
                 f"{i.model} {i.fixed_gb + (i.cache_gb if i.has_cache else 0):.1f}"
-                + (" (fest)" if i.mode in ("usage", "size") and i.has_cache else "")
+                + (" (fixed)" if i.mode in ("usage", "size") and i.has_cache else "")
                 for i in on_node)
             conflicts.append(
-                f"{node.name or node_id}: {-left:.1f} GB zu viel — "
-                f"{parts} GB gegen ein Budget von {node.budget_gb:.1f} GB")
+                f"{node.name or node_id}: {-left:.1f} GB too much — "
+                f"{parts} GB against a budget of {node.budget_gb:.1f} GB")
+
+    # The most each could have: what it has now, plus what is left on the
+    # tightest of its nodes once every automatic model is at its minimum.
+    for item in placed:
+        if item.has_cache:
+            spare = min((remaining.get(n, 0.0) for n in item.node_ids), default=0.0)
+            item.room_gb = max(item.cache_gb, item.cache_gb + spare)
 
     # Progressive filling of the automatic ones over whatever is left.
     active = [i for i in placed if i.has_cache and i.mode == "auto"
@@ -238,7 +248,7 @@ def _resolve_llm(app, spec: dict, item: Item, nodes: Dict[str, HouseholdNode],
     manager = app.get("model_manager")
     facts = local_facts(manager, item.model) if manager is not None else None
     if facts is None or not facts.weight_bytes:
-        item.errors.append(f"{item.model} ist auf diesem Node nicht heruntergeladen.")
+        item.errors.append(f"{item.model} is not downloaded on this node.")
         return info
     recipe = routes._recipe(app, item.model)
     count = len(item.node_ids)
@@ -250,17 +260,17 @@ def _resolve_llm(app, spec: dict, item: Item, nodes: Dict[str, HouseholdNode],
     info["strategy"] = strategy
     if count > 1 and head_id and head_id not in item.node_ids:
         item.errors.append(
-            "Ein Modell über mehrere Nodes muss den Head einschließen — die "
-            "verteilte Engine wird vom Head aus gestartet.")
+            "A model across several nodes has to include the head — the "
+            "distributed engine is launched from there.")
     if strategy == "tensor":
         why = _tensor_ok(facts, count)
         if why:
-            item.errors.append(f"Tensor über {count} Nodes: {why}.")
+            item.errors.append(f"Tensor across {count} nodes: {why}.")
     elif strategy == "pipeline":
         if not bool(getattr(recipe, "supports_pipeline", True)):
-            item.errors.append("Dieses Modell unterstützt keine Pipeline-Aufteilung.")
+            item.errors.append("This model does not support a pipeline split.")
         elif facts.num_layers and facts.num_layers < count:
-            item.errors.append(f"Pipeline über {count} Nodes: nur {facts.num_layers} Layer.")
+            item.errors.append(f"Pipeline across {count} nodes: only {facts.num_layers} layers.")
 
     requested_dtype = str(spec.get("kv_cache_dtype") or "")
     dtype = routes.planning_kv_dtype(app, recipe, requested_dtype) or "auto"
@@ -285,8 +295,8 @@ def _resolve_llm(app, spec: dict, item: Item, nodes: Dict[str, HouseholdNode],
                 kv_source=kv_source, count=count, tightest_total_gb=tightest,
                 weights_gb=round(facts.weights_gb, 1))
     if not bpt:
-        item.errors.append("Der Checkpoint nennt keine Layer-/Head-Zahlen; "
-                           "der KV-Cache lässt sich nicht berechnen.")
+        item.errors.append("The checkpoint states no layer or head counts; "
+                           "its KV cache cannot be computed.")
         return info
 
     ceiling = int(facts.max_position_embeddings or
@@ -295,8 +305,8 @@ def _resolve_llm(app, spec: dict, item: Item, nodes: Dict[str, HouseholdNode],
     window = int(spec.get("max_model_len") or 0) or int(recipe_len or 0) \
         or min(ceiling or 131072, 131072)
     if ceiling and window > ceiling:
-        info["warnings"].append(f"{window:,} überschreitet die {ceiling:,}, für "
-                                f"die der Checkpoint trainiert ist; geplant mit {ceiling:,}.")
+        info["warnings"].append(f"{window:,} exceeds the {ceiling:,} this checkpoint "
+                                f"was trained for; planned at {ceiling:,}.")
         window = ceiling
     window = max(LEN_GRANULARITY, window)
     info["max_model_len"] = window
@@ -312,17 +322,17 @@ def _resolve_llm(app, spec: dict, item: Item, nodes: Dict[str, HouseholdNode],
         item.pinned_gb = window * sessions * per_token_node_gb * BLOCK_MARGIN
         info["sessions"] = sessions
     elif item.mode == "size":
+        # Too small for one request is reported after solving, like an
+        # automatic share that comes out too small — not here, where an error
+        # would take the model out of the node's arithmetic altogether and
+        # hand its memory to its neighbours.
         item.pinned_gb = max(0.0, float(spec.get("cache_gb") or 0))
-        if item.pinned_gb < one_request:
-            item.errors.append(
-                f"{item.pinned_gb:.1f} GB Cache pro Node halten keine einzige "
-                f"Anfrage mit {window:,} Tokens (mindestens {one_request:.1f} GB).")
     else:
         item.min_gb = one_request
     if item.mode in ("usage", "size") and item.pinned_gb > item.cap_gb + 0.05:
         info["warnings"].append(
-            f"Dafür wären mehr als {gmu_cap:.2f} des Speichers nötig "
-            f"(Rezept-/Sicherheitsgrenze); der Cache wird dort nicht ganz ankommen.")
+            f"That needs more than {gmu_cap:.2f} of the memory (the recipe's "
+            f"or the safety ceiling); the cache will not quite get there.")
     info["per_token_node_gb"] = per_token_node_gb
     return info
 
@@ -335,9 +345,9 @@ def _resolve_image(app, spec: dict, item: Item) -> dict:
     manager = app.get("model_manager")
     weights = routes._image_weights_gb(manager, item.model) if manager is not None else 0.0
     if not weights:
-        item.errors.append(f"{item.model} ist auf diesem Node nicht heruntergeladen.")
+        item.errors.append(f"{item.model} is not downloaded on this node.")
     if len(item.node_ids) != 1:
-        item.errors.append("Ein Bildmodell läuft auf genau einem Node.")
+        item.errors.append("An image model runs on exactly one node.")
     size = int(spec.get("max_image_size") or 1536)
     overhead = ENGINE_OVERHEAD_GB + IMAGE_OVERHEAD_GB * (size * size / IMAGE_REFERENCE_PIXELS)
     item.fixed_gb = weights + overhead
@@ -364,7 +374,7 @@ def _resolve_embedding(app, spec: dict, item: Item) -> dict:
     if not size_gb:
         size_gb = 1.0
     if len(item.node_ids) != 1:
-        item.errors.append("Ein Embedding-Modell läuft auf genau einem Node.")
+        item.errors.append("An embedding model runs on exactly one node.")
     item.fixed_gb = size_gb * EMBEDDING_FACTOR + EMBEDDING_CONTEXT_GB
     return {"weights_gb": round(size_gb, 2), "warnings": []}
 
@@ -416,20 +426,20 @@ def plan_household(app, draft: dict) -> dict:
                     priority=max(0.1, float(spec.get("priority") or 1)))
         info: dict = {"warnings": []}
         if not item.model:
-            item.errors.append("Kein Modell gewählt.")
+            item.errors.append("No model chosen.")
         elif not item.node_ids:
-            item.errors.append("Keinem Node zugeordnet.")
+            item.errors.append("Not assigned to a node.")
         else:
             unknown = [n for n in item.node_ids if n not in by_id]
             if unknown:
-                item.errors.append(f"Unbekannte Nodes: {', '.join(unknown)}.")
+                item.errors.append(f"Unknown nodes: {', '.join(unknown)}.")
             # A replica is the same model on another node (E4) — the same model
             # twice on one node is not something a node can serve.
             for node_id in item.node_ids:
                 if (item.model, node_id) in seen:
                     item.errors.append(
-                        f"{item.model} ist auf {by_id.get(node_id, HouseholdNode(node_id)).name or node_id} "
-                        f"schon eingeplant — ein Replikat gehört auf einen anderen Node.")
+                        f"{item.model} is already planned on {by_id.get(node_id, HouseholdNode(node_id)).name or node_id} "
+                        f"— a replica belongs on another node.")
                 seen.add((item.model, node_id))
         if not item.errors:
             try:
@@ -441,11 +451,14 @@ def plan_household(app, draft: dict) -> dict:
                     info = _resolve_embedding(app, spec, item)
             except Exception as exc:
                 logger.exception("could not plan %s", item.model)
-                item.errors.append(f"Planung fehlgeschlagen: {exc}")
+                item.errors.append(f"Planning failed: {exc}")
         items.append(item)
         infos.append(info)
 
     conflicts = solve(items, nodes)
+    # What the arithmetic counted. Errors found below (a cache too small for
+    # one request) do not take a model back out of its node's bar.
+    counted = {id(i) for i in items if not i.errors}
 
     models_out = []
     entries = []
@@ -468,11 +481,11 @@ def plan_household(app, draft: dict) -> dict:
                 sessions = info["sessions"]
             else:
                 sessions = tokens // window if window else 0
-                if sessions < 1 and not conflicts:
+                if sessions < 1:
                     item.errors.append(
-                        f"Der Cache hält {tokens:,} Tokens — weniger als eine "
-                        f"Anfrage mit {window:,}. Fenster verkleinern oder "
-                        f"anderen Modellen auf diesem Node Platz nehmen.")
+                        f"The cache holds {tokens:,} tokens — less than one "
+                        f"request of {window:,}. Shorten the context, or take "
+                        f"room from the other models on this node.")
                     out["errors"] = list(item.errors)
             reserve = item.fixed_gb - 0.01 * max(
                 (by_id[n].total_gb for n in item.node_ids), default=0) + item.cache_gb
@@ -484,7 +497,8 @@ def plan_household(app, draft: dict) -> dict:
                        sessions=max(0, sessions), max_num_seqs=max(1, sessions),
                        gpu_memory_utilization=gmu,
                        cache_cap_per_node_gb=(round(item.cap_gb, 1)
-                                              if item.cap_gb < math.inf else None))
+                                              if item.cap_gb < math.inf else None),
+                       cache_max_per_node_gb=round(min(item.room_gb, item.cap_gb), 1))
         models_out.append(out)
         entry = _entry_for(spec, item, info)
         if entry is not None:
@@ -495,9 +509,9 @@ def plan_household(app, draft: dict) -> dict:
         segments = []
         used = 0.0
         for item in items:
-            if item.errors or node.node_id not in item.node_ids:
+            if id(item) not in counted or node.node_id not in item.node_ids:
                 continue
-            cache = item.cache_gb if item.has_cache else 0.0
+            cache = item.cache_gb if item.kind == "llm" else 0.0
             segments.append({"id": item.id, "model": item.model, "kind": item.kind,
                              "fixed_gb": round(item.fixed_gb, 1),
                              "cache_gb": round(cache, 1)})
@@ -514,3 +528,62 @@ def plan_household(app, draft: dict) -> dict:
     return {"nodes": nodes_out, "models": models_out, "conflicts": conflicts,
             "ok": not conflicts and all(not m["errors"] for m in models_out),
             "entries": entries, "head_node_id": head_id}
+
+
+# -- what the wizard offers ---------------------------------------------------
+
+#: Files that mark a sentence-transformers checkpoint.
+_EMBEDDING_MARKERS = ("sentence_bert_config.json", "modules.json")
+
+
+def kind_on_disk(directory) -> str:
+    """"image" for a diffusers pipeline, "embedding" for a sentence-transformers
+    checkpoint, "llm" otherwise."""
+    from pathlib import Path
+
+    from ainode.planner.facts import snapshot_dir
+
+    root = snapshot_dir(Path(directory)) or Path(directory)
+    if (root / "model_index.json").is_file():
+        return "image"
+    if any((root / marker).is_file() for marker in _EMBEDDING_MARKERS):
+        return "embedding"
+    return "llm"
+
+
+def wizard_models(app) -> list:
+    """Every model on this node's disk, with its kind and size (E5: only
+    downloaded models are offered)."""
+    manager = app.get("model_manager")
+    if manager is None:
+        return []
+    try:
+        from ainode.embeddings.manager import KNOWN_EMBEDDING_MODELS
+    except Exception:
+        KNOWN_EMBEDDING_MODELS = {}
+    out = []
+    seen = set()
+    for entry in manager.list_downloaded():
+        repo = str(entry.get("hf_repo") or entry.get("id") or "")
+        if not repo or repo in seen:
+            continue
+        seen.add(repo)
+        kind = "image" if entry.get("modality") == "image" else ""
+        if repo in KNOWN_EMBEDDING_MODELS:
+            kind = "embedding"
+        if not kind:
+            try:
+                dirs = manager.model_dirs_for_repo(repo)
+                kind = kind_on_disk(dirs[0]) if dirs else "llm"
+            except Exception:
+                kind = "llm"
+        out.append({
+            "model": repo, "name": str(entry.get("name") or repo.split("/")[-1]),
+            "kind": kind,
+            "size_gb": float(entry.get("local_size_gb") or entry.get("size_gb") or 0),
+            "complete": bool(entry.get("complete", True)),
+            "incomplete_reason": entry.get("incomplete_reason") or "",
+        })
+    return sorted(out, key=lambda m: ({"llm": 0, "embedding": 1, "image": 2}[m["kind"]],
+                                      m["model"].lower()))
+
