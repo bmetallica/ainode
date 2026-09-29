@@ -493,5 +493,6 @@ class TestUnlockingFromTheUI:
 
         from ainode.measure import api_routes
 
-        assert '{"models": by_model}' in inspect.getsource(api_routes.handle_cluster)
+        assert '{"models": await gather_cluster_measurements' in \
+            inspect.getsource(api_routes.handle_cluster)
         assert "cluster.models" in self.APP_JS

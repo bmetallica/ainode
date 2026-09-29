@@ -32,6 +32,7 @@ Object.assign(AINode, {
     var list = await this.fetchJSON('/api/profiles').catch(function () { return null; });
     var draft = null;
     var wasDefault = false;
+    var measured = {};
     if (editName) {
       var got = await this.fetchJSON('/api/profiles/' + encodeURIComponent(editName))
         .catch(function () { return null; });
@@ -41,6 +42,7 @@ Object.assign(AINode, {
       }
       draft = AINodeLib.wizardDraftFromProfile(got.profile);
       wasDefault = !!got.is_default;
+      measured = got.profile.measured || {};
       draft.makeDefault = wasDefault;
     } else {
       var kept = this._pwLoadAutosave();
@@ -58,6 +60,7 @@ Object.assign(AINode, {
       catalog: (catalog && catalog.models) || [],
       existing: ((list && list.profiles) || []).map(function (p) { return p.name; }),
       plan: null, origLimits: {}, seq: 0, timer: null, running: [], busy: false,
+      measured: measured,
     };
     // The nodes' limits as they are now, before the draft overrides any.
     var first = await this._pwRequestPlan({ models: [], limits: {} });
@@ -432,7 +435,7 @@ Object.assign(AINode, {
       'also converges the nodes it uses.</div>';
     html += this._pwNodeCards(false);
     html += '<table class="pw-table"><thead><tr><th>Model</th><th>Nodes</th><th>Memory</th>' +
-      '<th>Context</th><th>Sessions</th><th>Cache / node</th></tr></thead><tbody>';
+      '<th>Context</th><th>Sessions</th><th>Cache / node</th><th>Last measured</th></tr></thead><tbody>';
     (plan.models || []).forEach(function (m) {
       var where = (m.node_ids || []).map(function (id) { return self._pwNodeName(id); }).join(' + ');
       html += '<tr><td><span class="pw-dot" style="background:' + self._pwColor(m.id) +
@@ -442,7 +445,11 @@ Object.assign(AINode, {
                        : (m.fixed_per_node_gb ? m.fixed_per_node_gb + ' GB' : '—')) + '</td>' +
         '<td>' + (m.max_model_len ? self.formatNumber(m.max_model_len) : '—') + '</td>' +
         '<td>' + (m.sessions || (m.kind === 'llm' ? 0 : '—')) + '</td>' +
-        '<td>' + (m.cache_per_node_gb != null ? m.cache_per_node_gb + ' GB' : '—') + '</td></tr>';
+        '<td>' + (m.cache_per_node_gb != null ? m.cache_per_node_gb + ' GB' : '—') + '</td>' +
+        // What this entry took the last time the profile was applied, beside
+        // what is planned now: planned per node is weights + engine + cache.
+        '<td>' + self._measuredCell((self._pw.measured || {})[m.model + '@' + (m.node_ids || []).join(',')]) +
+        '</td></tr>';
     });
     html += '</tbody></table>';
     var stops = AINodeLib.wizardStopPreview(this._pw.running, this._pw.draft.models);

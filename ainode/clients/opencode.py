@@ -226,13 +226,20 @@ def _served_llms(app) -> List[Tuple[str, object]]:
     return [(e.model, e) for e in profile.entries if e.kind == KIND_LLM and e.model]
 
 
-def build_opencode_config(app, base_url: str) -> dict:
-    """The whole opencode.json, ready to paste."""
+def build_opencode_config(app, base_url: str, served=None,
+                          cache_tokens: Optional[Dict[str, int]] = None) -> dict:
+    """The whole opencode.json, ready to paste.
+
+    ``served`` is [(model id, entry)] — what runs now when omitted, a profile's
+    entries for build_opencode_config_for_profile. ``cache_tokens`` overrides
+    the measured cache size per model (a profile's plan knows it before
+    anything has run).
+    """
     manager = app.get("model_manager")
     models: Dict[str, dict] = {}
     notes: List[str] = []
 
-    for model_id, entry in _served_llms(app):
+    for model_id, entry in (_served_llms(app) if served is None else served):
         info = None
         if manager is not None:
             try:
@@ -261,7 +268,7 @@ def build_opencode_config(app, base_url: str) -> dict:
         # "stops working" with nothing in the log that says why. So the
         # limit is each session's share of the cache when that is smaller.
         seqs = _concurrency(entry, info)
-        cache = _cache_tokens(app, model_id, window)
+        cache = (cache_tokens or {}).get(model_id) or _cache_tokens(app, model_id, window)
         if seqs > 1 and cache and cache // seqs < window:
             share = cache // seqs
             notes.append(
@@ -308,3 +315,70 @@ def build_opencode_config(app, base_url: str) -> dict:
 
     digest = hashlib.sha1(_json.dumps(models, sort_keys=True).encode()).hexdigest()
     return {"config": config, "notes": notes, "fingerprint": digest[:12]}
+
+
+class _ProfileLaunch:
+    """A profile entry as the config builder reads it, with the flags the
+    launch will add on its own (a reasoning parser the engine image has, F1)."""
+
+    def __init__(self, entry, extra_args):
+        self.model = entry.model
+        self.max_model_len = entry.max_model_len
+        self.extra_vllm_args = list(extra_args)
+
+
+def build_opencode_config_for_profile(app, profile, base_url: str) -> dict:
+    """An opencode.json for what ``profile`` will serve — before applying it.
+
+    The windows and session counts are the profile's own; the cache each model
+    gets comes from planning the profile (planner/household.py) where the
+    wizard made it. A model that runs as replicas is one model to the client:
+    the router spreads it, so it gets the smaller of the replicas' limits.
+    """
+    available = None
+    try:
+        from ainode.engine.image_probe import cached_probe
+
+        found = cached_probe("vllm-node:latest") or {}
+        available = found.get("reasoning_parsers")
+    except Exception:
+        logger.debug("no engine probe for the reasoning parsers", exc_info=True)
+
+    cache: Dict[str, int] = {}
+    if getattr(profile, "wizard", None):
+        try:
+            from ainode.planner.household import plan_household
+
+            plan = plan_household(app, profile.wizard)
+            for planned in plan.get("models") or []:
+                tokens = int(planned.get("kv_tokens") or 0)
+                if tokens:
+                    model = planned["model"]
+                    cache[model] = min(cache.get(model, tokens), tokens)
+        except Exception:
+            logger.exception("could not plan %s for its client config", profile.name)
+
+    served = []
+    seen: Dict[str, int] = {}
+    for entry in profile.entries:
+        if entry.kind not in ("", "llm"):
+            continue
+        args = list(entry.extra_vllm_args or [])
+        if getattr(app.get("config"), "auto_reasoning_parser", True):
+            from ainode.models.reasoning_parsers import reasoning_args
+
+            args += reasoning_args(entry.model, args, available)
+        launch = _ProfileLaunch(entry, args)
+        if entry.model in seen:
+            # A replica: keep the smaller window of the two.
+            kept = served[seen[entry.model]][1]
+            if entry.max_model_len and (not kept.max_model_len
+                                        or entry.max_model_len < kept.max_model_len):
+                served[seen[entry.model]] = (entry.model, launch)
+            continue
+        seen[entry.model] = len(served)
+        served.append((entry.model, launch))
+    result = build_opencode_config(app, base_url, served=served, cache_tokens=cache)
+    result["profile"] = profile.name
+    return result
+

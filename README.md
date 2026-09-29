@@ -1213,6 +1213,19 @@ wizard keeps its draft in the profile, so a saved profile opens exactly as it
 was left; a captured profile opens too, each cache fixed at what it was
 launched with.
 
+**Applying is a job you can watch.** Apply (or Save & apply) shows a panel with
+every entry's state — waiting, starting, loading, ready, already running,
+failed, skipped — and its error beside it; it survives a reload and another tab
+(`GET /api/profiles/jobs/current`). **Cancel** stops after the model that is
+starting; **Restore what ran before** applies what was running before (captured
+at the start of the job). When it is done, what each model actually took is
+gathered from every node it ran on and written into the profile: the profile
+card and the wizard's review show it beside the plan. **OpenCode config** on a
+profile card builds the client config for what the profile will serve — its
+windows, sessions and planned caches, replicas as one model — before it is
+applied. From a script: `POST /api/profiles/<name>/apply {"background": true}`
+returns the job; without it the call waits and returns the report as before.
+
 ### Telemetry over MQTT
 
 A scrape needs the monitoring host to reach every node; a publish needs each
