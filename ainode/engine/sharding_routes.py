@@ -614,6 +614,13 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         config.tensor_parallel_size = plan.tensor_parallel_size
         config.pipeline_parallel_size = plan.pipeline_parallel_size
         config.data_parallel_size = plan.data_parallel_size
+        # And the per-load values, as the solo path does
+        # (_persist_primary_overrides): the boot engine after a restart, the
+        # status broadcast and everything else that asks app["config"] would
+        # otherwise see the window, cache dtype and memory share of whatever
+        # was loaded solo before.
+        for key, value in resolved.items():
+            setattr(config, key, value)
         try:
             config.save()
         except Exception:

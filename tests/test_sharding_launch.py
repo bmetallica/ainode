@@ -525,3 +525,47 @@ class TestTheDistributedPathResetsTheLastLoadsOverrides:
         assert resp.status == 200
         assert _FakeBackend.last["config"].trust_remote_code is True
         assert _FakeBackend.last["config"].max_model_len == 98304
+
+
+class TestTheSharedConfigCarriesThePerLoadValues:
+    """B3: the distributed start set the model, the peers and the split on
+    app["config"] — but not the window, the cache dtype or the memory share.
+    Everything that reads the shared config (the boot engine after a restart,
+    the status broadcast) saw the values of the last solo load instead."""
+
+    def _launch(self, body):
+        _FakeBackend.last = {}
+        config = NodeConfig(node_id="head", max_model_len=4096,
+                            kv_cache_dtype="auto", gpu_memory_utilization=0.5)
+        config.save = lambda *a, **k: None
+        cluster = ClusterState(local_announcement=_local_ann("head"))
+        cluster.add_node(_member("m1", "10.100.0.13"))
+        app = {"cluster_state": cluster, "config": config, "engine": None}
+
+        class _Req:
+            def __init__(self):
+                self.app = app
+
+            async def json(self):
+                return body
+
+        with patch.object(backends, "get_backend", _FakeBackend):
+            resp = asyncio.run(handle_sharding_launch(_Req()))
+        assert resp.status == 200, resp.text
+        return config
+
+    def test_the_window_and_cache_dtype_are_the_launched_ones(self):
+        config = self._launch({"model": "m", "min_nodes": 2,
+                               "max_model_len": 131072,
+                               "kv_cache_dtype": "fp8"})
+        assert config.max_model_len == 131072
+        assert config.kv_cache_dtype == "fp8"
+        # And the same as what the engine was actually given.
+        launched = _FakeBackend.last["config"]
+        assert launched.max_model_len == config.max_model_len
+        assert launched.gpu_memory_utilization == config.gpu_memory_utilization
+
+    def test_what_was_not_asked_for_resets_rather_than_leaks(self):
+        config = self._launch({"model": "m", "min_nodes": 2})
+        assert config.kv_cache_dtype == NodeConfig().kv_cache_dtype
+        assert config.max_model_len == _FakeBackend.last["config"].max_model_len
