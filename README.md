@@ -352,7 +352,14 @@ The plan marks each of the two numbers **measured**, **MoE-calibrated** or
 **estimated**, and a refusal that rests on an estimate says so. Each
 measurement also records the vLLM version that produced it, the plan flags one
 from another build, and it shows what the engine cost beyond weights and cache
-next to the 2.5 GB the planner assumes. A distributed load is measured on
+next to the 2.5 GB the planner assumes. Every measurement also keeps **how
+its launch was started** — split, window, KV dtype, memory fraction,
+`--max-num-seqs`, every flag — and failed launches keep theirs in the history.
+`scripts/export-measurements.sh` (run on the head) writes all of it to one
+JSON file, fleet-wide: per model and node the figures and launch, the
+checkpoint's facts, and what the planner's arithmetic predicts for exactly
+that launch beside what was measured; plus the nodes, the engine build, what
+runs now and the profiles — no credentials. A distributed load is measured on
 **every node it runs on** — the peers' memory in use comes from their own
 announcements before and after — and the footprint is the fullest node's, since
 that is the one the next launch has to fit on. Footprints are decimal GB like
