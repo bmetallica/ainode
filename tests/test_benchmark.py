@@ -34,6 +34,7 @@ from ainode.bench.runner import (
     run_benchmark,
 )
 from ainode.core.config import NodeConfig
+from tests.dashboard_js import parts as _dashboard_parts
 
 
 class TestTheSpecIsChecked:
@@ -310,7 +311,7 @@ class TestTheUi:
         from pathlib import Path
 
         return (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-                "static" / "js" / "app.js").read_text()
+                "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
     def test_context_sizes_are_selectable(self):
         # The point of the feature: throughput at 1K and at 64K are different

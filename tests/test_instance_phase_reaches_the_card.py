@@ -29,6 +29,7 @@ from ainode.core.config import NodeConfig
 from ainode.discovery.broadcast import NodeStatus
 from ainode.discovery.cluster import ClusterNode
 from ainode.discovery.instance import InstanceRecord
+from tests.dashboard_js import parts as _dashboard_parts
 
 APP_JS = Path(__file__).resolve().parent.parent / "ainode" / "web" / "static" / "js" / "app.js"
 
@@ -108,7 +109,7 @@ class TestThePrimaryIsNotStacked:
     the node's only model was drawn as a stacked card."""
 
     def _block(self) -> str:
-        source = APP_JS.read_text()
+        source = (APP_JS.read_text() + _dashboard_parts())
         start = source.index("// Stacked instances (2nd+ model on this node")
         return source[start:source.index("// Collect from sharding status", start)]
 

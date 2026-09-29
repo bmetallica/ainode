@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 
 from ainode.models.registry import ModelManager
+from tests.dashboard_js import parts as _dashboard_parts
 
 
 class TestTheKindReachesTheBrowser:
@@ -38,14 +39,14 @@ class TestTheKindReachesTheBrowser:
 
     def test_the_card_builder_keeps_it(self):
         app_js = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-                  "static" / "js" / "app.js").read_text()
+                  "static" / "js" / "app.js").read_text() + _dashboard_parts()
         assert "kind: inst.kind || 'llm'," in app_js
         # And the port, which the details dialog shows and never received.
         assert "api_port: inst.api_port || 0," in app_js
 
     def test_the_view_reads_that_field(self):
         app_js = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-                  "static" / "js" / "app.js").read_text()
+                  "static" / "js" / "app.js").read_text() + _dashboard_parts()
         block = app_js.split("imageInstances() {")[1].split("\n  },")[0]
         assert "inst.kind === 'image'" in block
 
@@ -219,7 +220,7 @@ class TestTheLaunchFormDoesNotLeakImageSettings:
         # typed into them, and max_image_size on an LLM would be persisted
         # onto its config as a meaningless value.
         app_js = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-                  "static" / "js" / "app.js").read_text()
+                  "static" / "js" / "app.js").read_text() + _dashboard_parts()
         assert "if (this.toggleImageFields && this.toggleImageFields(model)) {" \
             in app_js
 
@@ -227,7 +228,7 @@ class TestTheLaunchFormDoesNotLeakImageSettings:
         # A poll redraws the list with a selection already made; without this
         # the fields stayed hidden until it was picked again.
         app_js = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-                  "static" / "js" / "app.js").read_text()
+                  "static" / "js" / "app.js").read_text() + _dashboard_parts()
         assert "self.toggleImageFields(select.value);" in app_js
 
 
@@ -325,7 +326,7 @@ class TestThePagesSayWhichKindAModelIs:
     have been a failed launch."""
 
     APP_JS = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-              "static" / "js" / "app.js").read_text()
+              "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
     def test_the_models_page_badges_it(self):
         # The catalog card says "Image"; the search card says which KIND it

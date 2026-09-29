@@ -101,7 +101,7 @@ The large ones, by how much:
 
 | File | Roughly | What changed |
 |---|---|---|
-| `web/static/js/app.js` | +2500 | Everything above that has a screen: the launch planner's hint, the instance card and its details dialog, profiles, placement, the memory-guard settings, the image panel, the cluster graphic's node detail |
+| `web/static/js/app.js` (+ `views/*.js`, split out of it) | +2500 | Everything above that has a screen: the launch planner's hint, the instance card and its details dialog, profiles, placement, the memory-guard settings, the image panel, the cluster graphic's node detail |
 | `api/server.py` | +970 | ~120 routes where upstream has ~29; the cluster projections, the proxy's image route, the sync loop's extra duties |
 | `engine/backends/eugr.py` | +1010 | Per-instance containers, scripts and logs; the parallel axes; image and weight distribution; the phase tracker; `kill()`; an engine counts as running when its container answers, not only while this process holds the launcher — so a restart adopts it |
 | `models/registry.py` | +740 | Exact repo sizes, search by kind and its per-kind format verdict, the curated cluster catalog, modality, the size cache |

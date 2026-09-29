@@ -24,10 +24,11 @@ from ainode.telemetry.api_routes import (
     handle_put_settings,
 )
 from ainode.telemetry.payloads import build_payloads, node_identity
+from tests.dashboard_js import parts as _dashboard_parts
 
 WEB = Path(__file__).resolve().parent.parent / "ainode" / "web"
 INDEX = (WEB / "templates" / "index.html").read_text()
-APP_JS = (WEB / "static" / "js" / "app.js").read_text()
+APP_JS = (WEB / "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
 
 class _Req:

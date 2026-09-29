@@ -22,6 +22,7 @@ from __future__ import annotations
 import pytest
 
 from ainode.clients.opencode import build_opencode_config, limits_for
+from tests.dashboard_js import parts as _dashboard_parts
 
 
 class TestTheLimitsFitTheWindow:
@@ -218,7 +219,7 @@ class TestItIsReachable:
         from pathlib import Path
 
         source = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-                  "static" / "js" / "app.js").read_text()
+                  "static" / "js" / "app.js").read_text() + _dashboard_parts()
         assert 'id="opencode-config"' in source
         assert "/api/clients/opencode?base_url=" in source
 
@@ -282,6 +283,6 @@ class TestAStaleCopyCanBeTold:
         from pathlib import Path
 
         app_js = (Path(__file__).resolve().parent.parent / "ainode" / "web"
-                  / "static" / "js" / "app.js").read_text()
+                  / "static" / "js" / "app.js").read_text() + _dashboard_parts()
         assert "rememberOpencodeConfig(data)" in app_js
         assert "checkOpencodeDrift()" in app_js

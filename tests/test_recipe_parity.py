@@ -15,6 +15,7 @@ from ainode.models.api_routes import (
     catalog_proven_tp,
     catalog_recipe,
 )
+from tests.dashboard_js import parts as _dashboard_parts
 
 QWEN = "unsloth/Qwen3.8-27B-NVFP4"
 
@@ -201,7 +202,7 @@ class TestThePlanNoteReachesTheOperator:
         from pathlib import Path
 
         app_js = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-                  "static" / "js" / "app.js").read_text()
+                  "static" / "js" / "app.js").read_text() + _dashboard_parts()
         assert "if (data.note) this.toast(data.note" in app_js
 
     def test_a_normal_launch_has_no_note(self):

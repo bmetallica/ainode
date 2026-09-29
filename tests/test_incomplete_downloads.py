@@ -19,6 +19,7 @@ from pathlib import Path
 
 from ainode.models.completeness import (clear_partials, download_state,
                                         is_complete)
+from tests.dashboard_js import parts as _dashboard_parts
 
 
 def _repo(tmp_path, shards=("a", "b"), present=("a", "b"), partial=()):
@@ -201,7 +202,7 @@ class TestTheListingSaysSo:
 
     def test_the_card_shows_it(self):
         app_js = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-                  "static" / "js" / "app.js").read_text()
+                  "static" / "js" / "app.js").read_text() + _dashboard_parts()
         assert "Incomplete" in app_js
         assert "incompleteReason" in app_js
 
@@ -276,7 +277,7 @@ class TestPauseAndResume:
 
     def test_the_ui_has_both_buttons(self):
         app_js = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-                  "static" / "js" / "app.js").read_text()
+                  "static" / "js" / "app.js").read_text() + _dashboard_parts()
         assert "data-pause-job" in app_js
         assert "data-resume-repo" in app_js
         assert "pauseDownload(" in app_js and "resumeDownload(" in app_js

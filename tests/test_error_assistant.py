@@ -31,6 +31,7 @@ from ainode.assist.diagnose import (
     choose_helper,
     helper_candidates,
 )
+from tests.dashboard_js import parts as _dashboard_parts
 
 
 class _Node:
@@ -418,7 +419,7 @@ class TestTheRoutes:
 
 
 WEB = Path(__file__).resolve().parent.parent / "ainode" / "web"
-APP_JS = (WEB / "static" / "js" / "app.js").read_text()
+APP_JS = (WEB / "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
 
 class TestTheCard:

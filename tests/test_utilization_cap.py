@@ -21,6 +21,7 @@ from ainode.safety.utilization import (
     cap_utilization,
     utilization_ceiling,
 )
+from tests.dashboard_js import parts as _dashboard_parts
 
 
 class _App(dict):
@@ -286,7 +287,7 @@ class TestForceIsInTheForm:
     HTML = (__import__("pathlib").Path(__file__).resolve().parent.parent /
             "ainode" / "web" / "templates" / "index.html").read_text()
     APP_JS = (__import__("pathlib").Path(__file__).resolve().parent.parent /
-              "ainode" / "web" / "static" / "js" / "app.js").read_text()
+              "ainode" / "web" / "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
     def test_the_form_has_it(self):
         assert 'id="launch-force"' in self.HTML
@@ -330,7 +331,7 @@ class TestAPlanThatDoesNotFitExplainsTheMissingButton:
     """
 
     APP_JS = (__import__("pathlib").Path(__file__).resolve().parent.parent /
-              "ainode" / "web" / "static" / "js" / "app.js").read_text()
+              "ainode" / "web" / "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
     def test_the_absence_is_explained(self):
         block = self.APP_JS.split("if (!plan.fits) {")[1][:900]

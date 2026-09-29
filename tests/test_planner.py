@@ -27,6 +27,7 @@ from ainode.planner.facts import (
     snapshot_dir,
     weight_bytes_on_disk,
 )
+from tests.dashboard_js import parts as _dashboard_parts
 
 MINIMAX = {
     "architectures": ["MiniMaxM2ForCausalLM"],
@@ -417,7 +418,7 @@ class TestTheRoute:
 
 
 WEB = __import__("pathlib").Path(__file__).resolve().parent.parent / "ainode" / "web"
-APP_JS = (WEB / "static" / "js" / "app.js").read_text()
+APP_JS = (WEB / "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
 
 class TestTheForm:

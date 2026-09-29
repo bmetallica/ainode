@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from ainode.web.serve import get_index_html, get_static_path, STATIC_DIR, TEMPLATES_DIR
+from tests.dashboard_js import parts as _dashboard_parts
 
 
 def test_templates_dir_exists():
@@ -61,6 +62,6 @@ def test_css_exists():
 def test_js_exists():
     js = STATIC_DIR / "js" / "app.js"
     assert js.exists()
-    content = js.read_text()
+    content = js.read_text() + _dashboard_parts()
     assert "AINode" in content
     assert "fetchJSON" in content
