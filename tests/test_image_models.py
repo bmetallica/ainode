@@ -41,44 +41,48 @@ class TestTheSearchShowsThemAndSaysWhatTheyAre:
 
 
 class TestTheCatalogEntry:
-    def test_fp8_is_the_one_offered_first(self):
-        entry = CURATED_CLUSTER_MODELS["qwen-image-2.1-fp8"]
-        assert entry.modality == "image"
-        assert entry.engine_backend == "diffusers"
-        assert entry.size_gb == 18.0
-
-    def test_the_full_precision_one_is_there_too(self):
+    def test_the_original_is_offered(self):
         entry = CURATED_CLUSTER_MODELS["qwen-image-2.1"]
         assert entry.size_gb == 33.0
         assert entry.modality == "image"
+        assert entry.engine_backend == "diffusers"
 
-    def test_neither_claims_to_be_verified(self):
-        # Nothing here has run on the fleet yet, and the badge means it has.
-        for key in ("qwen-image-2.1", "qwen-image-2.1-fp8"):
-            assert CURATED_CLUSTER_MODELS[key].verified is False
+    def test_the_scaled_fp8_repo_is_not(self):
+        # Rin247/Qwen-Image-2.1-FP8 carries weight_scale tensors diffusers
+        # does not apply: it would load wrong and at full size.
+        assert "qwen-image-2.1-fp8" not in CURATED_CLUSTER_MODELS
+        assert all(e.hf_repo != "Rin247/Qwen-Image-2.1-FP8"
+                   for e in CURATED_CLUSTER_MODELS.values())
+
+    def test_the_description_names_the_fp8_option(self):
+        assert "FP8" in CURATED_CLUSTER_MODELS["qwen-image-2.1"].description
+
+    def test_it_does_not_claim_to_be_verified(self):
+        # The badge means quality and speed were judged, not only that it loads.
+        assert CURATED_CLUSTER_MODELS["qwen-image-2.1"].verified is False
 
     def test_the_description_warns_off_cpu_offload(self):
         # The standard advice everywhere else, and meaningless here.
-        assert "offload" in CURATED_CLUSTER_MODELS["qwen-image-2.1-fp8"].description
+        assert "offload" in CURATED_CLUSTER_MODELS["qwen-image-2.1"].description
 
     def test_the_recipe_carries_the_engine(self):
         from ainode.models.api_routes import catalog_recipe
 
-        recipe = catalog_recipe("Rin247/Qwen-Image-2.1-FP8")
+        recipe = catalog_recipe("Qwen/Qwen-Image-2.1")
         assert recipe["engine_backend"] == "diffusers"
 
     def test_a_bare_load_gets_the_right_engine(self):
         # Clicking it in the dashboard sends {"model": ...} and nothing else.
         from ainode.models.api_routes import apply_catalog_recipe
 
-        overrides, _ = apply_catalog_recipe("Rin247/Qwen-Image-2.1-FP8", {}, None)
+        overrides, _ = apply_catalog_recipe("Qwen/Qwen-Image-2.1", {}, None)
         assert overrides["engine_backend"] == "diffusers"
 
     def test_an_explicit_choice_still_wins(self):
         from ainode.models.api_routes import apply_catalog_recipe
 
         overrides, _ = apply_catalog_recipe(
-            "Rin247/Qwen-Image-2.1-FP8", {"engine_backend": "eugr"}, None)
+            "Qwen/Qwen-Image-2.1", {"engine_backend": "eugr"}, None)
         assert overrides["engine_backend"] == "eugr"
 
 
@@ -174,7 +178,7 @@ class _Manager:
         return [self._dir] if self._dir else []
 
     def _catalog_lookup(self, model_id):
-        return CURATED_CLUSTER_MODELS.get("qwen-image-2.1-fp8") \
+        return CURATED_CLUSTER_MODELS.get("qwen-image-2.1") \
             if "Qwen-Image" in model_id else None
 
 
@@ -183,8 +187,8 @@ class TestTheGateKnowsTheDifference:
         from ainode.planner.api_routes import _is_image, _recipe
 
         app = {"model_manager": _Manager()}
-        recipe = _recipe(app, "Rin247/Qwen-Image-2.1-FP8")
-        assert _is_image(recipe, None, app, "Rin247/Qwen-Image-2.1-FP8") is True
+        recipe = _recipe(app, "Qwen/Qwen-Image-2.1")
+        assert _is_image(recipe, None, app, "Qwen/Qwen-Image-2.1") is True
 
     def test_and_from_the_disk_when_it_is_in_no_catalog(self, tmp_path):
         # An operator's own download is in no catalog, and model_index.json
@@ -229,7 +233,7 @@ class TestTheGateKnowsTheDifference:
                "model_manager": _Manager(tmp_path)}
         monkeypatch.setattr(
             "ainode.planner.api_routes._image_weights_gb",
-            lambda manager, model: 33.0)
+            lambda manager, model, dtype="": 33.0)
         refusal = admission.check_admission(app, "org/img")
         assert refusal
         assert "END of a picture" in refusal

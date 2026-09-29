@@ -529,7 +529,13 @@ def _reserved_share(app, instance) -> Optional[float]:
     try:
         from ainode.measure.recorder import measured_for
 
-        measured = float((measured_for(app, model) or {}).get("memory_gb") or 0)
+        measurement = measured_for(app, model) or {}
+        measured = float(measurement.get("memory_gb") or 0)
+        # Taken at another precision (FP8 storage roughly halves it): not
+        # this instance's figure — the estimate below is closer.
+        was = str((measurement.get("launch") or {}).get("image_dtype") or "bfloat16")
+        if was != (str(getattr(config, "image_dtype", "") or "") or "bfloat16"):
+            measured = 0.0
     except Exception:
         measured = 0.0
     if measured:
@@ -540,7 +546,8 @@ def _reserved_share(app, instance) -> Optional[float]:
                                             IMAGE_REFERENCE_PIXELS)
 
         size = int(getattr(config, "max_image_size", 1536) or 1536)
-        weights = _image_weights_gb(app.get("model_manager"), model)
+        weights = _image_weights_gb(app.get("model_manager"), model,
+                                    str(getattr(config, "image_dtype", "") or ""))
         need = weights + ENGINE_OVERHEAD_GB + IMAGE_OVERHEAD_GB * (
             size * size / IMAGE_REFERENCE_PIXELS)
         return need / total if weights else on_paper
@@ -1277,9 +1284,9 @@ def parse_load_overrides(body: dict):
         return None, web.json_response(
             {"error": "image_size must look like 1024x1024"}, status=400)
     if overrides.get("image_dtype") and overrides["image_dtype"] not in (
-            "bfloat16", "float16", "float32"):
+            "bfloat16", "float16", "float32", "fp8"):
         return None, web.json_response(
-            {"error": "image_dtype must be bfloat16, float16 or float32"}, status=400)
+            {"error": "image_dtype must be bfloat16, float16, float32 or fp8"}, status=400)
     return overrides, None
 
 
@@ -1371,7 +1378,8 @@ async def handle_model_load(request: web.Request) -> web.Response:
         strategy=strategy_str,
         max_model_len=_int_or_zero(body.get("max_model_len")),
         gpu_memory_utilization=gmu,
-        force=bool(body.get("force")))
+        force=bool(body.get("force")),
+        image={k: body.get(k) for k in ("max_image_size", "image_dtype")})
     if refusal:
         return web.json_response(
             {"error": str(refusal), "refused_by": "admission",

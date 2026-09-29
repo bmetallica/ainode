@@ -63,7 +63,7 @@ class TestTheGateAsksAboutTheRightNode:
         import ainode.planner.api_routes as planner_routes
 
         monkeypatch.setattr(planner_routes, "_image_weights_gb",
-                            lambda manager, model: gb)
+                            lambda manager, model, dtype="": gb)
 
     def test_a_full_node_is_refused_even_when_another_has_room(self, monkeypatch):
         # The defect: the roomiest node in the cluster answered for a load
@@ -109,7 +109,7 @@ class TestTheGateAsksAboutTheRightNode:
         source = inspect.getsource(admission._planner_says)
         assert "_measured_says(app, model, measured, max_model_len, node_ids)" \
             in source
-        assert "_image_says(app, manager, model, node_ids)" in source
+        assert "_image_says(app, manager, model, node_ids, image)" in source
 
 
 class TestThePlannerPicksWhicheverFits:

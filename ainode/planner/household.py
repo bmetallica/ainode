@@ -364,7 +364,8 @@ def _resolve_image(app, spec: dict, item: Item) -> dict:
                                         IMAGE_REFERENCE_PIXELS)
 
     manager = app.get("model_manager")
-    weights = routes._image_weights_gb(manager, item.model) if manager is not None else 0.0
+    dtype = str(spec.get("image_dtype") or "")
+    weights = routes._image_weights_gb(manager, item.model, dtype) if manager is not None else 0.0
     if not weights:
         item.errors.append(f"{item.model} is not downloaded on this node.")
     if len(item.node_ids) != 1:
@@ -373,7 +374,7 @@ def _resolve_image(app, spec: dict, item: Item) -> dict:
     overhead = ENGINE_OVERHEAD_GB + IMAGE_OVERHEAD_GB * (size * size / IMAGE_REFERENCE_PIXELS)
     item.fixed_gb = weights + overhead
     return {"weights_gb": round(weights, 1), "max_image_size": size,
-            "overhead_gb": round(overhead, 1), "warnings": []}
+            "overhead_gb": round(overhead, 1), "fp8": dtype == "fp8", "warnings": []}
 
 
 def _resolve_embedding(app, spec: dict, item: Item) -> dict:

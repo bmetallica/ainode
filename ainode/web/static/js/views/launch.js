@@ -464,6 +464,8 @@ Object.assign(AINode, {
     if (steps && steps.value) out.image_steps = parseInt(steps.value, 10);
     var dims = document.getElementById('launch-image-size');
     if (dims && dims.value.trim()) out.image_size = dims.value.trim();
+    var dtype = document.getElementById('launch-image-dtype');
+    if (dtype && dtype.value) out.image_dtype = dtype.value;
     return out;
   },
 

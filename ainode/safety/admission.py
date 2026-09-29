@@ -56,7 +56,7 @@ class AdmissionRefusal(str):
 
 def check_admission(app, model: str, *, node_ids=None, strategy: str = "auto",
                     max_model_len: int = 0, gpu_memory_utilization=None,
-                    force: bool = False) -> str:
+                    force: bool = False, image: dict = None) -> str:
     """"" when the launch may proceed, else one sentence saying why not."""
     if force:
         return ""
@@ -86,7 +86,7 @@ def check_admission(app, model: str, *, node_ids=None, strategy: str = "auto",
             return blocked
 
     return _planner_says(app, model, node_ids=node_ids, strategy=strategy,
-                         max_model_len=max_model_len)
+                         max_model_len=max_model_len, image=image)
 
 
 def _guard_history_says(app, model: str, *, node_ids=None,
@@ -254,7 +254,7 @@ def _unnamed_method_says(app, model: str, config: dict) -> str:
 
 
 def _planner_says(app, model: str, *, node_ids=None, strategy: str = "auto",
-                  max_model_len: int = 0) -> str:
+                  max_model_len: int = 0, image: dict = None) -> str:
     """The planner's verdict, or "" when it cannot form one.
 
     Silence is deliberate on anything it cannot compute. A planner that
@@ -272,7 +272,7 @@ def _planner_says(app, model: str, *, node_ids=None, strategy: str = "auto",
     if manager is None:
         return ""
 
-    image_refusal = _image_says(app, manager, model, node_ids)
+    image_refusal = _image_says(app, manager, model, node_ids, image)
     if image_refusal is not None:
         return image_refusal
 
@@ -366,7 +366,7 @@ def _measured_says(app, model: str, measured: dict, max_model_len: int,
     )
 
 
-def _image_says(app, manager, model: str, node_ids=None):
+def _image_says(app, manager, model: str, node_ids=None, image: dict = None):
     """The image planner's verdict, or None when this is not an image model.
 
     None and "" mean different things here: "" is "an image model, and it
@@ -382,15 +382,19 @@ def _image_says(app, manager, model: str, node_ids=None):
         recipe = _recipe(app, model)
         if not _is_image(recipe, local_facts(manager, model), app, model):
             return None
-        weights = _image_weights_gb(manager, model)
+        # The launch's own image settings where it names them, else the node's.
+        config = app.get("config")
+        image = image or {}
+        dtype = str(image.get("image_dtype") or getattr(config, "image_dtype", "") or "")
+        size = int(image.get("max_image_size") or getattr(config, "max_image_size", 1536) or 1536)
+        weights = _image_weights_gb(manager, model, dtype)
         if not weights:
             # Not downloaded yet. The backend refuses with a better message
             # than anything that could be said from here.
             return ""
-        config = app.get("config")
         plan = plan_for_image(
             weights, _budgets_with_reserve(app, node_ids), model=model,
-            max_image_size=int(getattr(config, "max_image_size", 1536) or 1536))
+            max_image_size=size, fp8=dtype == "fp8")
     except Exception:
         logger.debug("the image planner could not plan %s", model, exc_info=True)
         return None

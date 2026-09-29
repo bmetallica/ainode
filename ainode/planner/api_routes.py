@@ -9,6 +9,8 @@ committing a node for ten minutes.
 from __future__ import annotations
 
 import logging
+import re
+from pathlib import Path
 
 from aiohttp import web
 
@@ -226,15 +228,35 @@ def _is_image(recipe, facts, app, model: str) -> bool:
     return False
 
 
-def _image_weights_gb(manager, model: str) -> float:
+#: What of a component stored in FP8 (image_dtype "fp8") stays in memory: the
+#: Linear/Conv weights halve, the embeddings, norms and in/out projections
+#: stay 16-bit. On the tiny Qwen-Image-2.1 test checkpoint 0.51-0.53; a little
+#: over, for the embeddings of a real text encoder.
+FP8_KEPT_FRACTION = 0.55
+
+#: The components image_dtype "fp8" stores in FP8 — the same rule as the
+#: image server's (engine/diffusers_server.py).
+_FP8_COMPONENTS = re.compile(r"^(transformer|unet|text_encoder)(_\d+)?$")
+
+
+def _image_weights_gb(manager, model: str, dtype: str = "") -> float:
     """Bytes on disk for a pipeline directory, which has no config.json and
-    so never reaches the LLM fact reader."""
+    so never reaches the LLM fact reader. With ``dtype`` "fp8", the
+    transformer and text encoder count at the share FP8 storage keeps."""
     from ainode.planner.facts import weight_bytes_on_disk
 
     total = 0
     try:
         for directory in manager.model_dirs_for_repo(model):
-            total = max(total, weight_bytes_on_disk(directory))
+            size = weight_bytes_on_disk(directory)
+            if (dtype or "").strip().lower() == "fp8":
+                # model_index.json marks the pipeline's root, flat or under
+                # the hub's snapshots/<hash>/.
+                index = next(iter(sorted(Path(directory).rglob("model_index.json"))), None)
+                cast = sum(weight_bytes_on_disk(sub) for sub in index.parent.iterdir()
+                           if sub.is_dir() and _FP8_COMPONENTS.match(sub.name)) if index else 0
+                size -= cast * (1 - FP8_KEPT_FRACTION)
+            total = max(total, size)
     except Exception:
         logger.debug("could not size %s", model, exc_info=True)
     return total / 1e9
@@ -507,12 +529,14 @@ async def handle_plan(request: web.Request) -> web.Response:
     if _is_image(recipe, facts, request.app, model):
         from ainode.planner.compute import plan_for_image
 
-        weights = facts.weights_gb
+        image_dtype = request.query.get("image_dtype") or ""
+        weights = 0.0 if image_dtype == "fp8" else facts.weights_gb
         if not weights:
-            weights = _image_weights_gb(manager, model)
+            weights = _image_weights_gb(manager, model, image_dtype)
         plan = plan_for_image(
             weights, nodes, model=model,
-            max_image_size=_int(request, "max_image_size", 1536) or 1536)
+            max_image_size=_int(request, "max_image_size", 1536) or 1536,
+            fp8=image_dtype == "fp8")
         payload = plan.to_dict()
         _attach_measurement(request.app, model, payload)
         payload["modality"] = "image"

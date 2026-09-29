@@ -267,7 +267,7 @@ class TestTheGateStillWorksEndToEnd:
         app = {"config": _Config(), "cluster_state": _Cluster(),
                "model_manager": ModelManager(models_dir=str(directory))}
         original = planner_routes._image_weights_gb
-        planner_routes._image_weights_gb = lambda manager, model: 33.0
+        planner_routes._image_weights_gb = lambda manager, model, dtype="": 33.0
         try:
             refusal = check_admission(app, "someone/img")
         finally:
