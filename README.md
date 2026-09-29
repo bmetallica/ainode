@@ -351,7 +351,9 @@ cannot read.
 
 **Knowing what happened** — per-phase load timings, an **error assistant**
 that explains a failure using a model already running, per-instance containers
-and logs, and a **measurement store** that records what each launch actually
+and logs (each rotated at the start of a launch once it passes 50 MB, five old
+ones kept as `name.log.1`…`.5`, so the current file begins with the current
+launch), and a **measurement store** that records what each launch actually
 cost and prefers that to any estimate. A handful of failures whose traceback
 describes the symptom and not the mistake are named outright — a drafter
 served alone, a mixed-bit checkpoint, a missing tokenizer, a checkpoint
