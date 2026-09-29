@@ -88,6 +88,11 @@ class NodeAnnouncement:
     # profile captured on the head to record where each one belongs. Empty on
     # older peers; from_json drops unknown keys, so the wire stays compatible.
     embedding_models: List[str] = field(default_factory=list)
+    # The node's memory limit for models (NodeConfig.memory_limit_gb, 0 =
+    # none) and what it uses with nothing loaded (safety/baseline.py, MiB,
+    # 0 = not yet seen idle). The head plans every node with both.
+    memory_limit_gb: float = 0.0
+    baseline_used_mb: float = 0.0
     # The build this node is running. Carried so the head can tell when the
     # fleet does not agree with itself: eugr's launcher compares engine
     # images across nodes and aborts when they differ, minutes into a

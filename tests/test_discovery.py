@@ -63,6 +63,9 @@ class TestNodeAnnouncement:
             # does not agree with itself — the launcher aborts a distributed
             # start over exactly that, minutes in.
             "version",
+            # The node's memory limit and its idle use, so the head plans
+            # every node the way that node would (wizzard.md §5).
+            "memory_limit_gb", "baseline_used_mb",
         }
         assert set(data.keys()) == expected_keys
 

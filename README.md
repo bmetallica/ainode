@@ -355,6 +355,16 @@ arrives in its own place on the wire, and only `--reasoning-parser` makes vLLM
 put it there. Claiming it without the flag hands a client a first response it
 cannot read.
 
+**A memory limit per node** — `memory_limit_gb` caps what a node's total use
+may reach (0 = none). It is set per node from the profile wizard (or
+`POST /api/nodes/<id>/memory-limit {"gb": 100}` on the head, which forwards to
+a peer with the cluster key), travels in the node's announcement, and applies
+wherever a budget is computed: the launch planner, the admission gate and the
+memory-fraction cap. The memory guard is unchanged. Each node also records
+what it uses when nothing is loaded — no instance, no embedding model, no
+engine container — and announces it; the wizard plans a node as its total
+minus that baseline.
+
 **The engine image is asked before a launch relies on it** — once per image
 (cached by image id), AINode lists the image's reasoning parsers, tool parsers
 and every `vllm serve` flag with its allowed values. A model family that thinks
