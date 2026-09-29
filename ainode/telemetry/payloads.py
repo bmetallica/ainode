@@ -87,19 +87,63 @@ def _instances(app) -> List[Dict[str, Any]]:
             # Only when it is not the default, so a dashboard built before
             # image generation existed reads exactly as it did.
             entry["kind"] = kind
+        if kind == "image":
+            # What an image model is run with — an LLM's context and memory
+            # fraction say nothing about it — and how fast it has been.
+            entry.pop("max_model_len", None)
+            if config is not None:
+                for field in ("max_image_size", "image_steps", "image_size"):
+                    value = getattr(config, field, None)
+                    if value:
+                        entry[field] = value
+            seconds = _seconds_per_image(app, record.model)
+            if seconds:
+                entry["seconds_per_image"] = seconds
         out.append(entry)
     return out
 
 
+def _seconds_per_image(app, model: str) -> float:
+    """What the measurement store has seen an image take, 0 when nothing."""
+    try:
+        from ainode.measure.recorder import measured_for
+
+        measured = measured_for(app, model) or {}
+        return round(float(measured.get("seconds_per_image") or 0), 2)
+    except Exception:
+        return 0.0
+
+
 def _embeddings(app) -> List[str]:
+    return [m["id"] for m in _embedding_models(app)]
+
+
+def _embedding_models(app) -> List[Dict[str, Any]]:
+    """The embedding models loaded here, with what describes them.
+
+    ``embeddings`` in the models payload stays the plain list of ids it always
+    was; this is the detail beside it. An embedding model is no vLLM instance
+    and appeared in ``loaded`` never, so without this a dashboard knew its
+    name and nothing else about it.
+    """
     manager = app.get("embedding_manager")
     if manager is None:
         return []
     try:
-        return [m.get("id", "") for m in manager.list_loaded() if m.get("id")]
+        loaded = list(manager.list_loaded())
     except Exception:
         logger.debug("embedding list unavailable", exc_info=True)
         return []
+    out = []
+    for meta in loaded:
+        if not meta.get("id"):
+            continue
+        entry = {"id": meta["id"]}
+        for field in ("dimensions", "max_seq_length", "size_mb", "loaded_at"):
+            if meta.get(field) is not None:
+                entry[field] = meta[field]
+        out.append(entry)
+    return out
 
 
 def _safety(app) -> Optional[Dict[str, Any]]:
@@ -232,12 +276,18 @@ def _cluster(app) -> Optional[Dict[str, Any]]:
         raw_instances = getattr(node, "instances", None)
         instances = [
             {"model": i.get("model"), "api_port": i.get("api_port"),
-             "status": i.get("status")}
+             "status": i.get("status"),
+             **({"kind": i["kind"]} if i.get("kind") and i.get("kind") != "llm" else {})}
             for i in (raw_instances if isinstance(raw_instances, list) else [])
             if isinstance(i, dict) and i.get("model")
         ]
         if instances:
             entry["instances"] = instances
+        # Embedding models run in-process and are in no instance list; the
+        # node announces them separately, and so does this.
+        embedding_models = getattr(node, "embedding_models", None)
+        if isinstance(embedding_models, list) and embedding_models:
+            entry["embedding_models"] = [str(m) for m in embedding_models if m]
         nodes.append(entry)
 
     payload = {
@@ -289,6 +339,7 @@ def build_payloads(app, sampler) -> Dict[str, Dict[str, Any]]:
             **identity,
             "loaded": _instances(app),
             "embeddings": _embeddings(app),
+            "embedding_models": _embedding_models(app),
         }
         if collector is not None:
             stats = collector.get_snapshot()

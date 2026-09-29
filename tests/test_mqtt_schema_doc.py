@@ -58,7 +58,9 @@ class TestEveryFieldIsDocumented:
             assert f"`{field}`" in DOC or field in DOC, field
 
     def test_the_models_payload(self):
-        for field in ("loaded", "embeddings", "requests_total", "errors_total",
+        for field in ("loaded", "embeddings", "embedding_models", "max_image_size",
+                      "seconds_per_image", "nodes[].embedding_models",
+                      "requests_total", "errors_total",
                       "uptime_seconds", "per_model", "avg_tokens_per_second",
                       "avg_latency_ms", "tokens_generated", "load_phase",
                       "api_port", "max_model_len", "gpu_memory_utilization"):

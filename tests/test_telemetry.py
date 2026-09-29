@@ -504,3 +504,79 @@ class TestTheSamplerIsShared:
         name = next(iter(first))
         assert "tx_mbit_s" not in first[name]
         assert "tx_mbit_s" in second[name]
+
+
+class TestImageAndEmbeddingModelsArePublished:
+    """Reported: 'die Daten eines Image-Modells werden nicht mit den anderen
+    Daten via MQTT übertragen? evtl. auch bei Embedding-Modellen?' — the image
+    instance carried its kind and nothing else of its own, and an embedding
+    model its id only, with its requests never counted."""
+
+    def test_an_image_instance_says_how_it_runs(self, app, tmp_path):
+        from ainode.core.config import NodeConfig
+        from ainode.measure.store import Measurement, MeasurementStore
+        from ainode.telemetry.payloads import _instances
+
+        instance = _Instance("org/flux", 8001)
+        instance.record.kind = "image"
+        instance.backend.config = NodeConfig(max_image_size=1536, image_steps=28,
+                                             max_model_len=4096)
+        app["instances"] = _Manager([instance])
+        store = MeasurementStore(tmp_path / "m.json")
+        store._write({"org/flux": Measurement(model="org/flux", launches=1, last_ok=1.0,
+                                              seconds_per_image=11.4)})
+        app["measurement_store"] = store
+        entry = _instances(app)[0]
+        assert entry["kind"] == "image"
+        assert entry["max_image_size"] == 1536 and entry["image_steps"] == 28
+        assert entry["seconds_per_image"] == 11.4
+        assert "max_model_len" not in entry
+
+    def test_embedding_models_carry_their_details(self, app):
+        from ainode.telemetry.payloads import _embedding_models, _embeddings
+
+        class _Emb:
+            def list_loaded(self):
+                return [{"id": "bge", "dimensions": 1024, "max_seq_length": 512,
+                         "size_mb": 1340, "loaded_at": 5.0, "description": "x"}]
+
+        app["embedding_manager"] = _Emb()
+        assert _embeddings(app) == ["bge"]
+        assert _embedding_models(app) == [{"id": "bge", "dimensions": 1024,
+                                           "max_seq_length": 512, "size_mb": 1340,
+                                           "loaded_at": 5.0}]
+
+
+class TestEmbeddingRequestsAreCounted:
+    def _app(self, loaded):
+        from aiohttp import web
+
+        from ainode.embeddings.api_routes import register_embedding_routes
+        from ainode.metrics.collector import MetricsCollector
+
+        class _Manager:
+            def is_loaded(self, model_id):
+                return loaded
+
+            async def aembed(self, model_id, texts):
+                return [[0.1, 0.2] for _ in texts]
+
+            def list_loaded(self):
+                return []
+
+        web_app = web.Application()
+        web_app["embedding_manager"] = _Manager()
+        web_app["metrics_collector"] = MetricsCollector()
+        register_embedding_routes(web_app)
+        return web_app
+
+    @pytest.mark.asyncio
+    async def test_where_the_vectors_are_computed(self):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        web_app = self._app(loaded=True)
+        async with TestClient(TestServer(web_app)) as client:
+            resp = await client.post("/v1/embeddings", json={"model": "bge", "input": ["a", "b"]})
+            assert resp.status == 200
+        stats = web_app["metrics_collector"].model_stats()
+        assert stats["bge"]["requests"] == 1 and stats["bge"]["errors"] == 0

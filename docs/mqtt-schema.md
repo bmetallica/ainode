@@ -280,6 +280,10 @@ Was dieser Knoten bedient und wie er benutzt wird.
       "load_phase": "ready" }
   ],
   "embeddings": ["nomic-ai/nomic-embed-text-v1.5"],
+  "embedding_models": [
+    { "id": "nomic-ai/nomic-embed-text-v1.5", "dimensions": 768,
+      "max_seq_length": 8192, "size_mb": 274, "loaded_at": 1789930000.1 }
+  ],
   "requests_total": 1842,
   "errors_total": 3,
   "latency_ms": { "p50": 1180.0, "p95": 4320.5, "p99": 9800.2 },
@@ -307,9 +311,17 @@ Was dieser Knoten bedient und wie er benutzt wird.
 | `max_model_len` | Kontextfenster; fehlt, wenn nicht gesetzt |
 | `load_phase` | `starting`, `distributing`, `loading_weights`, `distributed_init`, `profiling`, `ready`, `failed`; fehlt, wenn der Backend keine meldet |
 | `kind` | `image` bei einem Bildmodell. **Fehlt** bei einem LLM — der Normalfall bleibt unbeschriftet, damit ein Dashboard von vor der Bildgenerierung unverändert liest |
+| `max_image_size`, `image_steps`, `image_size` | nur bei `kind: image`: größte Bildkante, Standard-Schritte, Standardgröße — was dieses Bildmodell ausmacht (ein Kontextfenster hat es nicht, `max_model_len` fehlt dort) |
+| `seconds_per_image` | nur bei `kind: image`: gemessene Sekunden pro Bild (Messspeicher); fehlt, solange keins erzeugt wurde |
 
 `embeddings` sind In-Process-Modelle, keine vLLM-Instanzen — sie haben keinen
-eigenen Port und erscheinen deshalb nicht in `loaded`.
+eigenen Port und erscheinen deshalb nicht in `loaded`. `embeddings` bleibt die
+schlichte Liste der IDs; **`embedding_models[]`** steht daneben mit dem, was ein
+Embedding-Modell beschreibt: `id`, `dimensions`, `max_seq_length`, `size_mb`
+(bei Katalogmodellen), `loaded_at` (Unix-Zeit). Seine Anfragen erscheinen in
+`per_model` auf dem Knoten, der die Vektoren **berechnet** — eine Anfrage, die
+ein Knoten nur weiterreicht, wird dort nicht gezählt, sonst stünde sie doppelt.
+Bis zu dieser Version wurden Embedding-Anfragen gar nicht gezählt.
 
 ### `per_model` — gemessen, nicht geschätzt
 
@@ -446,7 +458,8 @@ gibt.
 | `nodes[].status` | Gesundheit aus Sicht des Heads: `online`, `stale`, `offline`. Als online gezählt werden `online`, `serving` und `member-ready` — die beiden letzten kommen von Knoten, deren Build ihren Dienstzustand statt ihrer Gesundheit meldet |
 | `nodes[].model` | das primäre Modell des Knotens; `""` wenn keines |
 | `nodes[].gpu_memory_*` | fehlen, wenn der Knoten keine Gesamtgröße meldet |
-| `nodes[].instances[]` | gestapelte Instanzen; fehlt, wenn der Knoten nur sein primäres Modell hat |
+| `nodes[].instances[]` | gestapelte Instanzen; fehlt, wenn der Knoten nur sein primäres Modell hat. Ein Bildmodell trägt `kind: "image"` |
+| `nodes[].embedding_models` | die Embedding-Modelle dieses Knotens (IDs); fehlt, wenn keins geladen ist |
 | `nodes[].version` | der Build dieses Knotens; fehlt bei einem Peer, der zu alt ist, um ihn mitzuschicken |
 | `versions_agree` | ob die Flotte sich über ihren Build einig ist. **`false` ist ein Alarm:** eugrs Launcher vergleicht die Engine-Images der Knoten und bricht einen verteilten Start ab, wenn sie abweichen — Minuten nach dem Start. Ein Peer, der gar keine Version meldet, zählt **nicht** als Uneinigkeit; er sagt nur nichts, und daraus einen Konflikt zu erfinden hieße, wegen eines längst erledigten Updates zu alarmieren |
 | `versions` | nur wenn sie sich uneinig sind: die gefundenen Versionen |
