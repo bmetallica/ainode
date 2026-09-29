@@ -281,7 +281,7 @@ class TestTheRecorder:
 
         from ainode.api import server
 
-        assert "recorder.poll()" in inspect.getsource(server._cluster_sync_loop)
+        assert "recorder.poll()" in inspect.getsource(server._cluster_sync_once)
 
 
 class _Req:
