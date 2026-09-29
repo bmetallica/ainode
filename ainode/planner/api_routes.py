@@ -208,6 +208,79 @@ def _measured_weights(app, model: str):
     return (weights, ranks) if weights > 0 and ranks > 0 else (0.0, 0)
 
 
+#: MoE launches with a measured weights figure needed before their median
+#: ratio replaces TP_REPLICATION. One was the Smaug case — and one point says
+#: nothing about the next model.
+MOE_CALIBRATION_MIN = 3
+
+
+def _all_measurements(app) -> list:
+    try:
+        from ainode.measure.store import MeasurementStore
+
+        store = app.get("measurement_store") or MeasurementStore()
+        return list(store.load().values())
+    except Exception:
+        logger.debug("could not read the measurement store", exc_info=True)
+        return []
+
+
+def _moe_weight_factor(app, model: str):
+    """(median loaded/on-disk ratio of measured MoE launches, how many), or
+    (0.0, n) when there are fewer than MOE_CALIBRATION_MIN of them."""
+    ratios = []
+    for entry in _all_measurements(app):
+        if entry.model == model or not entry.is_moe:
+            continue
+        if entry.weights_gb > 0 and entry.rank_count > 0 \
+                and entry.disk_weights_gb > 0:
+            ratios.append(entry.weights_gb * entry.rank_count
+                          / entry.disk_weights_gb)
+    if len(ratios) < MOE_CALIBRATION_MIN:
+        return 0.0, len(ratios)
+    ratios.sort()
+    middle = len(ratios) // 2
+    median = ratios[middle] if len(ratios) % 2 else \
+        (ratios[middle - 1] + ratios[middle]) / 2
+    # A ratio above 1.2 or below 0.5 is a measurement of something else — an
+    # adapter, a draft model, a log from another launch — not a MoE factor.
+    return (round(median, 3), len(ratios)) if 0.5 <= median <= 1.2 \
+        else (0.0, len(ratios))
+
+
+def _measured_bytes_per_token(app, model: str, kv_dtype: str) -> int:
+    """What one token of this model's cache really cost, from vLLM's own
+    figures (P2, P3, P5): the per-rank cache memory across all ranks, over
+    the tokens the engine said it holds. 0 unless the measurement was taken at
+    this KV dtype, since fp8 and bf16 differ by two."""
+    try:
+        from ainode.measure.recorder import measured_for
+
+        measurement = measured_for(app, model) or {}
+    except Exception:
+        return 0
+    tokens = int(measurement.get("kv_tokens") or 0)
+    per_rank = float(measurement.get("kv_cache_gb") or 0)
+    ranks = int(measurement.get("rank_count") or 0)
+    measured_dtype = str(measurement.get("kv_cache_dtype") or "").lower()
+    if not (tokens and per_rank and ranks and measured_dtype):
+        return 0
+    if measured_dtype != str(kv_dtype or "auto").lower():
+        return 0
+    return int(per_rank * ranks * 1e9 / tokens)
+
+
+def _current_engine_version(app) -> str:
+    """The vLLM of the newest measurement on this node — the closest thing to
+    "the engine this node runs now" that costs nothing to ask."""
+    newest = None
+    for entry in _all_measurements(app):
+        if entry.engine_version and (newest is None
+                                     or entry.last_ok > newest.last_ok):
+            newest = entry
+    return newest.engine_version if newest is not None else ""
+
+
 def _attach_measurement(app, model: str, payload: dict) -> None:
     """Put what this cluster has actually measured beside what was estimated.
 
@@ -237,7 +310,24 @@ def _attach_measurement(app, model: str, payload: dict) -> None:
         "kv_cache_gb": measurement.get("kv_cache_gb"),
         "kv_tokens": measurement.get("kv_tokens"),
         "kv_at_max_model_len": measurement.get("kv_at_max_model_len"),
+        "kv_cache_dtype": measurement.get("kv_cache_dtype"),
+        "engine_version": measurement.get("engine_version"),
     }
+    # P7: the base image follows a rolling upstream build. A figure from
+    # another vLLM is still the best there is, but it is said.
+    version = measurement.get("engine_version") or ""
+    current = _current_engine_version(app)
+    if version and current and version != current:
+        payload["measured"]["other_build"] = current
+    # P4: what the engine cost beyond weights and cache — the planner assumes
+    # ENGINE_OVERHEAD_GB and nobody had ever checked it. The host drop minus
+    # the two figures the engine reports is that check, per node.
+    footprint = float(measurement.get("memory_gb") or 0)
+    weights = float(measurement.get("weights_gb") or 0)
+    cache = float(measurement.get("kv_cache_gb") or 0)
+    if footprint and weights and cache:
+        payload["measured"]["overhead_gb"] = round(
+            footprint - weights - cache, 1)
     # Like against like, which took two goes to get right.
     #
     # It first compared a measurement taken on ONE node against the weights
@@ -353,6 +443,7 @@ async def handle_plan(request: web.Request) -> web.Response:
     # rather than looked up inside the planner: plan_for is arithmetic on its
     # arguments and has no store, which is what makes it testable.
     measured_weights, measured_ranks = _measured_weights(request.app, model)
+    moe_factor, moe_samples = _moe_weight_factor(request.app, model)
 
     plan = plan_for(
         facts, nodes,
@@ -369,6 +460,10 @@ async def handle_plan(request: web.Request) -> web.Response:
         # sessions at this length": the answer is the concurrency it launches.
         concurrency_derived=(not request.query.get("concurrency")
                              and bool(_int(request, "max_model_len"))),
+        moe_weight_factor=moe_factor,
+        moe_weight_samples=moe_samples,
+        measured_bytes_per_token=_measured_bytes_per_token(
+            request.app, model, kv_dtype or "auto"),
     )
 
     payload = plan.to_dict()

@@ -181,6 +181,9 @@ class Plan:
     warnings: List[str] = field(default_factory=list)
     #: Why it does not fit, when it does not.
     blocker: str = ""
+    #: "measured", "calibrated" or "estimated" — see _Candidate.
+    weights_source: str = "estimated"
+    kv_source: str = "estimated"
 
     def to_dict(self) -> dict:
         return {
@@ -208,6 +211,8 @@ class Plan:
             "notes": list(self.notes),
             "warnings": list(self.warnings),
             "blocker": self.blocker,
+            "weights_source": self.weights_source,
+            "kv_source": self.kv_source,
         }
 
 
@@ -336,21 +341,39 @@ class _Candidate:
     weights_per_node: float
     kv_gb: float
     tokens: int
+    #: Where the two numbers that decide the cache came from: "measured" (the
+    #: engine said so, at this rank count), "calibrated" (MoE weights scaled
+    #: by what earlier MoE launches measured) or "estimated" (arithmetic on
+    #: the checkpoint). Shown with the plan, because a refusal that rests on
+    #: an estimate is a different thing from one that rests on a measurement.
+    weights_source: str = "estimated"
+    bytes_per_token: int = 0
+    kv_source: str = "estimated"
 
 
 def _evaluate(facts: ModelFacts, nodes: Sequence[NodeBudget], strategy: str,
               bytes_per_token: int,
               utilization_ceiling: float = 0.0,
               measured_weights_per_node: float = 0.0,
-              measured_rank_count: int = 0) -> Optional[_Candidate]:
+              measured_rank_count: int = 0,
+              moe_weight_factor: float = 0.0,
+              measured_bytes_per_token: int = 0) -> Optional[_Candidate]:
     count = len(nodes)
     weights = facts.weights_gb
+    weights_source = "estimated"
     if strategy == "tensor":
         per_node = weights / count * (TP_REPLICATION if count > 1 else 1.0)
         tp, pp = count, 1
     else:
         per_node = weights / count
         tp, pp = 1, count
+    # A mixture-of-experts loads to a different size than its checkpoint, and
+    # not by a constant anyone could guess (P1 in upgrade-fixes.md). Where this
+    # cluster has measured enough MoE launches, their median ratio of loaded
+    # to on-disk weights replaces TP_REPLICATION for one it has not measured.
+    if facts.is_moe and moe_weight_factor > 0:
+        per_node = weights * moe_weight_factor / count
+        weights_source = "calibrated"
     # A measurement beats this arithmetic, where there is one at this rank
     # count. The engine reports what its weights actually took —
     #
@@ -366,6 +389,17 @@ def _evaluate(facts: ModelFacts, nodes: Sequence[NodeBudget], strategy: str,
     # measured, and gets out of the way of one that has.
     if measured_weights_per_node > 0 and count == measured_rank_count:
         per_node = float(measured_weights_per_node)
+        weights_source = "measured"
+    # The cost per token likewise: what the engine's own cache worked out to
+    # (P2, P3, P5 — the indexer caches, the recurrent state of a hybrid, the
+    # ds_mla scale block) — none of which the formula has, and all of which
+    # are in vLLM's figure. At this rank count only, because a KV head that
+    # has to be replicated across more ranks than there are heads makes the
+    # cost per token depend on the split.
+    kv_source = "estimated"
+    if measured_bytes_per_token > 0 and count == measured_rank_count:
+        bytes_per_token = int(measured_bytes_per_token)
+        kv_source = "measured"
     overhead = ENGINE_OVERHEAD_GB + (COMM_OVERHEAD_GB if count > 1 else 0.0)
 
     # The tightest node decides: a rank cannot borrow memory from its peers.
@@ -398,7 +432,9 @@ def _evaluate(facts: ModelFacts, nodes: Sequence[NodeBudget], strategy: str,
         return None
     kv_gb = kv_per_node * count
     tokens = int(kv_gb * 1e9 / bytes_per_token) if bytes_per_token else 0
-    return _Candidate(list(nodes), strategy, tp, pp, per_node, kv_gb, tokens)
+    return _Candidate(list(nodes), strategy, tp, pp, per_node, kv_gb, tokens,
+                      weights_source=weights_source,
+                      bytes_per_token=bytes_per_token, kv_source=kv_source)
 
 
 def plan_for_image(weights_gb: float, nodes: Sequence[NodeBudget], *,
@@ -483,7 +519,10 @@ def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,
              recommended_gmu: float = 0.0,
              measured_weights_per_node: float = 0.0,
              measured_rank_count: int = 0,
-             concurrency_derived: bool = False) -> Plan:
+             concurrency_derived: bool = False,
+             moe_weight_factor: float = 0.0,
+             moe_weight_samples: int = 0,
+             measured_bytes_per_token: int = 0) -> Plan:
     """The launch this model should get on these nodes.
 
     ``concurrency_derived`` says the caller did not name a concurrency and
@@ -569,7 +608,9 @@ def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,
             candidate = _evaluate(facts, chosen, axis, bytes_per_token,
                                   recommended_gmu,
                                   measured_weights_per_node,
-                                  measured_rank_count)
+                                  measured_rank_count,
+                                  moe_weight_factor,
+                                  measured_bytes_per_token)
             if candidate is None:
                 refusals.append(
                     f"{count} node(s), {axis}: the weights plus engine overhead "
@@ -595,6 +636,18 @@ def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,
     if best is None:
         plan.blocker = _blocker(facts, nodes, refusals)
         plan.notes = refusals
+        if facts.is_moe and not measured_weights_per_node:
+            # Said, because it is the case where the estimate is known to be
+            # high: 19% on the one MoE measured under expert parallelism.
+            plan.warnings.append(
+                "This refusal rests on an ESTIMATE of the weights: this "
+                "mixture-of-experts has not been launched here yet, and MoE "
+                "checkpoints have loaded smaller than their size on disk. "
+                + (f"The estimate is already scaled by {moe_weight_factor:.2f}, "
+                   f"measured over {moe_weight_samples} MoE launch(es)."
+                   if moe_weight_factor else
+                   "Once a few MoE launches are measured, the planner scales "
+                   "by what they took."))
         return plan
 
     plan.fits = True
@@ -605,6 +658,11 @@ def plan_for(facts: ModelFacts, nodes: Sequence[NodeBudget], *,
     plan.weights_per_node_gb = best.weights_per_node
     plan.kv_gb = best.kv_gb
     plan.kv_tokens = best.tokens
+    plan.weights_source = best.weights_source
+    plan.kv_source = best.kv_source
+    if best.bytes_per_token:
+        bytes_per_token = best.bytes_per_token
+        plan.kv_bytes_per_token = bytes_per_token
 
     smallest = min(best.nodes, key=lambda n: n.usable_gb)
     claim = best.weights_per_node + ENGINE_OVERHEAD_GB + \
@@ -768,10 +826,17 @@ def _asymmetry(best: _Candidate) -> List[str]:
 
 def _explain(facts: ModelFacts, plan: Plan, best: _Candidate,
              bytes_per_token: int, kv_cache_dtype: str) -> List[str]:
+    weights_note = {
+        "measured": " — measured: what the engine reported at this split",
+        "calibrated": " — estimated, scaled by what earlier MoE launches "
+                      "measured",
+    }.get(best.weights_source, " — estimated from the checkpoint")
     notes = [
         f"Weights: {facts.weights_gb:.1f} GB on disk"
         + (f", split {len(best.nodes)} ways = {best.weights_per_node:.1f} GB "
-           f"per node" if len(best.nodes) > 1 else ""),
+           f"per node" if len(best.nodes) > 1 else
+           f", {best.weights_per_node:.1f} GB loaded")
+        + weights_note,
         f"Engine overhead: {ENGINE_OVERHEAD_GB:.1f} GB per node"
         + (f" plus {COMM_OVERHEAD_GB:.1f} GB for the ranks"
            if len(best.nodes) > 1 else ""),
@@ -790,6 +855,8 @@ def _explain(facts: ModelFacts, plan: Plan, best: _Candidate,
             shape = (f"{facts.attention_layers} layers x "
                      f"{facts.kv_lora_rank + facts.qk_rope_head_dim} latent "
                      f"dimensions (MLA)")
+        if best.kv_source == "measured":
+            shape = "measured: the engine's own cache at this split"
         notes.append(
             f"KV per token: {bytes_per_token / 1024:.1f} KiB "
             f"({shape}, {dtype}) -> {plan.kv_tokens:,} tokens")

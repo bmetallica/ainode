@@ -75,6 +75,17 @@ class Measurement:
     rank_count: int = 0
     kv_cache_gb: float = 0.0
     kv_tokens: int = 0
+    #: The KV dtype that cache was measured at. Without it kv_tokens cannot
+    #: calibrate anything: fp8 and bf16 differ by a factor of two per token.
+    kv_cache_dtype: str = ""
+    #: The checkpoint's size on disk, and whether it is a mixture-of-experts,
+    #: next to what it loaded to — the ratio is the planner's MoE factor.
+    disk_weights_gb: float = 0.0
+    is_moe: bool = False
+    #: The vLLM that produced these figures ("vLLM API server version …").
+    #: The base image follows a rolling upstream build, so a measurement from
+    #: last week can be from another engine.
+    engine_version: str = ""
     kv_concurrency: float = 0.0
     kv_at_max_model_len: int = 0
     #: Serving speed, once anything has been asked of it.

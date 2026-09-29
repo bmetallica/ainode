@@ -53,6 +53,10 @@ _KV_CONCURRENCY = re.compile(
     re.I)
 
 
+#: "vLLM API server version 0.11.1rc2.dev104+g1a2b3c" — once per start.
+_VERSION = re.compile(r"vLLM API server version\s+([0-9][\w.+\-]*)", re.I)
+
+
 def _last(pattern, text: str, group: int = 1):
     """The last match, because a log is appended to across relaunches."""
     found = pattern.findall(text)
@@ -72,7 +76,7 @@ def _number(text) -> float:
         return 0.0
 
 
-def parse_engine_report(text: str) -> Dict[str, float]:
+def parse_engine_report(text: str) -> Dict[str, object]:
     """The engine's own memory figures, or {} for the ones it did not print.
 
     Never raises. A log that says nothing about memory produces an empty dict,
@@ -83,7 +87,7 @@ def parse_engine_report(text: str) -> Dict[str, float]:
         return {}
     from ainode.core.units import gb_from_gib
 
-    out: Dict[str, float] = {}
+    out: Dict[str, object] = {}
     try:
         weights = _number(_last(_WEIGHTS, text))
         if weights > 0:
@@ -96,6 +100,10 @@ def parse_engine_report(text: str) -> Dict[str, float]:
         tokens = _number(_last(_KV_TOKENS, text))
         if tokens > 0:
             out["kv_tokens"] = int(tokens)
+
+        version = _last(_VERSION, text)
+        if version:
+            out["engine_version"] = str(version)
 
         concurrency = _KV_CONCURRENCY.findall(text)
         if concurrency:

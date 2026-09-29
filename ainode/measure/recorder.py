@@ -44,6 +44,12 @@ def _engine_report(backend, record=None) -> dict:
             ranks = max(1, int(getattr(record, "tensor_parallel_size", 1) or 1)
                         * int(getattr(record, "pipeline_parallel_size", 1) or 1))
             report["rank_count"] = ranks
+        # The dtype the cache figures belong to, written with them so the two
+        # can never come from different launches.
+        if report.get("kv_tokens"):
+            config = getattr(backend, "config", None)
+            report["kv_cache_dtype"] = str(
+                getattr(config, "kv_cache_dtype", "") or "auto")
         return report
     except Exception:
         logger.debug("could not read the engine's memory report", exc_info=True)
@@ -136,9 +142,30 @@ class Recorder:
                 getattr(config, "gpu_memory_utilization", 0) or 0),
             max_image_size=int(getattr(config, "max_image_size", 0) or 0)
             if str(getattr(config, "engine_backend", "")) == "diffusers" else 0,
-            engine_report=_engine_report(backend, record)
+            engine_report=self._with_checkpoint(
+                model, _engine_report(backend, record))
             if phase == "ready" else None,
         )
+
+    def _with_checkpoint(self, model: str, report: dict) -> dict:
+        """Add the checkpoint's on-disk size and MoE-ness to a report that
+        has a weights figure, so the two are kept side by side."""
+        if not report.get("weights_gb"):
+            return report
+        manager = self._app.get("model_manager")
+        if manager is None:
+            return report
+        try:
+            from ainode.planner.facts import local_facts
+
+            facts = local_facts(manager, model)
+            if facts.weights_gb:
+                report["disk_weights_gb"] = round(facts.weights_gb, 1)
+                report["is_moe"] = bool(facts.is_moe)
+        except Exception:
+            logger.debug("could not read %s's checkpoint", model,
+                         exc_info=True)
+        return report
 
     def _record_speeds(self) -> None:
         """How fast each model answers, from what it has actually served.

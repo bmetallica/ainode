@@ -2392,6 +2392,9 @@ const AINode = {
       // infer it from a warning that reads as advice.
       hint.className = 'launch-hint warn';
       hint.innerHTML = '⚠ ' + this.esc(plan.blocker || 'This will not fit.') +
+        (plan.warnings || []).map(function (w) {
+          return '<div class="plan-warn">⚠ ' + this.esc(w) + '</div>';
+        }, this).join('') +
         '<div class="plan-notes">There is no plan to apply, so the button is ' +
         'not offered. Free memory on a node, pick different nodes, or lower ' +
         'the context — the planner re-checks as you change the form. ' +
@@ -2405,9 +2408,20 @@ const AINode = {
       var node = (plan.nodes || []).find(function (n) { return n.node_id === id; });
       return (node && node.name) || id;
     }).join(' + ');
+    // Where the two deciding numbers came from. A plan built on the engine's
+    // own figures and one built on arithmetic about a checkpoint look the
+    // same otherwise, and the second has been nineteen percent out.
+    var source = function (value, what) {
+      var label = { measured: 'measured', calibrated: 'MoE-calibrated' }[value] ||
+        'estimated';
+      return ' <span class="plan-source plan-source-' + (value || 'estimated') +
+        '" title="' + what + ': ' + label + '">' + label + '</span>';
+    };
     var line = '✓ ' + axis + ' on ' + this.esc(names) +
-      ' — ' + Math.round(plan.weights_per_node_gb) + ' GB/node, ' +
-      Math.round(plan.kv_gb) + ' GB cache';
+      ' — ' + Math.round(plan.weights_per_node_gb) + ' GB/node' +
+      source(plan.weights_source, 'weights') + ', ' +
+      Math.round(plan.kv_gb) + ' GB cache' +
+      source(plan.kv_source, 'cost per token');
     if (plan.max_model_len) {
       line += ' = ' + plan.kv_tokens.toLocaleString() + ' tokens, ' +
         plan.concurrent_requests + ' concurrent at ' +
@@ -2433,6 +2447,11 @@ const AINode = {
         (m.failures ? ', ' + m.failures + ' failed' : '') +
         (m.vs_plan_gb ? ' (' + (m.vs_plan_gb > 0 ? '+' : '') + m.vs_plan_gb +
          ' GB vs the plan)' : '') +
+        (m.overhead_gb != null ? ' · engine beyond weights and cache: ' +
+         m.overhead_gb + ' GB (planned ' + plan.overhead_per_node_gb + ')' : '') +
+        (m.other_build ? ' · <span class="plan-source-estimated">measured on vLLM ' +
+         this.esc(m.engine_version || '?') + ', this node now runs ' +
+         this.esc(m.other_build) + '</span>' : '') +
         '</div>';
     }
     hint.className = 'launch-hint' + ((plan.warnings || []).length ? ' warn' : '');

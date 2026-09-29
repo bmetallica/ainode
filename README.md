@@ -327,7 +327,17 @@ under expert parallelism. vLLM reports all of it (`Model loading took … GiB`,
 `GPU KV cache size: … tokens`), so those are read back out of the engine log and
 kept separately, with the rank count they belong to. A footprint is then
 compared against the footprint the plan predicts, and a measured weight figure
-**replaces** the estimate for the next plan at that same split.
+**replaces** the estimate for the next plan at that same split. So does the
+**cost per token**: the engine's own cache over the tokens it said it holds,
+at the same KV dtype and split — which includes what the formula cannot see
+(DeepSeek V4's and Qwen3.8's indexer caches, a hybrid's recurrent state, the
+ds_mla scale block). A mixture-of-experts nobody has launched yet is scaled by
+the median loaded/on-disk ratio of the ones that were, once there are three.
+The plan marks each of the two numbers **measured**, **MoE-calibrated** or
+**estimated**, and a refusal that rests on an estimate says so. Each
+measurement also records the vLLM version that produced it, the plan flags one
+from another build, and it shows what the engine cost beyond weights and cache
+next to the 2.5 GB the planner assumes.
 
 **`reasoning` in a client config comes from the launch, not the catalog** — the
 catalog capability says the model thinks; the client field says the thinking
