@@ -594,6 +594,13 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
                           data_parallel_size=plan.data_parallel_size,
                           api_port=port, **resolved)
     backend = get_backend(inst_config, instance_id=name_token)
+    # Every address the peers answer on, and their names, so the backend can
+    # give `ssh <address>` the settings of the operator's alias for that node.
+    backend.ssh_peer_addresses = [
+        [fabric_of(n), str(getattr(n, "peer_ip", "") or ""),
+         str(getattr(n, "node_name", "") or ""),
+         *[str(a) for a in (getattr(n, "ib_ips", None) or [])]]
+        for n in chosen]
     if body.get("force"):
         # Launch anyway: past the engine-image flag check too.
         backend.skip_flag_check = True
@@ -703,10 +710,11 @@ async def _launch_from(request, cluster, node_ids, body) -> web.Response:
         if status >= 400 and "ssh" in str(payload.get("error", "")).lower():
             payload["hint"] = (
                 f"The launch is led by {leader.node_name or leader.node_id}, which "
-                f"needs passwordless SSH to the other nodes of the launch. The "
-                f"installer sets that up from the head only: on "
-                f"{leader.node_name or leader.node_id} run ssh-copy-id <user>@<node> "
-                f"for each of them.")
+                f"needs passwordless SSH to the other nodes of the launch. AINode "
+                f"maps each node's address to your ~/.ssh/config alias for it "
+                f"(Host … / HostName <that address>) and uses its user and key — so "
+                f"either give {leader.node_name or leader.node_id} such an alias for "
+                f"each node, or run ssh-copy-id <user>@<address> there.")
     return web.json_response(payload, status=status)
 
 
