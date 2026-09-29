@@ -756,107 +756,157 @@ async def _live_instance_records(manager, loop) -> list:
 
 
 async def _cluster_sync_loop(app: web.Application) -> None:
-    """Periodically sync the listener registry into ClusterState."""
+    """Periodically sync the listener registry into ClusterState.
+
+    Each cycle in its own try. The loop used to catch CancelledError and
+    nothing else, so one exception in any cycle — a measurement that would not
+    parse, a probe that raised instead of returning — ended it for good, with
+    nobody awaiting the task to hear about it. The sender kept going with the
+    last announcement it had been given: a node advertising, for weeks, the
+    model its engine had stopped serving. That is the phantom in FOLLOWUPS.md
+    ("observed on a node whose ainode had been up 5 weeks").
+    """
+    failures = 0
     try:
         while True:
             await asyncio.sleep(5)
-            # What each launch actually cost, written down by the node that
-            # ran it. Here rather than in the telemetry loop: a measurement
-            # that only existed when MQTT was configured would be missing
-            # from exactly the deployments that most need it.
-            recorder = app.get("measurement_recorder")
-            if recorder is None:
-                from ainode.measure.recorder import Recorder
-
-                recorder = Recorder(app)
-                app["measurement_recorder"] = recorder
-            recorder.poll()
-
-            listener: Optional[BroadcastListener] = app.get("broadcast_listener")
-            cluster: ClusterState = app["cluster_state"]
-            if listener:
-                cluster.update_from_discovered(listener.registry)
-                # Update sender announcement with current engine status + master flag
-                sender: Optional[BroadcastSender] = app.get("broadcast_sender")
-                engine = app.get("engine")
-                config: NodeConfig = app["config"]
-                is_master = cluster.is_master_of_cluster()
-                updates: dict = {
-                    "is_master": is_master,
-                    "cluster_id": getattr(config, "cluster_id", "default"),
-                    "role": getattr(config, "cluster_role", "auto"),
-                    "distributed_mode": getattr(config, "distributed_mode", "solo") or "solo",
-                }
-                dmode = updates["distributed_mode"]
-                loop = asyncio.get_event_loop()
-                # Liveness: the latched `ready` flag never flips False when an engine
-                # crashes or is killed out-of-band, so a dead engine reads READY forever
-                # (phantom-READY → ghost routing → 502s, BUG A FIX 2). Probe the engine's
-                # own API instead (see _engine_serving) — also reads False while loading,
-                # so we never advertise a not-yet-serving OR already-dead engine.
-                # ponytail: one localhost probe per instance per 5s cycle; a transient
-                # blip drops the model for one cycle and self-heals on the next probe.
-                engine_serving = await _engine_serving(engine, loop)
-                engine_proc_alive = bool(engine is not None and engine.is_running())
-                # Re-broadcast the live primary model every cycle, gated on real
-                # liveness — fixes both the stale `model` field (BUG A) and the
-                # phantom-READY-after-crash case (FIX 2). Members serve via the head's
-                # sharded engine, not their own model.
-                # A member used to be blanked unconditionally — "members serve
-                # via the head's sharded engine, not their own model". That is
-                # true of a member participating in a distributed launch and
-                # false of the deployment people actually build: one model per
-                # node, each serving on its own. The liveness probe already
-                # covers the case the blanking was for, since a member that
-                # runs no engine of its own does not answer.
-                updates["model"] = "" if not engine_serving else (config.model or "")
-                if dmode == "member":
-                    updates["status"] = "serving" if engine_serving else "member-ready"
-                elif engine is not None:
-                    updates["status"] = (
-                        "serving" if engine_serving
-                        else ("starting" if engine_proc_alive else "stopped")
-                    )
-
-                # Advertise distributed instance metadata once the head's
-                # sharded engine is serving — the UI uses this to render
-                # "DISTRIBUTED TP=N across X nodes".
-                if dmode == "head" and engine_serving:
-                    peer_ips = list(getattr(config, "peer_ips", []) or [])
-                    if peer_ips:
-                        updates["distributed_instance_id"] = f"{config.node_id or 'head'}:{config.model}"
-                        updates["distributed_peers"] = peer_ips
-                    else:
-                        updates["distributed_instance_id"] = None
-                        updates["distributed_peers"] = []
-                elif dmode != "head":
-                    updates["distributed_instance_id"] = None
-                    updates["distributed_peers"] = []
-                manager = app.get("instances")
-                if manager is not None and not manager.is_empty():
-                    # Only advertise instances whose engine actually answers — a dead
-                    # stacked instance drops out of the broadcast within one cycle —
-                    # and flip each live record's status to `serving` so the UI stops
-                    # showing a phantom `starting` progress bar (F3).
-                    live_records = await _live_instance_records(manager, loop)
-                    updates["instances"] = [r.to_dict() for r in live_records]
-                else:
-                    updates["instances"] = (
-                        _head_instances(config) if (dmode == "head" and engine_serving) else []
-                    )
-                # Embedding models are in-process and appear in no instance
-                # record, so without this the head cannot see that the RAG
-                # model is running on another node — cannot list it, cannot
-                # route to it, and cannot capture it into a profile.
-                updates["embedding_models"] = _local_embedding_models(app)
-                if sender:
-                    sender.update_announcement(**updates)
-                    # Keep the app-level announcement in sync so /api/status sees fresh values
-                    for k, v in updates.items():
-                        if hasattr(sender.announcement, k):
-                            setattr(sender.announcement, k, v)
+            try:
+                await _cluster_sync_once(app)
+                failures = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                failures += 1
+                # Loud the first time and then once a minute, not every five
+                # seconds for as long as the cause lasts.
+                if failures == 1 or failures % 12 == 0:
+                    logger.exception("cluster sync cycle failed (%d in a row)",
+                                     failures)
+                _withdraw_unverified(app)
     except asyncio.CancelledError:
         pass
+
+
+def _withdraw_unverified(app: web.Application) -> None:
+    """Stop advertising models this cycle could not check. A model left in the
+    announcement after its liveness probe failed to run is exactly the claim
+    that probe exists to prevent; the next good cycle puts it back."""
+    sender = app.get("broadcast_sender")
+    if sender is None:
+        return
+    try:
+        sender.update_announcement(model="", instances=[])
+        for key, value in (("model", ""), ("instances", [])):
+            if hasattr(sender.announcement, key):
+                setattr(sender.announcement, key, value)
+    except Exception:
+        logger.debug("could not withdraw the announcement", exc_info=True)
+
+
+async def _cluster_sync_once(app: web.Application) -> None:
+    """One cycle of _cluster_sync_loop."""
+    # What each launch actually cost, written down by the node that
+    # ran it. Here rather than in the telemetry loop: a measurement
+    # that only existed when MQTT was configured would be missing
+    # from exactly the deployments that most need it.
+    #
+    # In its own try: a measurement is bookkeeping, and a bug in it must not
+    # cost the node its announcement — which, as the failure handling below
+    # withdraws what it could not check, it otherwise would, every cycle.
+    try:
+        recorder = app.get("measurement_recorder")
+        if recorder is None:
+            from ainode.measure.recorder import Recorder
+
+            recorder = Recorder(app)
+            app["measurement_recorder"] = recorder
+        recorder.poll()
+    except Exception:
+        logger.debug("measurement poll failed", exc_info=True)
+
+    listener: Optional[BroadcastListener] = app.get("broadcast_listener")
+    cluster: ClusterState = app["cluster_state"]
+    if listener:
+        cluster.update_from_discovered(listener.registry)
+        # Update sender announcement with current engine status + master flag
+        sender: Optional[BroadcastSender] = app.get("broadcast_sender")
+        engine = app.get("engine")
+        config: NodeConfig = app["config"]
+        is_master = cluster.is_master_of_cluster()
+        updates: dict = {
+            "is_master": is_master,
+            "cluster_id": getattr(config, "cluster_id", "default"),
+            "role": getattr(config, "cluster_role", "auto"),
+            "distributed_mode": getattr(config, "distributed_mode", "solo") or "solo",
+        }
+        dmode = updates["distributed_mode"]
+        loop = asyncio.get_event_loop()
+        # Liveness: the latched `ready` flag never flips False when an engine
+        # crashes or is killed out-of-band, so a dead engine reads READY forever
+        # (phantom-READY → ghost routing → 502s, BUG A FIX 2). Probe the engine's
+        # own API instead (see _engine_serving) — also reads False while loading,
+        # so we never advertise a not-yet-serving OR already-dead engine.
+        # ponytail: one localhost probe per instance per 5s cycle; a transient
+        # blip drops the model for one cycle and self-heals on the next probe.
+        engine_serving = await _engine_serving(engine, loop)
+        engine_proc_alive = bool(engine is not None and engine.is_running())
+        # Re-broadcast the live primary model every cycle, gated on real
+        # liveness — fixes both the stale `model` field (BUG A) and the
+        # phantom-READY-after-crash case (FIX 2). Members serve via the head's
+        # sharded engine, not their own model.
+        # A member used to be blanked unconditionally — "members serve
+        # via the head's sharded engine, not their own model". That is
+        # true of a member participating in a distributed launch and
+        # false of the deployment people actually build: one model per
+        # node, each serving on its own. The liveness probe already
+        # covers the case the blanking was for, since a member that
+        # runs no engine of its own does not answer.
+        updates["model"] = "" if not engine_serving else (config.model or "")
+        if dmode == "member":
+            updates["status"] = "serving" if engine_serving else "member-ready"
+        elif engine is not None:
+            updates["status"] = (
+                "serving" if engine_serving
+                else ("starting" if engine_proc_alive else "stopped")
+            )
+
+        # Advertise distributed instance metadata once the head's
+        # sharded engine is serving — the UI uses this to render
+        # "DISTRIBUTED TP=N across X nodes".
+        if dmode == "head" and engine_serving:
+            peer_ips = list(getattr(config, "peer_ips", []) or [])
+            if peer_ips:
+                updates["distributed_instance_id"] = f"{config.node_id or 'head'}:{config.model}"
+                updates["distributed_peers"] = peer_ips
+            else:
+                updates["distributed_instance_id"] = None
+                updates["distributed_peers"] = []
+        elif dmode != "head":
+            updates["distributed_instance_id"] = None
+            updates["distributed_peers"] = []
+        manager = app.get("instances")
+        if manager is not None and not manager.is_empty():
+            # Only advertise instances whose engine actually answers — a dead
+            # stacked instance drops out of the broadcast within one cycle —
+            # and flip each live record's status to `serving` so the UI stops
+            # showing a phantom `starting` progress bar (F3).
+            live_records = await _live_instance_records(manager, loop)
+            updates["instances"] = [r.to_dict() for r in live_records]
+        else:
+            updates["instances"] = (
+                _head_instances(config) if (dmode == "head" and engine_serving) else []
+            )
+        # Embedding models are in-process and appear in no instance
+        # record, so without this the head cannot see that the RAG
+        # model is running on another node — cannot list it, cannot
+        # route to it, and cannot capture it into a profile.
+        updates["embedding_models"] = _local_embedding_models(app)
+        if sender:
+            sender.update_announcement(**updates)
+            # Keep the app-level announcement in sync so /api/status sees fresh values
+            for k, v in updates.items():
+                if hasattr(sender.announcement, k):
+                    setattr(sender.announcement, k, v)
 
 
 async def _on_cleanup(app: web.Application) -> None:
