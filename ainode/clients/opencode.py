@@ -14,7 +14,8 @@ get wrong in ways that surface hours later:
     DeepSeek V4 claims 1M and serves 131072 here — and it has to leave room,
     because a client's token accounting is an estimate. 96000 + 32768 against
     131072 leaves 2304 tokens of margin, and a request that overshoots is
-    refused mid-session.
+    refused mid-session. And it has to fit the KV cache once per concurrent
+    session, or the engine preempts one of them mid-answer.
 
 So the numbers come from the running instances, not from the catalog's
 aspirations: the same per-node launch configuration a profile captures.
@@ -88,6 +89,46 @@ def _launched_context(entry, info) -> Optional[int]:
                 except ValueError:
                     continue
     return None
+
+
+def _concurrency(entry, info) -> int:
+    """``--max-num-seqs`` of this instance, launch before recipe; 0 unknown."""
+    for source in (getattr(entry, "extra_vllm_args", None) or [],
+                   getattr(info, "extra_vllm_args", None) or []):
+        args = [str(a) for a in source]
+        for index, arg in enumerate(args):
+            value = None
+            if arg == "--max-num-seqs" and index + 1 < len(args):
+                value = args[index + 1]
+            elif arg.startswith("--max-num-seqs="):
+                value = arg.split("=", 1)[1]
+            if value is not None:
+                try:
+                    return max(0, int(value))
+                except ValueError:
+                    continue
+    return 0
+
+
+def _cache_tokens(app, model_id: str, window: int) -> int:
+    """How many tokens of KV cache the engine reported for this launch.
+
+    vLLM's own figure (``GPU KV cache size: N tokens``), which #219 records
+    per model on the node that served it. Only when it belongs to a launch
+    with this window — a figure from a load at another context length is a
+    figure about a different cache. 0 when there is none.
+    """
+    try:
+        from ainode.measure.recorder import measured_for
+
+        measured = measured_for(app, model_id) or {}
+    except Exception:
+        return 0
+    tokens = int(measured.get("kv_tokens") or 0)
+    launched = int(measured.get("max_model_len") or 0)
+    if not tokens or (launched and launched != int(window)):
+        return 0
+    return tokens
 
 
 def _launch_args(entry, info) -> List[str]:
@@ -212,6 +253,23 @@ def build_opencode_config(app, base_url: str) -> dict:
                 f"{model_id}: no --max-model-len was set, so this uses the "
                 f"model's own {window}. Check it against the engine log if "
                 f"requests are refused.")
+
+        # The window is what one request may be. Whether that many tokens
+        # fit for every session at once is a question for the cache, and the
+        # generator never asked it: 2 sessions x 131072 against a cache of
+        # 180000 tokens means the engine preempts one mid-answer — the agent
+        # "stops working" with nothing in the log that says why. So the
+        # limit is each session's share of the cache when that is smaller.
+        seqs = _concurrency(entry, info)
+        cache = _cache_tokens(app, model_id, window)
+        if seqs > 1 and cache and cache // seqs < window:
+            share = cache // seqs
+            notes.append(
+                f"{model_id}: {seqs} concurrent sessions share a cache of "
+                f"{cache:,} tokens, so each gets {share:,} — not the "
+                f"{window:,} the window allows. The limit is sized for "
+                f"that; relaunch with fewer concurrent requests for more.")
+            window = share
 
         models[model_id] = {
             "name": str(getattr(info, "name", "") or model_id.split("/")[-1]),

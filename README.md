@@ -268,7 +268,11 @@ Inference tab a temperature no engine holds — sampling is per request. The
 generated **opencode** config derives `tool_call` and `reasoning` from the
 flags the engine is running rather than from the curated catalog alone, so a
 model pulled straight from the Hub no longer arrives at a coding agent with
-tool calling switched off.
+tool calling switched off. Its context limit also fits the **KV cache**, not
+just the window: when the engine reported fewer cache tokens than
+`max-num-seqs` sessions at full length would need, each session's limit is its
+share of the cache, with a note saying so — otherwise the engine preempts one
+session mid-answer and the agent seems to stop by itself.
 
 **One unit for memory** — model sizes come off the disk and out of the Hub in
 decimal GB, and node budgets used to come through MiB divided by 1024. Both
