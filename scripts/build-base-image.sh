@@ -220,11 +220,58 @@ docker tag "vllm-node:${EUGR_SHORT}" "$VERSION_TAG"
 # fails in verify_cluster_image_consistency with "Could not inspect image".
 # Upstream's own build-and-copy.sh defaults to the untagged name, so this
 # restores the contract the launcher expects rather than inventing one.
+#
+# The engine is not reproducible, and this cannot make it so: the vLLM wheels
+# come from eugr's ROLLING ``prebuilt-vllm-current`` release, which
+# build-and-copy.sh hard-codes and whose assets are replaced in place. A
+# rebuild next week can bring another vLLM, and a recipe flag
+# (--tool-call-parser deepseek_v4 …) can disappear with it. What this can do
+# (R5 in upgrade-fixes.md) is make it traceable and reversible:
+#   * the build that was vllm-node:latest stays, as vllm-node:previous, so a
+#     bad nightly is one `docker tag` away from undone;
+#   * the new one is also tagged by its vLLM version;
+#   * ~/.ainode/engine-build.env records what was built, from what, and when.
+NEW_ID="$(docker image inspect --format '{{.Id}}' "vllm-node:${EUGR_SHORT}")"
+OLD_ID="$(docker image inspect --format '{{.Id}}' vllm-node:latest 2>/dev/null || true)"
+if [ -n "$OLD_ID" ] && [ "$OLD_ID" != "$NEW_ID" ]; then
+    docker tag vllm-node:latest vllm-node:previous
+    echo "==> Kept the engine this replaces as vllm-node:previous"
+fi
 docker tag "vllm-node:${EUGR_SHORT}" "vllm-node:latest"
+
+VLLM_VERSION="$(docker run --rm --entrypoint python3 "vllm-node:${EUGR_SHORT}" \
+    -c 'import vllm; print(vllm.__version__)' 2>/dev/null | tail -1 || true)"
+# Docker tags allow [A-Za-z0-9_.-]; a dev version carries a "+".
+VLLM_TAG="$(printf '%s' "$VLLM_VERSION" | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-120)"
+if [ -n "$VLLM_TAG" ]; then
+    docker tag "vllm-node:${EUGR_SHORT}" "vllm-node:vllm-${VLLM_TAG}"
+fi
+VLLM_WHEEL_COMMIT="$(cat "$WORKTREE"/.wheel-cache/vllm/*/.vllm-commit 2>/dev/null | tail -1 || true)"
+
+RECORD_DIR="${AINODE_HOME:-$HOME/.ainode}"
+mkdir -p "$RECORD_DIR"
+{
+    printf 'ENGINE_IMAGE_ID=%s\n' "$NEW_ID"
+    printf 'ENGINE_VLLM_VERSION=%s\n' "$VLLM_VERSION"
+    printf 'ENGINE_VLLM_WHEEL_COMMIT=%s\n' "$VLLM_WHEEL_COMMIT"
+    printf 'ENGINE_EUGR_COMMIT=%s\n' "$EUGR_COMMIT"
+    printf 'ENGINE_NCCL_TAG=%s\n' "$AINODE_NCCL_TAG"
+    printf 'ENGINE_BUILT_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'ENGINE_PREVIOUS_IMAGE_ID=%s\n' "$OLD_ID"
+} > "$RECORD_DIR/engine-build.env.tmp"
+mv -f "$RECORD_DIR/engine-build.env.tmp" "$RECORD_DIR/engine-build.env"
+
 echo "==> Tagged:"
 echo "    $COMMIT_TAG"
 echo "    $VERSION_TAG"
 echo "    vllm-node:latest          (what launch-cluster.sh looks for)"
+[ -n "$VLLM_TAG" ] && echo "    vllm-node:vllm-${VLLM_TAG}"
+echo "==> Engine: vLLM ${VLLM_VERSION:-unknown} — recorded in $RECORD_DIR/engine-build.env"
+if [ -n "$OLD_ID" ] && [ "$OLD_ID" != "$NEW_ID" ]; then
+    echo "    To go back to the engine before this one:"
+    echo "      docker tag vllm-node:previous vllm-node:latest"
+    echo "      scripts/update-cluster.sh --images --nodes <peers>"
+fi
 
 if [ "$PUSH" = "true" ]; then
     echo "==> Pushing"
