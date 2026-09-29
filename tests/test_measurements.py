@@ -19,6 +19,7 @@ import json
 import pytest
 
 from ainode.measure.store import HISTORY, MeasurementStore
+from tests.dashboard_js import parts as _dashboard_parts
 
 
 @pytest.fixture()
@@ -373,7 +374,7 @@ class TestTheUIShowsIt:
         from pathlib import Path
 
         app_js = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-                  "static" / "js" / "app.js").read_text()
+                  "static" / "js" / "app.js").read_text() + _dashboard_parts()
         assert "Measured here:" in app_js
         assert "vs the plan" in app_js
         # Beside the estimate, in the same hint, in that order. Asserted as the

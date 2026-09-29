@@ -15,9 +15,10 @@ import time
 from pathlib import Path
 
 from ainode.api import server_routes
+from tests.dashboard_js import parts as _dashboard_parts
 
 APP_JS = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-          "static" / "js" / "app.js").read_text()
+          "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
 
 class _Record:

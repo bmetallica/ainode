@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from tests.dashboard_js import parts as _dashboard_parts
 
 APP_JS = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-          "static" / "js" / "app.js").read_text()
+          "static" / "js" / "app.js").read_text() + _dashboard_parts()
 CSS = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
        "static" / "css" / "style.css").read_text()
 

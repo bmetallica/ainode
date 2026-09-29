@@ -20,9 +20,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from ainode.embeddings.manager import KNOWN_EMBEDDING_MODELS
+from tests.dashboard_js import parts as _dashboard_parts
 
 APP_JS = (Path(__file__).resolve().parent.parent / "ainode" / "web" / "static" /
-          "js" / "app.js").read_text()
+          "js" / "app.js").read_text() + _dashboard_parts()
 
 
 class TestTheFieldExists:

@@ -20,6 +20,7 @@ architecture is in config.json either way.
 from __future__ import annotations
 
 from ainode.models.architecture import EXPERT_PARALLEL, architecture_args
+from tests.dashboard_js import parts as _dashboard_parts
 
 
 class _Facts:
@@ -369,7 +370,7 @@ class TestTheGateSaysSoBeforeTheLaunch:
 
 class TestTheUIOffersTheRepair:
     APP_JS = (__import__("pathlib").Path(__file__).resolve().parent.parent /
-              "ainode" / "web" / "static" / "js" / "app.js").read_text()
+              "ainode" / "web" / "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
     def test_the_launch_offers_it(self):
         assert "offerToRepairTheConfig" in self.APP_JS

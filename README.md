@@ -1300,6 +1300,10 @@ pytest also runs the dashboard's JavaScript tests (`tests/js`, through
 `node --test`, Node 18+; skipped without node). Logic that can be a pure
 function belongs in `ainode/web/static/js/lib.js`, where those tests reach it,
 rather than inside `app.js`, where the only test is a search for a string.
+The dashboard itself is split by view: `app.js` holds the core (init, data
+fetching, navigation, the instance panel), and `static/js/views/*.js` — launch,
+chat, downloads, training, config, server — each add their methods to the same
+`AINode` object, as classic scripts with no build step.
 
 Anything that only makes sense on a GB10 cluster belongs here; anything that
 would work anywhere is better carried upstream, and

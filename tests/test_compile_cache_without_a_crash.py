@@ -24,6 +24,7 @@ import re
 from pathlib import Path
 
 from ainode.engine.load_phase import LoadPhaseTracker
+from tests.dashboard_js import parts as _dashboard_parts
 
 APP_JS = Path(__file__).resolve().parent.parent / "ainode" / "web" / "static" / "js" / "app.js"
 
@@ -34,7 +35,7 @@ FAULT = ("(EngineCore pid=676) ERROR 09-14 07:08:06 [core.py:1485] RuntimeError:
 
 class TestTheButtonIsAlwaysThere:
     def _source(self) -> str:
-        return APP_JS.read_text()
+        return (APP_JS.read_text() + _dashboard_parts())
 
     def test_every_instance_card_carries_it(self):
         assert "instance-cache-clear" in self._source()
@@ -59,7 +60,7 @@ class TestTheButtonIsAlwaysThere:
 
 class TestTheFailureNoteRecognisesThisFault:
     def test_illegal_memory_access_now_matches(self):
-        source = APP_JS.read_text()
+        source = (APP_JS.read_text() + _dashboard_parts())
         pattern = re.search(r"/(compile cache[^/]*)/i\.test\(error\)", source)
         assert pattern, "the failure-note trigger moved"
         regex = re.compile(pattern.group(1), re.I)
@@ -67,7 +68,7 @@ class TestTheFailureNoteRecognisesThisFault:
         assert regex.search("torch.AcceleratorError: cudaErrorIllegalAddress")
 
     def test_the_old_faults_still_match(self):
-        source = APP_JS.read_text()
+        source = (APP_JS.read_text() + _dashboard_parts())
         regex = re.compile(
             re.search(r"/(compile cache[^/]*)/i\.test\(error\)", source).group(1),
             re.I)

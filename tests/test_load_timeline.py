@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from ainode.engine.load_phase import LoadPhaseTracker
+from tests.dashboard_js import parts as _dashboard_parts
 
 
 @pytest.fixture()
@@ -190,7 +191,7 @@ class TestItReachesTheHead:
 
 
 APP_JS = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-          "static" / "js" / "app.js").read_text()
+          "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
 
 class TestTheCard:

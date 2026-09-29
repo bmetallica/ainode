@@ -27,6 +27,7 @@ from ainode.models.completeness import (DOWNLOAD_MARK, clear_download_mark,
                                         clear_partials, download_state,
                                         mark_download_started)
 from ainode.models.download_retry import MAX_ATTEMPTS, retry_delay, should_retry
+from tests.dashboard_js import parts as _dashboard_parts
 
 
 class _Http(Exception):
@@ -299,7 +300,7 @@ class TestTheButtonIsOnTheCardThatNeedsIt:
         from pathlib import Path
 
         cls.SOURCE = (Path(__file__).resolve().parent.parent / "ainode" / "web"
-                      / "static" / "js" / "app.js").read_text()
+                      / "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
     def test_an_incomplete_card_offers_a_resume(self):
         """It used to live only on a paused job in the Downloads queue, which

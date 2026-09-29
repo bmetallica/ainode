@@ -17,9 +17,10 @@ from pathlib import Path
 from ainode.models.registry import ModelManager
 from ainode.planner.compute import NodeBudget, plan_for_image
 from ainode.safety.admission import check_admission
+from tests.dashboard_js import parts as _dashboard_parts
 
 APP_JS = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-          "static" / "js" / "app.js").read_text()
+          "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
 
 def _node(node_id, free_gb):

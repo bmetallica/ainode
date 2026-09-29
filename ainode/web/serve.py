@@ -29,7 +29,9 @@ TEMPLATES_DIR = WEB_DIR / "templates"
 
 #: Assets the templates reference and that must never be served stale.
 VERSIONED = ("/static/js/app.js", "/static/js/lib.js", "/static/js/topology.js",
-             "/static/css/style.css")
+             "/static/css/style.css") + tuple(
+    f"/static/js/views/{name}.js" for name in
+    ("launch", "chat", "downloads", "training", "config", "server"))
 
 
 def asset_token(relative: str) -> str:

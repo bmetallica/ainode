@@ -31,6 +31,7 @@ from ainode.auth.web_login import (COOKIE_NAME, DEFAULT_PASSWORD, DEFAULT_USER,
                                    LoginThrottle, WebLogin, password_problem)
 from ainode.auth.web_routes import (is_public, register_web_login,
                                     web_login_middleware)
+from tests.dashboard_js import parts as _dashboard_parts
 
 
 @pytest.fixture(autouse=True)
@@ -446,7 +447,7 @@ class TestTheUI:
         from pathlib import Path
 
         root = Path(__file__).resolve().parent.parent / "ainode" / "web"
-        cls.SOURCE = (root / "static" / "js" / "app.js").read_text()
+        cls.SOURCE = (root / "static" / "js" / "app.js").read_text() + _dashboard_parts()
         cls.LOGIN = (root / "templates" / "login.html").read_text()
 
     def test_the_sign_in_page_uses_the_design_system(self):

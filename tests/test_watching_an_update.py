@@ -20,9 +20,10 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from ainode.api.server import create_app
 from ainode.core.config import NodeConfig
+from tests.dashboard_js import parts as _dashboard_parts
 
 APP_JS = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-          "static" / "js" / "app.js").read_text()
+          "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
 
 @pytest_asyncio.fixture

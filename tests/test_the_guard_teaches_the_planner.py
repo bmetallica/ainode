@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from ainode.measure.store import MeasurementStore
+from tests.dashboard_js import parts as _dashboard_parts
 
 
 class _Guard:
@@ -415,7 +416,7 @@ class TestTheRecordCanBeDropped:
 
     def test_the_ui_offers_it(self):
         app_js = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-                  "static" / "js" / "app.js").read_text()
+                  "static" / "js" / "app.js").read_text() + _dashboard_parts()
         assert "offerToClearTheRecord" in app_js
         assert "/api/measurements/forget-stops" in app_js
 
@@ -435,7 +436,7 @@ class TestUnlockingFromTheUI:
     """
 
     APP_JS = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-              "static" / "js" / "app.js").read_text()
+              "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
     def test_the_guard_panel_lists_what_it_stopped(self):
         assert "Stopped by the guard" in self.APP_JS

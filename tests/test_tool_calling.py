@@ -16,10 +16,11 @@ import pytest
 
 from ainode.models.api_routes import apply_catalog_recipe, apply_tool_calling
 from ainode.models.tool_parsers import AUTO, OFF, parser_for_model, tool_call_args
+from tests.dashboard_js import parts as _dashboard_parts
 
 WEB = Path(__file__).resolve().parent.parent / "ainode" / "web"
 INDEX = (WEB / "templates" / "index.html").read_text()
-APP_JS = (WEB / "static" / "js" / "app.js").read_text()
+APP_JS = (WEB / "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
 
 class TestParserMapping:

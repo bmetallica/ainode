@@ -30,9 +30,10 @@ from pathlib import Path
 import pytest
 
 from ainode.clients.opencode import _capabilities, limits_for
+from tests.dashboard_js import parts as _dashboard_parts
 
 APP_JS = (Path(__file__).resolve().parent.parent / "ainode" / "web" / "static"
-          / "js" / "app.js").read_text()
+          / "js" / "app.js").read_text() + _dashboard_parts()
 
 
 class TestTheNumbersTheOperatorSaw:

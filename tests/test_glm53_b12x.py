@@ -29,11 +29,12 @@ from ainode.models.api_routes import (
     catalog_recipe,
 )
 from ainode.models.registry import CURATED_CLUSTER_MODELS
+from tests.dashboard_js import parts as _dashboard_parts
 
 MODEL = "local-inference-lab/GLM-5.3-Flash-NVFP4-Spark"
 WEB = Path(__file__).resolve().parent.parent / "ainode" / "web"
 INDEX = (WEB / "templates" / "index.html").read_text()
-APP_JS = (WEB / "static" / "js" / "app.js").read_text()
+APP_JS = (WEB / "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
 
 class TestCatalogEntry:

@@ -19,9 +19,10 @@ from pathlib import Path
 
 from ainode.update.runner import CONTAINER_SOURCE_DIR, UpdateRunner
 from ainode.update.source import SourceState, built_from, check_for_updates
+from tests.dashboard_js import parts as _dashboard_parts
 
 APP_JS = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-          "static" / "js" / "app.js").read_text()
+          "static" / "js" / "app.js").read_text() + _dashboard_parts()
 INDEX = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
          "templates" / "index.html").read_text()
 

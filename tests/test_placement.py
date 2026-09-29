@@ -20,6 +20,7 @@ from ainode.placement.api_routes import (
     handle_put,
 )
 from ainode.placement.store import Placement, PlacementError, PlacementStore
+from tests.dashboard_js import parts as _dashboard_parts
 
 
 @pytest.fixture()
@@ -218,7 +219,7 @@ class TestTheRoutesAreReachable:
 
 
 WEB = __import__("pathlib").Path(__file__).resolve().parent.parent / "ainode" / "web"
-APP_JS = (WEB / "static" / "js" / "app.js").read_text()
+APP_JS = (WEB / "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
 
 class TestTheUI:

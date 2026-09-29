@@ -14,10 +14,11 @@ import json
 from pathlib import Path
 
 import pytest
+from tests.dashboard_js import parts as _dashboard_parts
 
 WEB = Path(__file__).resolve().parent.parent / "ainode" / "web"
 INDEX = (WEB / "templates" / "index.html").read_text()
-APP_JS = (WEB / "static" / "js" / "app.js").read_text()
+APP_JS = (WEB / "static" / "js" / "app.js").read_text() + _dashboard_parts()
 STYLE = (WEB / "static" / "css" / "style.css").read_text()
 
 

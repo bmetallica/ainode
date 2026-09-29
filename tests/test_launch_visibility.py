@@ -16,9 +16,10 @@ from unittest import mock
 from ainode.core.config import NodeConfig
 from ainode.engine.backends import eugr as E
 from ainode.engine.load_phase import LoadPhaseTracker
+from tests.dashboard_js import parts as _dashboard_parts
 
 APP_JS = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-          "static" / "js" / "app.js").read_text()
+          "static" / "js" / "app.js").read_text() + _dashboard_parts()
 SERVER = (Path(__file__).resolve().parent.parent / "ainode" / "api" /
           "server.py").read_text()
 IMAGE = "vllm/vllm-openai:v0.27.1"

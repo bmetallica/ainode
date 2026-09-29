@@ -27,9 +27,10 @@ import pytest
 
 from ainode.planner.compute import NodeBudget, plan_for
 from ainode.planner.facts import ModelFacts
+from tests.dashboard_js import parts as _dashboard_parts
 
 APP_JS = (Path(__file__).resolve().parent.parent / "ainode" / "web" / "static"
-          / "js" / "app.js").read_text()
+          / "js" / "app.js").read_text() + _dashboard_parts()
 
 
 def _facts(ctx=262144):

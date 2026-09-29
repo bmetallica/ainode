@@ -22,9 +22,10 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from ainode.api.server import create_app
 from ainode.core.config import NodeConfig
+from tests.dashboard_js import parts as _dashboard_parts
 
 APP_JS = (Path(__file__).resolve().parent.parent / "ainode" / "web" /
-          "static" / "js" / "app.js").read_text()
+          "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
 
 @pytest_asyncio.fixture
@@ -467,7 +468,7 @@ class TestTheImportClearsWhatItReplaced:
 
 class TestTheUISaysWhatWasReclaimed:
     SOURCE = (Path(__file__).resolve().parent.parent
-              / "ainode" / "web" / "static" / "js" / "app.js").read_text()
+              / "ainode" / "web" / "static" / "js" / "app.js").read_text() + _dashboard_parts()
 
     def test_it_has_a_line_for_it(self):
         from tests.jslib import call
@@ -584,7 +585,7 @@ class TestTheMirrorOutlivesTheRequest:
 
     def test_the_ui_follows_the_job(self):
         source = (Path(__file__).resolve().parent.parent / "ainode" / "web"
-                  / "static" / "js" / "app.js").read_text()
+                  / "static" / "js" / "app.js").read_text() + _dashboard_parts()
         assert "watchImportMirror" in source
         assert "downloads/active" in source
 

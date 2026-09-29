@@ -8,9 +8,10 @@ machinery that was already there, and is tested where that machinery lives.
 from __future__ import annotations
 
 from pathlib import Path
+from tests.dashboard_js import parts as _dashboard_parts
 
 WEB = Path(__file__).resolve().parent.parent / "ainode" / "web"
-APP_JS = (WEB / "static" / "js" / "app.js").read_text()
+APP_JS = (WEB / "static" / "js" / "app.js").read_text() + _dashboard_parts()
 INDEX = (WEB / "templates" / "index.html").read_text()
 CSS = (WEB / "static" / "css" / "style.css").read_text()
 
