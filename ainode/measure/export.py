@@ -104,10 +104,19 @@ def _prediction(app, model: str, row: Dict[str, Any]) -> Dict[str, Any]:
     what was measured — before any measurement of the model is used."""
     manager = app.get("model_manager")
     launch = row.get("launch") or {}
-    ranks = int(row.get("rank_count") or 0) or int(
-        (launch.get("tensor_parallel_size") or 1) * (launch.get("pipeline_parallel_size") or 1))
-    if manager is None or not ranks:
+    # The split, only where it is known: the engine's weights figure carries
+    # its rank count, a launch record its sizes. A guess of "one rank, solo"
+    # for a model that ran across two nodes made the first export's
+    # predictions compare a whole checkpoint with half of one.
+    ranks = int(row.get("rank_count") or 0)
+    if not ranks and launch:
+        ranks = int((launch.get("tensor_parallel_size") or 1)
+                    * (launch.get("pipeline_parallel_size") or 1))
+    if manager is None:
         return {}
+    if not ranks:
+        return {"split": "unknown — measured before launches were recorded; "
+                         "load it again for a comparison"}
     try:
         from ainode.planner.compute import kv_bytes_per_token, weights_per_node
         from ainode.planner.facts import local_facts
@@ -115,13 +124,21 @@ def _prediction(app, model: str, row: Dict[str, Any]) -> Dict[str, Any]:
         facts = local_facts(manager, model)
         if not facts.weight_bytes:
             return {}
-        strategy = "tensor" if (launch.get("tensor_parallel_size") or 1) > 1 else (
-            "pipeline" if (launch.get("pipeline_parallel_size") or 1) > 1 else "solo")
+        if launch:
+            strategy = "tensor" if (launch.get("tensor_parallel_size") or 1) > 1 else (
+                "pipeline" if (launch.get("pipeline_parallel_size") or 1) > 1 else "solo")
+        else:
+            # Rank count without a launch record: tensor is what every
+            # multi-node launch here has been. Said, not hidden.
+            strategy = "tensor" if ranks > 1 else "solo"
         estimate, _ = weights_per_node(facts, ranks, strategy)
         dtype = row.get("kv_cache_dtype") or launch.get("kv_cache_dtype") or "auto"
         formula_bpt = kv_bytes_per_token(facts, dtype)
         out: Dict[str, Any] = {
             "ranks": ranks, "strategy": strategy, "kv_cache_dtype": dtype,
+            **({} if launch else {"strategy_assumed": True}),
+            **({} if (row.get("kv_cache_dtype") or launch.get("kv_cache_dtype"))
+               else {"kv_cache_dtype_assumed": True}),
             "weights_per_node_gb_estimated": round(estimate, 2),
             "kv_bytes_per_token_formula": int(formula_bpt),
         }
@@ -140,7 +157,18 @@ def _prediction(app, model: str, row: Dict[str, Any]) -> Dict[str, Any]:
                     (formula_bpt - measured_bpt) / measured_bpt * 100, 1)
         footprint = float(row.get("memory_gb") or 0)
         if footprint and measured_weights and cache:
-            out["engine_overhead_gb_measured"] = round(footprint - measured_weights - cache, 2)
+            # Not only engine overhead: whatever the engine's weights figure
+            # leaves out (per-layer embeddings, a drafter), activations, graphs.
+            out["footprint_beyond_weights_and_cache_gb"] = round(
+                footprint - measured_weights - cache, 2)
+        # The pool minus the cache: what the launch really held per node
+        # besides its cache — the figure the planner now plans with.
+        from ainode.planner.api_routes import _fixed_from_pool
+
+        fixed = _fixed_from_pool(app, row, ranks)
+        if fixed:
+            out["fixed_per_node_gb_from_pool"] = round(fixed, 2)
+            out["weights_per_node_gb_planned"] = round(max(measured_weights, fixed), 2)
         return out
     except Exception:
         logger.debug("could not predict %s", model, exc_info=True)

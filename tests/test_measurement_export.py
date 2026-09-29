@@ -94,7 +94,8 @@ class TestTheExport:
         assert planner["weights_per_node_gb_estimated"] == pytest.approx(84.0, abs=0.1)
         assert planner["weights_error_percent"] == pytest.approx(15.5, abs=0.2)
         assert planner["kv_bytes_per_token_measured"] == 200000
-        assert planner["engine_overhead_gb_measured"] == pytest.approx(2.3, abs=0.01)
+        assert planner["footprint_beyond_weights_and_cache_gb"] == pytest.approx(2.3, abs=0.01)
+        assert planner["strategy"] == "tensor"
         assert "ENGINE_OVERHEAD_GB" in data["planner_constants"]
 
     def test_nothing_secret_goes_in(self, app):

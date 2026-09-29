@@ -101,6 +101,9 @@ class Measurement:
     #: launches keep theirs in ``history``, so what did NOT fit is on record
     #: beside what did.
     launch: Dict[str, object] = field(default_factory=dict)
+    #: The node's total memory when measured (decimal GB): the memory fraction
+    #: is a share of it, so the pool the launch had is gmu x this.
+    node_total_gb: float = 0.0
     #: The last few loads, newest last: [{at, seconds, memory_gb, ok, launch}].
     history: List[dict] = field(default_factory=list)
     #: GB of host memory that were free when the guard stopped this model,
@@ -189,7 +192,9 @@ class MeasurementStore:
                       max_image_size: int = 0,
                       engine_report=None,
                       memory_by_node=None,
-                      launch=None) -> Measurement:
+                      launch=None,
+                      error: str = "",
+                      node_total_gb: float = 0.0) -> Measurement:
         """Write down what a launch did. Never raises."""
         current = self.load()
         entry = current.get(model) or Measurement(model=model)
@@ -229,11 +234,16 @@ class MeasurementStore:
         # one keeps its parameters in the history below.
         if launch and ok:
             entry.launch = dict(launch)
+        if node_total_gb and ok:
+            entry.node_total_gb = round(float(node_total_gb), 1)
         entry.history.append({
             "at": round(time.time(), 1), "ok": bool(ok),
             "seconds": round(float(load_seconds or 0), 1),
             "memory_gb": round(float(memory_gb or 0), 1),
             **({"launch": dict(launch)} if launch else {}),
+            # Why a launch failed, in the engine's own last words — without it
+            # a history of failures says only that there were some.
+            **({"error": str(error)[:400]} if error and not ok else {}),
         })
         del entry.history[:-HISTORY]
         current[entry.model] = entry
