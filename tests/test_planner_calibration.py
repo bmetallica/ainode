@@ -162,7 +162,11 @@ class TestTheEngineVersion:
             "0.11.1rc2.dev104+g1a2b3c\nModel loading took 10.0 GiB memory")
         assert report["engine_version"] == "0.11.1rc2.dev104+g1a2b3c"
 
-    def test_a_measurement_from_another_build_is_marked(self, tmp_path):
+    def test_a_measurement_from_another_build_is_marked(self, tmp_path,
+                                                        monkeypatch):
+        import ainode.core.config as config
+
+        monkeypatch.setattr(config, "AINODE_HOME", tmp_path)   # no build record
         old = Measurement(model="m", engine_version="0.10.0", memory_gb=80,
                           weights_gb=67.7, kv_cache_gb=13.7, launches=1,
                           last_ok=1.0)
@@ -227,3 +231,27 @@ class TestTheCheckpointIsNotWalkedPerKeystroke:
 
         ModelManager.forget_size(model)     # what a download does when done
         assert facts_module.weight_bytes_on_disk(model) == 300
+
+
+class TestTheEngineBuildIsRecorded:
+    """R5: the vLLM wheels come from a rolling release that cannot be pinned
+    from here. The build is made traceable and reversible instead."""
+
+    SCRIPT = (__import__("pathlib").Path(__file__).resolve().parent.parent
+              / "scripts" / "build-base-image.sh").read_text()
+
+    def test_the_replaced_engine_is_kept(self):
+        assert "docker tag vllm-node:latest vllm-node:previous" in self.SCRIPT
+
+    def test_the_build_is_written_down(self):
+        for field in ("ENGINE_VLLM_VERSION=", "ENGINE_IMAGE_ID=",
+                      "ENGINE_EUGR_COMMIT=", "ENGINE_PREVIOUS_IMAGE_ID="):
+            assert field in self.SCRIPT
+
+    def test_the_planner_reads_the_record_first(self, tmp_path, monkeypatch):
+        import ainode.core.config as config
+
+        monkeypatch.setattr(config, "AINODE_HOME", tmp_path)
+        (tmp_path / "engine-build.env").write_text(
+            "ENGINE_IMAGE_ID=sha256:1\nENGINE_VLLM_VERSION=0.12.0\n")
+        assert api_routes._current_engine_version({}) == "0.12.0"

@@ -997,6 +997,20 @@ cd /opt/ainode && git pull
 scripts/update-cluster.sh --nodes Spark2,Spark3
 ```
 
+**The engine is not pinned — but it can be undone.** `--base` rebuilds the
+vLLM engine image from eugr's *rolling* `prebuilt-vllm-current` wheels, so a
+rebuild can bring a different vLLM (and drop a parser a recipe names). Each
+rebuild keeps the engine it replaces as `vllm-node:previous`, tags the new one
+by its vLLM version (`vllm-node:vllm-<version>`), and writes what it built to
+`~/.ainode/engine-build.env` (vLLM version, wheel commit, eugr commit, image
+ids); the planner uses that version to flag measurements from another build.
+To go back:
+
+```bash
+docker tag vllm-node:previous vllm-node:latest
+scripts/update-cluster.sh --images --nodes Spark2,Spark3
+```
+
 The checkout stays yours: the container runs as root, so `git pull` is run as
 the directory's owner rather than being told to ignore the ownership — a pull
 as root leaves objects under `.git` that your own shell then cannot write

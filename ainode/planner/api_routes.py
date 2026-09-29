@@ -274,8 +274,19 @@ def _measured_bytes_per_token(app, model: str, kv_dtype: str) -> int:
 
 
 def _current_engine_version(app) -> str:
-    """The vLLM of the newest measurement on this node — the closest thing to
-    "the engine this node runs now" that costs nothing to ask."""
+    """The vLLM this node runs now: what build-base-image.sh recorded when it
+    built the engine (~/.ainode/engine-build.env), or failing that the vLLM of
+    the newest measurement."""
+    try:
+        from ainode.core.config import AINODE_HOME
+
+        for line in (AINODE_HOME / "engine-build.env").read_text().splitlines():
+            if line.startswith("ENGINE_VLLM_VERSION="):
+                version = line.split("=", 1)[1].strip()
+                if version:
+                    return version
+    except (OSError, ImportError):
+        pass
     newest = None
     for entry in _all_measurements(app):
         if entry.engine_version and (newest is None
