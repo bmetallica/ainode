@@ -277,8 +277,17 @@ def apply_catalog_recipe(model: str, overrides: dict, gmu=None):
     # --max-num-seqs for Qwen3.8 used to take its reasoning parser, tool-call
     # parser and speculative config with it.
     if recipe.get("extra_vllm_args"):
+        recipe_args = list(recipe["extra_vllm_args"])
+        if overrides.get("kv_cache_dtype_explicit"):
+            # A KV dtype picked in the form is the operator's word. As a
+            # recipe flag in the extra args, the recipe's would suppress it.
+            from ainode.engine.serve_args import split_vllm_args
+
+            recipe_args = [a for group in split_vllm_args(recipe_args)
+                           if group[0].split("=", 1)[0] != "--kv-cache-dtype"
+                           for a in group]
         overrides["extra_vllm_args"] = merge_vllm_args(
-            recipe["extra_vllm_args"], overrides.get("extra_vllm_args"))
+            recipe_args, overrides.get("extra_vllm_args"))
     if recipe.get("extra_env"):
         merged_env = dict(recipe["extra_env"])
         merged_env.update(overrides.get("extra_env") or {})
