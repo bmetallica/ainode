@@ -382,7 +382,16 @@ def _measured_bytes_per_token(app, model: str, kv_dtype: str) -> int:
     measured_dtype = str(measurement.get("kv_cache_dtype") or "").lower()
     if not (tokens and per_rank and ranks and measured_dtype):
         return 0
-    if measured_dtype != str(kv_dtype or "auto").lower():
+    # Compared as stored: "auto" on a checkpoint that asks for an fp8 cache is
+    # fp8, so a measurement labelled either way stands for the other.
+    try:
+        from ainode.planner.compute import effective_kv_dtype
+
+        facts = local_facts(app.get("model_manager"), model)
+        same = effective_kv_dtype(facts, measured_dtype) == effective_kv_dtype(facts, kv_dtype)
+    except Exception:
+        same = measured_dtype == str(kv_dtype or "auto").lower()
+    if not same:
         return 0
     return int(per_rank * ranks * 1e9 / tokens)
 

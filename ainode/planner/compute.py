@@ -276,6 +276,15 @@ def kv_dtype_bytes(kv_cache_dtype: str, model_dtype_bytes: float) -> float:
     return float(model_dtype_bytes or 2)
 
 
+def effective_kv_dtype(facts: ModelFacts, kv_cache_dtype: str) -> str:
+    """What the cache is really stored as: "auto" means the checkpoint's own
+    KV quantization where it names one, else the model's dtype."""
+    key = str(kv_cache_dtype or "").strip().lower()
+    if key in ("", "auto") and getattr(facts, "kv_cache_quant", ""):
+        return facts.kv_cache_quant
+    return key or "auto"
+
+
 def kv_bytes_per_token(facts: ModelFacts, kv_cache_dtype: str = "auto") -> int:
     """Bytes of KV cache one token costs across the whole model.
 
@@ -285,7 +294,7 @@ def kv_bytes_per_token(facts: ModelFacts, kv_cache_dtype: str = "auto") -> int:
     vector per layer instead, which is why a model of that size can hold a
     million tokens where a conventional one holds a tenth of that.
     """
-    dtype_bytes = kv_dtype_bytes(kv_cache_dtype, facts.dtype_bytes)
+    dtype_bytes = kv_dtype_bytes(effective_kv_dtype(facts, kv_cache_dtype), facts.dtype_bytes)
     layers = facts.attention_layers or facts.num_layers
     if not layers:
         return 0

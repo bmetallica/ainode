@@ -87,7 +87,8 @@ def _facts(app, model: str) -> Dict[str, Any]:
         return {}
     return {
         "architecture": facts.architecture, "torch_dtype": facts.torch_dtype,
-        "quantization": facts.quantization, "weights_on_disk_gb": round(facts.weights_gb, 2),
+        "quantization": facts.quantization,
+        "kv_cache_quant": getattr(facts, "kv_cache_quant", ""), "weights_on_disk_gb": round(facts.weights_gb, 2),
         "num_layers": facts.num_layers, "attention_layers": facts.attention_layers,
         "num_attention_heads": facts.num_attention_heads,
         "num_kv_heads": facts.num_kv_heads, "head_dim": facts.head_dim,
