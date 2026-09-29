@@ -60,7 +60,13 @@ class TestOnDiskSizeIsDecimalGb:
 
 class TestThePlanUsesTheDtypeTheLaunchWould:
     def test_the_ui_sends_it(self):
-        assert "params.set('kv_cache_dtype'" in APP_JS
+        from tests.jslib import call
+
+        # Always, whichever field was driven: it is neither half of the pair.
+        for drove in ("len", "seqs", None):
+            query = call("planQuery", {"model": "m", "kv_cache_dtype": "fp8"},
+                         drove)
+            assert query["kv_cache_dtype"] == "fp8"
 
     def test_it_is_part_of_the_plan_cache_key(self):
         # Otherwise changing the dtype leaves the previous plan on screen,

@@ -312,8 +312,14 @@ class TestTheButtonIsOnTheCardThatNeedsIt:
 
     def test_it_reports_what_the_check_found(self):
         # A silent check is indistinguishable from no check.
+        from tests.jslib import call
+
         assert "resumeCheckNote" in self.SOURCE
-        assert "unusable file(s)" in self.SOURCE
+        note = call("resumeCheckNote", {"removed": ["a", "b"],
+                                        "freed_bytes": 3 * 1024 ** 3,
+                                        "present": ["c"], "will_fetch": ["d"]})
+        assert note == (" — removed 2 unusable file(s), 3.00 GB, "
+                        "1 file(s) verified, 1 to fetch")
 
     def test_the_route_prepares_before_it_pulls(self):
         import inspect

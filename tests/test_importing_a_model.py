@@ -470,11 +470,19 @@ class TestTheUISaysWhatWasReclaimed:
               / "ainode" / "web" / "static" / "js" / "app.js").read_text()
 
     def test_it_has_a_line_for_it(self):
+        from tests.jslib import call
+
         assert "clearedNote" in self.SOURCE
-        assert "cleared_partials" in self.SOURCE
+        assert call("clearedNote", {"cleared_partials": 2}) == \
+            " (cleared 2 stale staging file(s))"
+        assert call("clearedNote", {"cleared_partials": 0}) == ""
 
     def test_it_names_the_space(self):
-        assert "reclaimed_bytes" in self.SOURCE
+        from tests.jslib import call
+
+        assert call("clearedNote", {"cleared_partials": 2,
+                                    "reclaimed_bytes": 42e9}) == \
+            " (cleared 2 stale staging file(s), 42.0 GB reclaimed)"
 
 
 class TestTheMirrorOutlivesTheRequest:

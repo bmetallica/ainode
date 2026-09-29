@@ -168,8 +168,11 @@ class TestItIsCarriedToTheBrowser:
         assert field in _plan(concurrency=2).to_dict()
 
     def test_the_sidebar_draws_it(self):
+        from tests.jslib import call
+
         assert "renderOccupancy" in APP_JS
-        assert "Occupies" in APP_JS
+        html = call("renderOccupancy", _plan(concurrency=2).to_dict(), "2")
+        assert "Occupies" in html and "x 2 requests" in html
 
     def test_it_is_drawn_inside_the_plan_hint(self):
         # Which is what makes it live: the hint is redrawn on every re-plan,
@@ -177,8 +180,13 @@ class TestItIsCarriedToTheBrowser:
         assert "line + forecast + measured + warn" in APP_JS
 
     def test_it_names_the_idle_share_and_what_to_do(self):
-        assert "reserved and will not be used" in APP_JS
-        assert "lower the memory fraction" in APP_JS
+        from tests.jslib import call
+
+        html = call("renderOccupancy", _plan(concurrency=1).to_dict(), "1")
+        assert "reserved and will not be used" in html
+        assert "lower the memory fraction" in html
+        full = call("renderOccupancy", _plan(concurrency=15).to_dict(), "15")
+        assert "reserved and will not be used" not in full
 
     def test_the_bar_has_a_segment_per_part(self):
         for part in ("weights", "engine", "cache", "idle"):
