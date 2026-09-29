@@ -232,7 +232,10 @@ distributed path, with anything unsupplied reset to its default rather than
 left over from the model before. The shared `NodeConfig` is what a primary
 load persists, so without that reset an image model loaded on one node leaves
 `engine_backend=diffusers` behind and the next multi-node LLM launch picks the
-image engine.
+image engine. A distributed primary persists the same resolved set the solo
+path does — it used to write only the model, peers and split, so after a
+restart the cluster came back with the window and cache dtype of whatever had
+last been loaded solo.
 
 **The launch form's fields move together** — context length and concurrency
 multiply into one KV cache, so naming one is naming the other. Whichever you
