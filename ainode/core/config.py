@@ -145,6 +145,10 @@ class NodeConfig:
     kv_cache_dtype_explicit: bool = False
     quantization: Optional[str] = None  # awq, gptq, fp8, None
     trust_remote_code: bool = False
+    # Add --reasoning-parser for a model family that thinks, when the engine
+    # image registers the parser (models/reasoning_parsers.py). Off leaves the
+    # thinking in the content, as before.
+    auto_reasoning_parser: bool = True
     # Extra `vllm serve` flags appended verbatim to the engine command line, e.g.
     # ["--moe-backend", "marlin", "--reasoning-parser", "qwen3"]. Models whose
     # published recipe needs flags AINode doesn't model (speculative decoding,

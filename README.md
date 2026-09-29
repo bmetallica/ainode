@@ -352,6 +352,18 @@ arrives in its own place on the wire, and only `--reasoning-parser` makes vLLM
 put it there. Claiming it without the flag hands a client a first response it
 cannot read.
 
+**The engine image is asked before a launch relies on it** — once per image
+(cached by image id), AINode lists the image's reasoning parsers, tool parsers
+and every `vllm serve` flag with its allowed values. A model family that thinks
+(DeepSeek V4 and finetunes of it such as Smaug-Flash, Qwen3.5/3.6/3.8, GLM,
+MiniMax, gpt-oss, Gemma 4, Nemotron 3 — the pairing read off eugr's recipes)
+then gets its `--reasoning-parser` automatically, **only if the image has
+it**; Qwen3-Coder and the Instruct-2507 line do not think and get none. Turn it
+off with `PATCH /api/config {"auto_reasoning_parser": false}`. And a recipe or
+Advanced flag the image does not know, or a value outside its choices, stops
+the launch **before** the image and weights are distributed and Ray is formed,
+naming the flag and the vLLM version; **Launch anyway** goes past the check.
+
 **Knowing what happened** — per-phase load timings, an **error assistant**
 that explains a failure using a model already running, per-instance containers
 and logs (each rotated at the start of a launch once it passes 50 MB, five old

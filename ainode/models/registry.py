@@ -808,8 +808,9 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # --reasoning-parser: it thinks by default and a client will want
             #   the blocks separated, but vLLM's argparse rejects a name it
             #   does not know and kills the launch at second three. A recipe
-            #   that has never run here must not guess one. Probe the image
-            #   (vllm serve --help) and set it under Advanced.
+            #   that has never run here must not guess one — and does not
+            #   need to: the launch adds qwen3 itself when the engine image
+            #   registers it (models/reasoning_parsers.py).
         ],
         # The planner would pick 0.95, which reserves 121.6 GB of 128 per node
         # for a launch that uses 79 at two sessions — 42 GB held and idle, and
