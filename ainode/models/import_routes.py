@@ -451,9 +451,14 @@ async def handle_take_dropbox(request: web.Request) -> web.Response:
     Moved rather than copied where the filesystem allows it: a rename of
     129 GB is instant and a copy is not, and the drop directory is not a
     place anyone wants a second copy to live.
-    """
-    import shutil
 
+    Answers at once with a job (``download_jobs``, status ``importing``), the
+    same one the mirror then continues under. ``shutil.move`` used to run in
+    this handler: on one filesystem that is a rename, but with /model-import on
+    its own disk it is a copy — of 129 GB, inside the event loop, with the UI,
+    the proxy, discovery and the memory guard's telemetry all standing still
+    until it finished. And a closed tab would have cancelled it halfway.
+    """
     try:
         body = as_object(await request.json()) if request.can_read_body else {}
     except Exception:
@@ -486,46 +491,116 @@ async def handle_take_dropbox(request: web.Request) -> web.Response:
         return web.json_response({"error": f"{source} is not there"}, status=404)
 
     target = _target_dir(request.app, hf_repo)
-    moved: List[str] = []
-    try:
-        target.mkdir(parents=True, exist_ok=True)
-        sources = ([source] if source.is_file()
-                   else sorted(p for p in source.rglob("*") if p.is_file()))
-        for path in sources:
-            relative = path.name if source.is_file() else \
-                str(path.relative_to(source))
-            destination = target / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(path), str(destination))
-            moved.append(relative)
-    except (OSError, shutil.Error) as exc:
-        return web.json_response(
-            {"error": f"could not move the files: {exc}", "moved": moved},
-            status=500)
+    for job in (request.app.get("download_jobs") or {}).values():
+        if isinstance(job, dict) and job.get("model_id") == hf_repo and \
+                job.get("status") == "importing":
+            return web.json_response(
+                {"error": f"{hf_repo} is already being taken in"}, status=409)
+    job_id = _start_take(request.app, hf_repo, source, target)
+    return web.json_response({"ok": True, "hf_repo": hf_repo,
+                              "job_id": job_id, "status": "importing"},
+                             status=202)
 
-    # Leave the (now empty) directory behind rather than removing it: it is
-    # the operator's, and an empty one is a clear "this was taken".
-    _forget_size(request.app, target)
-    logger.info("took %d file(s) from %s into %s", len(moved), source, target)
 
-    from ainode.models.completeness import clear_partials, download_state
+def _move_tree(source: Path, target: Path, job: dict) -> None:
+    """The blocking half of a take, for an executor. Counts into ``job``."""
+    import shutil
 
-    # An import is the operator saying "these are the files". Whatever an
-    # earlier interrupted transfer staged under .cache/huggingface/download is
-    # then stale by definition, and at Xet chunk sizes it is not a rounding
-    # error — it is tens of gigabytes sitting on the head's disk claiming the
-    # model is half-downloaded.
-    cleared, reclaimed = clear_partials(target)
-    if cleared:
-        logger.info("cleared %d stale partial file(s), %.1f GB, from %s",
-                    cleared, reclaimed / 1e9, target)
+    target.mkdir(parents=True, exist_ok=True)
+    sources = ([source] if source.is_file()
+               else sorted(p for p in source.rglob("*") if p.is_file()))
+    job["files_total"] = len(sources)
+    for path in sources:
+        relative = path.name if source.is_file() else \
+            str(path.relative_to(source))
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        shutil.move(str(path), str(destination))
+        job["moved"] += 1
+        job["moved_bytes"] += size
 
-    complete, reason = download_state(target)
-    result = {"ok": True, "hf_repo": hf_repo, "moved": len(moved),
-              "complete": complete, "incomplete_reason": reason,
-              "cleared_partials": cleared, "reclaimed_bytes": reclaimed,
-              "mirroring": False}
-    if complete:
-        result["mirroring"] = True
-        result["job_id"] = _start_mirror(request.app, hf_repo)
-    return web.json_response(result)
+
+def _start_take(app, hf_repo: str, source: Path, target: Path) -> str:
+    """Move the files in, check them, and mirror — as one job."""
+    import asyncio
+    import shutil
+    import time
+    import uuid
+
+    jobs = app.get("download_jobs")
+    if jobs is None:
+        jobs = {}
+        app["download_jobs"] = jobs
+    job_id = str(uuid.uuid4())
+    job = {"model_id": hf_repo, "status": "importing", "error": None,
+           "finished_at": None, "imported": True, "mirror": {},
+           "moved": 0, "moved_bytes": 0, "files_total": None}
+    jobs[job_id] = job
+
+    async def _run() -> None:
+        from ainode.models.completeness import clear_partials, download_state
+
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(None, _move_tree, source, target, job)
+        except (OSError, shutil.Error) as exc:
+            job.update(status="failed", finished_at=time.time(),
+                       error=f"could not move the files: {exc}")
+            _forget_size(app, target)
+            return
+        # Leave the (now empty) directory behind rather than removing it: it
+        # is the operator's, and an empty one is a clear "this was taken".
+        _forget_size(app, target)
+        logger.info("took %d file(s) from %s into %s", job["moved"], source,
+                    target)
+
+        # An import is the operator saying "these are the files". Whatever an
+        # earlier interrupted transfer staged under .cache/huggingface/download
+        # is then stale by definition, and at Xet chunk sizes it is not a
+        # rounding error — it is tens of gigabytes sitting on the head's disk
+        # claiming the model is half-downloaded.
+        cleared, reclaimed = await loop.run_in_executor(
+            None, clear_partials, target)
+        if cleared:
+            logger.info("cleared %d stale partial file(s), %.1f GB, from %s",
+                        cleared, reclaimed / 1e9, target)
+        complete, reason = await loop.run_in_executor(
+            None, download_state, target)
+        job.update(complete=complete, incomplete_reason=reason,
+                   cleared_partials=cleared, reclaimed_bytes=reclaimed)
+        if not complete:
+            job.update(status="imported", finished_at=time.time())
+            return
+
+        from ainode.models.api_routes import _mirror_after_download
+
+        job["status"] = "mirroring"
+        try:
+            await _mirror_after_download(app, hf_repo, job)
+            job["status"] = "completed"
+        except Exception as exc:                       # pragma: no cover
+            logger.exception("mirroring %s failed", hf_repo)
+            job["status"] = "failed"
+            job["error"] = str(exc)
+        job["finished_at"] = time.time()
+
+    async def _guarded() -> None:
+        try:
+            await _run()
+        except asyncio.CancelledError:
+            job.update(status="cancelled", finished_at=time.time())
+            raise
+        except Exception as exc:                       # pragma: no cover
+            logger.exception("taking %s in failed", hf_repo)
+            job.update(status="failed", error=str(exc),
+                       finished_at=time.time())
+
+    # On the app's loop, not the request's — see _start_mirror.
+    task = asyncio.get_event_loop().create_task(_guarded())
+    _MIRROR_TASKS.add(task)
+    task.add_done_callback(_MIRROR_TASKS.discard)
+    return job_id

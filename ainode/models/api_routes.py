@@ -302,24 +302,32 @@ async def handle_clear_compile_cache(request):
 
     from ainode.core.config import ENGINE_CACHE_DIR
 
-    freed = 0
-    removed = []
-    errors = []
-    for child in sorted(Path(ENGINE_CACHE_DIR).glob("*")):
-        if not child.is_dir():
-            continue
-        try:
-            size = sum(f.stat().st_size for f in child.rglob("*") if f.is_file())
-        except OSError:
-            size = 0
-        try:
-            shutil.rmtree(child)
-        except OSError as exc:
-            errors.append(f"{child.name}: {exc}")
-            continue
-        child.mkdir(parents=True, exist_ok=True)
-        removed.append(child.name)
-        freed += size
+    def _clear():
+        freed = 0
+        removed = []
+        errors = []
+        for child in sorted(Path(ENGINE_CACHE_DIR).glob("*")):
+            if not child.is_dir():
+                continue
+            try:
+                size = sum(f.stat().st_size for f in child.rglob("*")
+                           if f.is_file())
+            except OSError:
+                size = 0
+            try:
+                shutil.rmtree(child)
+            except OSError as exc:
+                errors.append(f"{child.name}: {exc}")
+                continue
+            child.mkdir(parents=True, exist_ok=True)
+            removed.append(child.name)
+            freed += size
+        return freed, removed, errors
+
+    # Off the event loop: tens of thousands of kernel files are not deleted
+    # in the blink the rest of the server can afford to wait.
+    freed, removed, errors = await asyncio.get_event_loop().run_in_executor(
+        None, _clear)
 
     return web.json_response({
         "ok": not errors,
@@ -1025,7 +1033,7 @@ async def replay_instances_on_startup(app) -> None:
     # suffixed container is an orphan the replay is about to relaunch. Remove them
     # first or the relaunch's `--name` collides (Conflict). The primary
     # `ainode-vllm-node-solo` (no suffix) is owned/pre-cleaned by the boot engine.
-    try:
+    def _sweep():
         import subprocess
         ps = subprocess.run(
             ["docker", "ps", "-aq", "--filter", "name=ainode-vllm-node-solo-"],
@@ -1034,6 +1042,11 @@ async def replay_instances_on_startup(app) -> None:
         if ids:
             subprocess.run(["docker", "rm", "-f", *ids],
                            capture_output=True, text=True, timeout=60)
+
+    try:
+        # In an executor: up to 80 s of docker calls, and the node's UI and
+        # proxy are already up and answering while the replay runs.
+        await asyncio.get_event_loop().run_in_executor(None, _sweep)
     except Exception:
         logger.exception("orphan container sweep failed")
 
@@ -1687,12 +1700,18 @@ async def handle_delete_repo(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "path resolution failed"}, status=500)
 
-    try:
-        size_gb = 0.0
+    def _delete():
+        size = 0.0
         for target in targets:
-            size_gb += manager._dir_size_gb(target)
+            size += manager._dir_size_gb(target)
             shutil.rmtree(target)
             _forget_size(manager, target)
+        return size
+
+    try:
+        # A model is a few hundred GB in a few dozen files; measuring and
+        # deleting it in the handler stood the whole server still meanwhile.
+        size_gb = await asyncio.get_event_loop().run_in_executor(None, _delete)
         return web.json_response({
             "status": "deleted",
             "hf_repo": hf_repo,
@@ -2172,10 +2191,13 @@ async def _run_download_repo(manager: "ModelManager", hf_repo: str, job_id: str,
         await _mirror_after_download(app, hf_repo, jobs[job_id])
 
     if discard_partial:
-        try:
+        def _discard():
             if target.exists():
                 shutil.rmtree(target)
             _forget_size(manager, target)
+
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, _discard)
         except Exception:
             pass
 
@@ -2192,7 +2214,8 @@ async def handle_delete_model(request: web.Request) -> web.Response:
         )
 
     try:
-        deleted = manager.delete_model(model_id)
+        deleted = await asyncio.get_event_loop().run_in_executor(
+            None, manager.delete_model, model_id)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
 
