@@ -366,6 +366,32 @@ Object.assign(AINode, {
     return html + '<div class="pw-error" id="pw-step-error"></div>';
   },
 
+  // Form pieces for a card. data-pw-type says how the value is read back:
+  // num (default), text, bool, env (KEY=VALUE lines).
+  _pwSelect(i, field, options, value, rerender) {
+    return '<select class="form-input pw-small" data-pw-field="' + field + '" data-pw-type="text"' +
+      (rerender ? ' data-pw-rerender="1"' : '') + ' data-i="' + i + '">' +
+      options.map(function (o) {
+        return '<option value="' + o[0] + '"' + (String(value) === String(o[0]) ? ' selected' : '') +
+          '>' + o[1] + '</option>';
+      }).join('') + '</select>';
+  },
+
+  _pwInput(i, field, value, attrs, type) {
+    return '<input class="form-input pw-small" data-pw-field="' + field + '" data-pw-type="' +
+      (type || 'num') + '" data-i="' + i + '" value="' + this.esc(value == null ? '' : value) +
+      '" ' + (attrs || '') + '>';
+  },
+
+  // Flags as a command line, quoted where a value needs it (a JSON config).
+  _pwArgsText(args) {
+    if (typeof args === 'string') return args;
+    return (args || []).map(function (a) {
+      a = String(a);
+      return /[\s{}"']/.test(a) ? "'" + a.replace(/'/g, "'\\''") + "'" : a;
+    }).join(' ');
+  },
+
   _pwCard(m, i) {
     var self = this;
     var where = (m.node_ids || []).map(function (id) { return self._pwNodeName(id); }).join(' + ');
@@ -376,20 +402,33 @@ Object.assign(AINode, {
       '</span></div>';
     if (m.kind === 'llm') {
       var mode = m.mode || 'auto';
+      var grow = m.grow === 'sessions' ? 'sessions' : 'context';
+      var growsContext = mode !== 'usage' && grow === 'context';
       h += '<div class="pw-row">' +
         '<label>Cache <select class="form-input pw-small" data-pw-mode="' + i + '">' +
           [['auto', 'share what is left'], ['usage', 'context × sessions'],
            ['size', 'fixed size']].map(function (o) {
             return '<option value="' + o[0] + '"' + (mode === o[0] ? ' selected' : '') + '>' +
               o[1] + '</option>';
-          }).join('') + '</select></label>' +
-        '<label>Context <input class="form-input pw-small" type="number" min="4096" step="4096" ' +
-          'data-pw-field="max_model_len" data-i="' + i + '" value="' + (m.max_model_len || '') +
-          '" placeholder="recipe"></label>';
-      if (mode === 'usage') {
-        h += '<label>Sessions <input class="form-input pw-small" type="number" min="1" step="1" ' +
-          'data-pw-field="sessions" data-i="' + i + '" value="' + (m.sessions || 1) + '"></label>';
-      } else if (mode === 'size') {
+          }).join('') + '</select></label>';
+      if (mode !== 'usage') {
+        // What the room this cache gets turns into: a longer context for the
+        // same sessions, or more sessions at the same context.
+        h += '<label>Grows <span class="pw-help" title="What more room for this cache ' +
+          'becomes: a longer context for the same number of sessions (up to what the ' +
+          'model supports, then more sessions), or more sessions at a fixed context.">?</span>' +
+          this._pwSelect(i, 'grow', [['context', 'longer context'], ['sessions', 'more sessions']],
+                         grow, true) + '</label>';
+      }
+      h += '<label>' + (growsContext ? 'Min. context' : 'Context') + ' ' +
+        this._pwInput(i, 'max_model_len', m.max_model_len,
+                      'type="number" min="4096" step="4096" placeholder="' +
+                      (growsContext ? '32768' : 'recipe') + '"') + '</label>';
+      if (mode === 'usage' || growsContext) {
+        h += '<label>Sessions ' + this._pwInput(i, 'sessions', m.sessions || 1,
+                                                'type="number" min="1" step="1"') + '</label>';
+      }
+      if (mode === 'size') {
         var planned = this._pwPlanned(m.id) || {};
         // Up to what fits: the other automatic models on its nodes shrunk to
         // their minimum — beyond that the plan would not fit at all.
@@ -399,29 +438,64 @@ Object.assign(AINode, {
           (Math.ceil(cap * 10) / 10) + '" step="0.1" data-pw-field="cache_gb" data-i="' + i + '" value="' +
           (m.cache_gb || 0) + '"> <span id="pw-cache-val-' + i + '">' + (m.cache_gb || 0) +
           ' GB</span></label>';
-      } else {
-        h += '<label>Priority <select class="form-input pw-small" data-pw-field="priority" ' +
-          'data-i="' + i + '">' + [1, 2, 3, 4, 5].map(function (p) {
-            return '<option value="' + p + '"' + ((m.priority || 1) === p ? ' selected' : '') +
-              '>' + p + '</option>';
-          }).join('') + '</select></label>';
+      } else if (mode === 'auto') {
+        h += '<label>Priority ' + this._pwSelect(i, 'priority',
+          [[1, '1'], [2, '2'], [3, '3'], [4, '4'], [5, '5']], m.priority || 1) + '</label>';
       }
-      h += '<label>KV cache <select class="form-input pw-small" data-pw-field="kv_cache_dtype" ' +
-        'data-i="' + i + '">' + [['', 'default'], ['auto', 'model dtype'], ['fp8', 'fp8'],
-                                 ['fp8_ds_mla', 'fp8_ds_mla']].map(function (o) {
-          return '<option value="' + o[0] + '"' + ((m.kv_cache_dtype || '') === o[0] ? ' selected' : '') +
-            '>' + o[1] + '</option>';
-        }).join('') + '</select></label></div>';
-      if ((m.extra_vllm_args || []).length) {
-        h += '<div class="pw-kind">Flags: ' + this.esc(m.extra_vllm_args.join(' ')) + '</div>';
-      }
+      h += '<label>KV cache ' + this._pwSelect(i, 'kv_cache_dtype',
+        [['', 'default'], ['auto', 'model dtype'], ['fp8', 'fp8'], ['fp8_ds_mla', 'fp8_ds_mla']],
+        m.kv_cache_dtype || '') + '</label></div>';
+
+      h += '<details class="pw-more"' + (m._open ? ' open' : '') + ' data-i="' + i + '">' +
+        '<summary>More settings</summary><div class="pw-row">' +
+        '<label>Tool calling ' + this._pwSelect(i, 'tool_calling', [
+          ['', 'automatic'], ['off', 'off'], ['qwen3_coder', 'qwen3_coder'],
+          ['qwen3_xml', 'qwen3_xml'], ['deepseek_v4', 'deepseek_v4'], ['glm47', 'glm47'],
+          ['minimax_m2', 'minimax_m2'], ['gemma4', 'gemma4'], ['openai', 'openai'],
+          ['hermes', 'hermes'], ['mistral', 'mistral'], ['llama3_json', 'llama3_json']],
+          m.tool_calling || '') + '</label>' +
+        '<label>API name(s) ' + this._pwInput(i, 'served_model_name',
+          Array.isArray(m.served_model_name) ? m.served_model_name.join(', ') : (m.served_model_name || ''),
+          'placeholder="the repo id" style="width:200px"', 'text') + '</label>' +
+        '<label>Quantization ' + this._pwInput(i, 'quantization', m.quantization || '',
+          'placeholder="from the checkpoint" style="width:150px"', 'text') + '</label>' +
+        '<label class="pw-check"><input type="checkbox" data-pw-field="trust_remote_code" ' +
+          'data-pw-type="bool" data-i="' + i + '"' + (m.trust_remote_code ? ' checked' : '') +
+          '> trust remote code</label></div>' +
+        '<div class="pw-row"><label class="pw-wide">vLLM flags ' +
+          this._pwInput(i, 'extra_vllm_args', this._pwArgsText(m.extra_vllm_args),
+            'placeholder="--enable-prefix-caching …  (the recipe\'s flags are added at launch)"', 'text') +
+        '</label></div>' +
+        '<div class="pw-row"><label class="pw-wide">Environment ' +
+          '<textarea class="form-input pw-small" rows="2" data-pw-field="extra_env" ' +
+          'data-pw-type="env" data-i="' + i + '" placeholder="KEY=value, one per line">' +
+          this.esc(Object.keys(m.extra_env || {}).map(function (k) {
+            return k + '=' + m.extra_env[k];
+          }).join('\n')) + '</textarea></label></div>' +
+        '<div class="pw-kind">Checked against the engine image at launch: an unknown flag stops ' +
+        'the launch before anything is started.</div></details>';
     } else if (m.kind === 'image') {
-      h += '<div class="pw-row"><label>Largest image <select class="form-input pw-small" ' +
-        'data-pw-field="max_image_size" data-i="' + i + '">' +
-        [768, 1024, 1536, 2048].map(function (s) {
-          return '<option value="' + s + '"' + ((m.max_image_size || 1536) === s ? ' selected' : '') +
-            '>' + s + '×' + s + '</option>';
-        }).join('') + '</select></label></div>';
+      h += '<div class="pw-row">' +
+        '<label>Largest image ' + this._pwSelect(i, 'max_image_size',
+          [[768, '768×768'], [1024, '1024×1024'], [1536, '1536×1536'], [2048, '2048×2048']],
+          m.max_image_size || 1536) + '</label>' +
+        '<label>Default size ' + this._pwInput(i, 'image_size', m.image_size || '',
+          'placeholder="1024x1024" style="width:110px"', 'text') + '</label>' +
+        '<label>Default steps ' + this._pwInput(i, 'image_steps', m.image_steps,
+          'type="number" min="1" max="500" placeholder="20"') + '</label>' +
+        '<label>Guidance ' + this._pwInput(i, 'image_guidance', m.image_guidance,
+          'type="number" min="0" max="30" step="0.5" placeholder="model default"') + '</label>' +
+        '<label>Precision ' + this._pwSelect(i, 'image_dtype',
+          [['', 'bfloat16 (default)'], ['float16', 'float16'], ['float32', 'float32']],
+          m.image_dtype || '') + '</label></div>' +
+        '<div class="pw-kind">The largest image sets the memory it holds; size, steps and ' +
+        'guidance are what a request gets when it names none.</div>' +
+        '<details class="pw-more"><summary>More settings</summary><div class="pw-row">' +
+        '<label>API name(s) ' + this._pwInput(i, 'served_model_name',
+          Array.isArray(m.served_model_name) ? m.served_model_name.join(', ') : (m.served_model_name || ''),
+          'placeholder="the repo id" style="width:200px"', 'text') + '</label></div></details>';
+    } else {
+      h += '<div class="pw-kind">Runs inside AINode on its node; nothing to set but where.</div>';
     }
     h += '<div class="pw-result" id="pw-res-' + i + '"></div></div>';
     return h;
@@ -606,20 +680,48 @@ Object.assign(AINode, {
       }
       self._pwSchedulePlan();
     });
-    on('[data-pw-field]', 'input', function (e) {
-      var i = parseInt(e.target.getAttribute('data-i'), 10);
-      var field = e.target.getAttribute('data-pw-field');
+    var readField = function (e) {
+      var el = e.target;
+      var i = parseInt(el.getAttribute('data-i'), 10);
+      var field = el.getAttribute('data-pw-field');
+      var type = el.getAttribute('data-pw-type') || 'num';
       var m = d.models[i];
-      var raw = e.target.value;
-      if (field === 'kv_cache_dtype') m[field] = raw;
-      else if (raw === '') delete m[field];
-      else m[field] = parseFloat(raw);
+      var raw = el.value;
+      if (type === 'bool') {
+        m[field] = el.checked;
+      } else if (type === 'env') {
+        var env = {};
+        String(raw).split('\n').forEach(function (line) {
+          var at = line.indexOf('=');
+          if (at > 0) env[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+        });
+        m[field] = env;
+      } else if (raw === '') {
+        delete m[field];
+      } else if (type === 'text') {
+        // A select of numbers (priority, largest image) is sent as numbers.
+        m[field] = /^\d+(\.\d+)?$/.test(raw) && field !== 'image_size' ? parseFloat(raw) : raw;
+      } else {
+        m[field] = parseFloat(raw);
+      }
       if (field === 'cache_gb') {
         var label = document.getElementById('pw-cache-val-' + i);
         if (label) label.textContent = raw + ' GB';
       }
+      if (el.getAttribute('data-pw-rerender')) {
+        // What the card offers depends on it (grow: context or sessions).
+        var card = document.getElementById('pw-card-' + i);
+        var more = card && card.querySelector('details.pw-more');
+        m._open = !!(more && more.open);
+        if (card) {
+          card.outerHTML = self._pwCard(m, i);
+          self._pwBind(document.getElementById('pw-card-' + i));
+        }
+      }
       self._pwSchedulePlan();
-    });
+    };
+    on('[data-pw-field]', 'input', readField);
+    on('[data-pw-field][data-pw-type="bool"]', 'change', readField);
   },
 
   // -- navigation --------------------------------------------------------------

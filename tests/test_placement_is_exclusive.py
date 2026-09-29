@@ -136,8 +136,9 @@ class TestAnLLMEntryGoesToItsNode:
         # Not append_solo_instance, which starts it on whichever node applies
         # the profile — the head, for a captured cluster profile.
         assert "handle_cluster_load" in source
+        # The target is resolved before the local load route is reached.
         assert source.index("_entry_target_node") < source.index(
-            "from ainode.models.api_routes import append_solo_instance")
+            "from ainode.models.api_routes import handle_model_load")
 
 
 class _Manager:

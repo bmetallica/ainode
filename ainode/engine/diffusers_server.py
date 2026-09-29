@@ -196,6 +196,8 @@ def generate(body: dict) -> dict:
         kwargs["negative_prompt"] = body["negative_prompt"]
     if body.get("guidance_scale") is not None:
         kwargs["guidance_scale"] = float(body["guidance_scale"])
+    elif STATE.get("default_guidance"):
+        kwargs["guidance_scale"] = float(STATE["default_guidance"])
     seed = body.get("seed")
     if seed is not None:
         import torch
@@ -307,11 +309,14 @@ def main() -> None:
                         help="longest square edge this instance will accept")
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--size", default="1024x1024")
+    # Guidance for a request that names none; 0 leaves the pipeline's default.
+    parser.add_argument("--guidance", type=float, default=0.0)
     args = parser.parse_args()
 
     STATE["model"] = args.served_model_name or args.model_path
     STATE["max_pixels"] = max(0, args.max_image_size) ** 2
     STATE["default_steps"] = args.steps
+    STATE["default_guidance"] = max(0.0, float(args.guidance or 0))
     STATE["default_size"] = args.size
 
     # The port answers before the weights are in, so the load is visible as a

@@ -99,10 +99,11 @@ def launches(monkeypatch):
     """Record what would have been launched, solo and distributed."""
     calls = {"solo": [], "distributed": []}
 
-    def _solo(app, model, gmu=None, *, overrides=None, persist=True):
+    def _solo(app, model, gmu=None, *, overrides=None, persist=True, **_):
         calls["solo"].append({"model": model, "gmu": gmu,
                               "overrides": dict(overrides or {})})
-        return {"ok": True, "model": model, "api_port": 8000 + len(calls["solo"])}
+        return {"ok": True, "model": model, "api_port": 8000 + len(calls["solo"]),
+                "instance_id": "head:" + model, "stacked": False}
 
     async def _distributed(request):
         body = await request.json()
@@ -196,11 +197,12 @@ class TestFailureHandling:
     def test_one_failing_entry_does_not_stop_the_others(self, app, monkeypatch):
         attempted = []
 
-        def _solo(app, model, gmu=None, *, overrides=None, persist=True):
+        def _solo(app, model, gmu=None, *, overrides=None, persist=True, **_):
             attempted.append(model)
             if model == "bad/model":
                 return {"ok": False, "error": "no such model"}
-            return {"ok": True, "api_port": 8000}
+            return {"ok": True, "api_port": 8000, "model": model,
+                    "instance_id": "head:" + model, "stacked": False}
 
         monkeypatch.setattr(api_routes, "append_solo_instance", _solo)
         report = _apply(app, Profile(name="p", entries=[

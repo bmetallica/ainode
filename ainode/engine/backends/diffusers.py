@@ -145,6 +145,9 @@ class DiffusersBackend(EngineBackend):
                 "--max-image-size", str(_max_image_size(self.config)),
                 "--steps", str(_int_option(self.config, "image_steps", 20)),
                 "--size", _str_option(self.config, "image_size", "1024x1024")]
+        guidance = float(getattr(self.config, "image_guidance", 0) or 0)
+        if guidance > 0:
+            cmd += ["--guidance", str(guidance)]
 
         logger.info("Starting the image engine: %s", " ".join(cmd))
         self._phase.reset()

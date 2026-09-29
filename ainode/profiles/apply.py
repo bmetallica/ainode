@@ -169,25 +169,27 @@ async def _start_llm_entry(app, entry: ProfileEntry) -> ApplyResult:
         return ApplyResult(entry.model, "launch_failed", False,
                            _response_error(response))
 
-    from ainode.models.api_routes import append_solo_instance, parse_load_overrides
+    # Through the load route, like a click in the dashboard and like a peer's
+    # own entries (handle_cluster_load lands there too): admission, the
+    # catalog recipe, the engine detected from the checkpoint, the tool-call
+    # parser, the flags the architecture needs. Calling append_solo_instance
+    # directly skipped all of it — a captured profile carried those flags in
+    # its entries and hid it, a profile planned in the wizard does not, and
+    # its models started on the head without their recipe.
+    from ainode.models.api_routes import handle_model_load
 
-    overrides, err = parse_load_overrides(body)
-    if err is not None:
-        return ApplyResult(entry.model, "rejected", False,
-                           _response_error(err))
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: append_solo_instance(
-            app, entry.model, entry.gpu_memory_utilization,
-            overrides=overrides, persist=True,
-        ),
-    )
-    if not isinstance(result, dict) or not result.get("ok"):
-        error = (result or {}).get("error", "launch failed")
-        return ApplyResult(entry.model, "launch_failed", False, str(error))
+    response = await handle_model_load(_AppRequest(app, body))
+    import json as _json
+
+    try:
+        payload = _json.loads(response.body)
+    except Exception:
+        payload = {}
+    if response.status >= 400:
+        return ApplyResult(entry.model, "launch_failed", False,
+                           str(payload.get("error") or f"HTTP {response.status}"))
     return ApplyResult(entry.model, "launched", True,
-                       api_port=result.get("api_port"))
+                       api_port=payload.get("api_port"))
 
 
 def _response_error(response) -> str:

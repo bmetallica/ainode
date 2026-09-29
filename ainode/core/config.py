@@ -115,6 +115,8 @@ class NodeConfig:
     image_steps: int = 20
     image_size: str = "1024x1024"
     image_dtype: str = "bfloat16"
+    # Guidance a request gets when it sends none; 0 = the pipeline's default.
+    image_guidance: float = 0.0
     # --- updating from source -----------------------------------------------
     # This cluster builds on the head rather than pulling a published image:
     # a fork's own main, a git pull, scripts/update-cluster.sh. All three need

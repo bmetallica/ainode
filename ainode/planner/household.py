@@ -306,14 +306,26 @@ def _resolve_llm(app, spec: dict, item: Item, nodes: Dict[str, HouseholdNode],
     ceiling = int(facts.max_position_embeddings or
                   getattr(recipe, "context_length", 0) or 0)
     recipe_len = _flag(getattr(recipe, "extra_vllm_args", None), "--max-model-len")
+    grows_context = str(spec.get("grow") or "") != "sessions" and item.mode != "usage"
     window = int(spec.get("max_model_len") or 0) or int(recipe_len or 0) \
         or min(ceiling or 131072, 131072)
+    if grows_context and not spec.get("max_model_len"):
+        # A least context, not a target: it grows with the cache. Without one
+        # typed in, a modest floor, so a tight node is not refused over a
+        # window nobody asked for.
+        window = min(window, 32768)
     if ceiling and window > ceiling:
         info["warnings"].append(f"{window:,} exceeds the {ceiling:,} this checkpoint "
                                 f"was trained for; planned at {ceiling:,}.")
         window = ceiling
     window = max(LEN_GRANULARITY, window)
     info["max_model_len"] = window
+    info["ceiling"] = ceiling or window
+    # "context": an automatic or sized cache makes the context longer, for a
+    # fixed number of sessions — what an operator shrinking the model beside
+    # this one expects to see. "sessions": the context stays, more requests
+    # fit. The context field is then the least it may be.
+    info["grow"] = "sessions" if str(spec.get("grow") or "") == "sessions" else "context"
     per_token_node_gb = bpt / count / 1e9
     gmu_cap = min(MAX_GMU, float(getattr(recipe, "recommended_gmu", 0) or 0) or MAX_GMU)
     if tightest:
@@ -322,6 +334,11 @@ def _resolve_llm(app, spec: dict, item: Item, nodes: Dict[str, HouseholdNode],
 
     sessions = max(1, int(spec.get("sessions") or 1))
     one_request = window * per_token_node_gb * BLOCK_MARGIN
+    if info["grow"] == "context" and item.mode != "usage":
+        # The sessions are fixed, so the least it may have is all of them at
+        # the least context.
+        one_request *= sessions
+    info["sessions_wanted"] = sessions
     if item.mode == "usage":
         item.pinned_gb = window * sessions * per_token_node_gb * BLOCK_MARGIN
         info["sessions"] = sessions
@@ -390,10 +407,15 @@ def _entry_for(spec: dict, item: Item, info: dict) -> Optional[dict]:
     if item.kind == "embedding":
         return {"model": item.model, "kind": "embedding", "node_ids": list(item.node_ids)}
     if item.kind == "image":
-        return {"model": item.model, "kind": "image", "node_ids": list(item.node_ids),
-                "engine_backend": "diffusers",
-                "max_image_size": info.get("max_image_size")}
-    args = _without_flag(spec.get("extra_vllm_args") or [], "--max-num-seqs")
+        entry = {"model": item.model, "kind": "image", "node_ids": list(item.node_ids),
+                 "engine_backend": "diffusers",
+                 "max_image_size": info.get("max_image_size")}
+        for field in ("image_steps", "image_size", "image_dtype", "image_guidance"):
+            if spec.get(field) not in (None, ""):
+                entry[field] = spec[field]
+        _served_name(spec, entry)
+        return entry
+    args = _without_flag(_args(spec.get("extra_vllm_args")), "--max-num-seqs")
     if info.get("max_num_seqs"):
         args += ["--max-num-seqs", str(info["max_num_seqs"])]
     entry = {"model": item.model, "kind": "llm", "node_ids": list(item.node_ids),
@@ -405,7 +427,40 @@ def _entry_for(spec: dict, item: Item, info: dict) -> Optional[dict]:
     # would switch off serve_args' vision-model safety rule (see capture).
     if spec.get("kv_cache_dtype"):
         entry["kv_cache_dtype"] = str(spec["kv_cache_dtype"])
+    # What the wizard lets an operator set beyond the memory, passed through
+    # as the load route knows them (models/api_routes.parse_load_overrides).
+    if spec.get("quantization"):
+        entry["quantization"] = str(spec["quantization"])
+    if spec.get("trust_remote_code") is not None:
+        entry["trust_remote_code"] = bool(spec["trust_remote_code"])
+    if spec.get("tool_calling"):
+        entry["tool_calling"] = str(spec["tool_calling"])
+    if isinstance(spec.get("extra_env"), dict) and spec["extra_env"]:
+        entry["extra_env"] = {str(k): str(v) for k, v in spec["extra_env"].items()}
+    _served_name(spec, entry)
     return entry
+
+
+def _args(raw) -> List[str]:
+    """Extra flags as a list, from a list or the command line the wizard's
+    text field holds (quotes kept, so a JSON argument survives)."""
+    if isinstance(raw, str):
+        import shlex
+
+        try:
+            return shlex.split(raw)
+        except ValueError:
+            return raw.split()
+    return [str(a) for a in (raw or [])]
+
+
+def _served_name(spec: dict, entry: dict) -> None:
+    names = spec.get("served_model_name")
+    if isinstance(names, str):
+        names = [n.strip() for n in names.split(",")]
+    names = [str(n) for n in (names or []) if str(n).strip()]
+    if names:
+        entry["served_model_name"] = names
 
 
 def plan_household(app, draft: dict) -> dict:
@@ -472,7 +527,7 @@ def plan_household(app, draft: dict) -> dict:
                "priority": item.priority, "errors": list(item.errors),
                "warnings": list(info.get("warnings") or []),
                "fixed_per_node_gb": round(item.fixed_gb, 1)}
-        for key in ("strategy", "launched_by", "weights_gb", "weights_per_node_gb", "weights_source",
+        for key in ("strategy", "launched_by", "grow", "weights_gb", "weights_per_node_gb", "weights_source",
                     "overhead_gb", "kv_source", "bytes_per_token", "kv_cache_dtype",
                     "max_image_size"):
             if key in info:
@@ -483,6 +538,26 @@ def plan_household(app, draft: dict) -> dict:
             window = info["max_model_len"]
             if item.mode == "usage":
                 sessions = info["sessions"]
+            elif info.get("grow") == "context":
+                from ainode.planner.compute import _round_len
+
+                sessions = info.get("sessions_wanted") or 1
+                longest = _round_len(tokens // sessions) if tokens else 0
+                if longest >= info["ceiling"]:
+                    # As long as the checkpoint allows; what is left over is
+                    # more sessions at that length.
+                    window = info["ceiling"]
+                    sessions = max(sessions, tokens // window)
+                elif longest >= window:
+                    window = longest
+                else:
+                    sessions = 0
+                if sessions < 1:
+                    item.errors.append(
+                        f"The cache holds {tokens:,} tokens — less than one "
+                        f"request of {window:,}. Shorten the context, or take "
+                        f"room from the other models on this node.")
+                    out["errors"] = list(item.errors)
             else:
                 sessions = tokens // window if window else 0
                 if sessions < 1:
@@ -491,6 +566,7 @@ def plan_household(app, draft: dict) -> dict:
                         f"request of {window:,}. Shorten the context, or take "
                         f"room from the other models on this node.")
                     out["errors"] = list(item.errors)
+            info["max_model_len"] = window
             reserve = item.fixed_gb - 0.01 * max(
                 (by_id[n].total_gb for n in item.node_ids), default=0) + item.cache_gb
             tight = info.get("tightest_total_gb") or 0

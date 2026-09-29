@@ -89,6 +89,13 @@ class ProfileEntry:
     max_image_size: Optional[int] = None
     image_steps: Optional[int] = None
     image_size: str = ""
+    image_dtype: str = ""
+    #: Classifier-free guidance a request gets when it names none; None is
+    #: the pipeline's own default.
+    image_guidance: Optional[float] = None
+    #: "auto" (the parser for the model's family), "off", or a parser name.
+    #: Empty is auto — what a load has always done.
+    tool_calling: str = ""
     note: str = ""
 
     def __post_init__(self) -> None:
@@ -171,6 +178,12 @@ class ProfileEntry:
             body["image_steps"] = self.image_steps
         if self.image_size:
             body["image_size"] = self.image_size
+        if self.image_dtype:
+            body["image_dtype"] = self.image_dtype
+        if self.image_guidance is not None:
+            body["image_guidance"] = self.image_guidance
+        if self.tool_calling:
+            body["tool_calling"] = self.tool_calling
         return body
 
     def to_dict(self) -> dict:

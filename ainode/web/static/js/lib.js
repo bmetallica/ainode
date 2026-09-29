@@ -237,9 +237,21 @@
       var kind = e.kind || 'llm';
       var m = { id: 'm' + (i + 1), model: e.model, kind: kind,
                 node_ids: (e.node_ids || []).slice() };
+      if ((e.served_model_name || []).length) m.served_model_name = e.served_model_name.slice();
       if (kind === 'image') {
         m.max_image_size = e.max_image_size || 1536;
+        ['image_steps', 'image_size', 'image_dtype', 'image_guidance'].forEach(function (f) {
+          if (e[f] !== undefined && e[f] !== null && e[f] !== '') m[f] = e[f];
+        });
       } else if (kind === 'llm') {
+        if (e.tool_calling) m.tool_calling = e.tool_calling;
+        if (e.quantization) m.quantization = e.quantization;
+        if (e.trust_remote_code !== undefined && e.trust_remote_code !== null) {
+          m.trust_remote_code = !!e.trust_remote_code;
+        }
+        if (e.extra_env && Object.keys(e.extra_env).length) {
+          m.extra_env = Object.assign({}, e.extra_env);
+        }
         var seqs = parseInt(_flagValue(e.extra_vllm_args, '--max-num-seqs') || '0', 10);
         m.strategy = e.strategy || '';
         m.kv_cache_dtype = e.kv_cache_dtype || '';
