@@ -2177,6 +2177,14 @@ class ModelManager:
         """Drop a cached size. Called after a download or a delete, where the
         directory's own mtime may not move — a file rewritten inside an
         existing tree leaves the parent untouched on some filesystems."""
+        # The planner keeps its own cache of the weight files' size.
+        try:
+            from ainode.planner.facts import forget_weight_bytes
+
+            forget_weight_bytes(path)
+        except Exception:
+            logger.debug("could not drop the planner's size cache",
+                         exc_info=True)
         if path is None:
             cls._SIZE_CACHE.clear()
             return
