@@ -79,8 +79,13 @@ class TestThePlanUsesTheDtypeTheLaunchWould:
 
         from ainode.planner import api_routes
 
-        source = inspect.getsource(api_routes.handle_plan)
-        assert 'getattr(request.app.get("config"), "kv_cache_dtype"' in source
+        from ainode.core.config import NodeConfig
+
+        assert "planning_kv_dtype" in inspect.getsource(api_routes.handle_plan)
+        # Behaviour, not text: nothing asked, no recipe → the node's default.
+        app = {"config": NodeConfig(kv_cache_dtype="fp8")}
+        assert api_routes.planning_kv_dtype(app, None, "") == "fp8"
+        assert api_routes.planning_kv_dtype(app, None, "auto") == "auto"
 
     def test_the_node_default_really_is_fp8(self):
         # The form promises this in words. If it ever changes, the promise and

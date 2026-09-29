@@ -23,6 +23,26 @@ __all__ = ["register_planner_routes", "node_budgets"]
 
 def register_planner_routes(app: web.Application) -> None:
     app.router.add_get("/api/planner", handle_plan)
+    app.router.add_post("/api/planner/household", handle_household)
+
+
+async def handle_household(request: web.Request) -> web.Response:
+    """POST /api/planner/household — plan a profile wizard draft
+    (planner/household.py). Read-only: computes, launches nothing."""
+    import asyncio
+
+    from ainode.planner.household import plan_household
+
+    try:
+        draft = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    if not isinstance(draft, dict):
+        return web.json_response({"error": "a draft is an object"}, status=400)
+    # In an executor: resolving reads every checkpoint's config and sizes.
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, plan_household, request.app, draft)
+    return web.json_response(result)
 
 
 def node_budgets(app, node_ids=None) -> list:
@@ -98,9 +118,19 @@ def budgets_with_guard_reserve(app, node_ids=None) -> list:
     One number now: what the guard will not let go below is what the planner
     will not plan into.
     """
+    budgets = node_budgets(app, node_ids)
+    for budget in budgets:
+        budget.free_gb = max(0.0, budget.free_gb - held_back_gb(app, budget.total_gb))
+    return budgets
+
+
+def held_back_gb(app, total_gb: float) -> float:
+    """What a plan keeps clear on a node of ``total_gb``, above the planner's
+    own SYSTEM_RESERVE_GB: the memory guard's line, and room to stand back
+    from it. Shared by the launch planner and the profile wizard.
+    """
     from ainode.planner.compute import SYSTEM_RESERVE_GB, plan_headroom_gb
 
-    budgets = node_budgets(app, node_ids)
     guard = app.get("memory_guard")
     # The reading's warn line, not the configured one: it carries the cap
     # against the machine's total memory, and the planner has to hold back
@@ -112,14 +142,11 @@ def budgets_with_guard_reserve(app, node_ids=None) -> list:
     # warn_gb comes from the guard, which works in GiB off /proc/meminfo.
     # SYSTEM_RESERVE_GB and everything else here is decimal.
     extra = max(0.0, gb_from_gib(warn_gb) - SYSTEM_RESERVE_GB)
-    for budget in budgets:
-        # The guard's line, and then room to stand back from it. Planning up
-        # to the line puts a launch that went exactly to plan one page-cache
-        # fluctuation away from being killed — which is how two idle nodes
-        # filled up on a model that fitted on paper.
-        held_back = extra + plan_headroom_gb(budget.total_gb)
-        budget.free_gb = max(0.0, budget.free_gb - held_back)
-    return budgets
+    # The guard's line, and then room to stand back from it. Planning up to
+    # the line puts a launch that went exactly to plan one page-cache
+    # fluctuation away from being killed — which is how two idle nodes filled
+    # up on a model that fitted on paper.
+    return extra + plan_headroom_gb(total_gb)
 
 
 def _own_memory(app):
@@ -439,33 +466,8 @@ async def handle_plan(request: web.Request) -> web.Response:
         payload["from_catalog"] = recipe is not None
         return web.json_response(payload)
 
-    kv_dtype = request.query.get("kv_cache_dtype") or ""
-    if not kv_dtype:
-        # What the LAUNCH would use if nobody said otherwise — NodeConfig's
-        # default is fp8, and the launch form says so in words ("Default (fp8
-        # — required for long context on GB10)"). This defaulted to "auto"
-        # instead, which is the model's own dtype, so every plan for a model
-        # with no recipe was computed at twice the real cost per token. On
-        # Qwen3-Coder-Next that is 24.0 KiB against 12.0, and a panel
-        # reporting 165,774 tokens where the launch would hold 331,548.
-        #
-        # The recipe branch below was added for exactly this reason and only
-        # covered curated models. The default is the other half of it.
-        kv_dtype = str(getattr(request.app.get("config"), "kv_cache_dtype",
-                               "") or "")
-    if not kv_dtype and recipe is not None:
-        # The recipe's own flags are part of the plan: a model whose proven
-        # configuration is fp8 should be planned with an fp8-sized cache, or
-        # the planner and the launch disagree by a factor of two.
-        args = list(getattr(recipe, "extra_vllm_args", None) or [])
-        if "--kv-cache-dtype" in args:
-            index = args.index("--kv-cache-dtype")
-            if index + 1 < len(args):
-                kv_dtype = args[index + 1]
-
-    # What the engine said its weights took, if it has ever said. Passed in
-    # rather than looked up inside the planner: plan_for is arithmetic on its
-    # arguments and has no store, which is what makes it testable.
+    kv_dtype = planning_kv_dtype(request.app, recipe,
+                                 request.query.get("kv_cache_dtype") or "")
     measured_weights, measured_ranks = _measured_weights(request.app, model)
     moe_factor, moe_samples = _moe_weight_factor(request.app, model)
 
@@ -489,9 +491,43 @@ async def handle_plan(request: web.Request) -> web.Response:
         measured_bytes_per_token=_measured_bytes_per_token(
             request.app, model, kv_dtype or "auto"),
     )
+    return _plan_response(request.app, model, recipe, facts, nodes, plan, kv_dtype)
 
+
+def planning_kv_dtype(app, recipe, requested: str = "") -> str:
+    """The KV-cache dtype a launch of this model would use, for planning.
+
+    Shared with the profile wizard's household planner (planner/household.py).
+    """
+    kv_dtype = str(requested or "")
+    if not kv_dtype:
+        # What the LAUNCH would use if nobody said otherwise — NodeConfig's
+        # default is fp8, and the launch form says so in words ("Default (fp8
+        # — required for long context on GB10)"). This defaulted to "auto"
+        # instead, which is the model's own dtype, so every plan for a model
+        # with no recipe was computed at twice the real cost per token. On
+        # Qwen3-Coder-Next that is 24.0 KiB against 12.0, and a panel
+        # reporting 165,774 tokens where the launch would hold 331,548.
+        #
+        # The recipe branch below was added for exactly this reason and only
+        # covered curated models. The default is the other half of it.
+        kv_dtype = str(getattr(app.get("config"), "kv_cache_dtype",
+                               "") or "")
+    if not kv_dtype and recipe is not None:
+        # The recipe's own flags are part of the plan: a model whose proven
+        # configuration is fp8 should be planned with an fp8-sized cache, or
+        # the planner and the launch disagree by a factor of two.
+        args = list(getattr(recipe, "extra_vllm_args", None) or [])
+        if "--kv-cache-dtype" in args:
+            index = args.index("--kv-cache-dtype")
+            if index + 1 < len(args):
+                kv_dtype = args[index + 1]
+    return kv_dtype
+
+
+def _plan_response(app, model, recipe, facts, nodes, plan, kv_dtype):
     payload = plan.to_dict()
-    _attach_measurement(request.app, model, payload)
+    _attach_measurement(app, model, payload)
     payload["kv_cache_dtype"] = kv_dtype or "auto"
     payload["nodes"] = [{"node_id": n.node_id, "name": n.name,
                          "total_gb": n.total_gb, "free_gb": n.free_gb,
