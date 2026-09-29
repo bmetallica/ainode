@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AINode — Sign in</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/img/favicon-32.png">
+  <link rel="shortcut icon" href="/static/img/favicon.ico">
+  <style>
+    .login-shell {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background:
+        radial-gradient(ellipse 60% 45% at 50% 0%, rgba(118, 185, 0, 0.10), transparent 70%),
+        var(--bg-primary);
+    }
+    .login-card {
+      width: 100%;
+      max-width: 380px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow), 0 0 0 1px rgba(118, 185, 0, 0.04);
+      padding: 32px 28px 26px;
+    }
+    .login-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 26px;
+    }
+    .login-brand .logo-img { height: 36px; }
+    .login-title {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      margin-bottom: 18px;
+    }
+    .login-field { margin-bottom: 14px; }
+    .login-field .form-label {
+      display: block;
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+      letter-spacing: 0.3px;
+    }
+    .login-field .form-input { width: 100%; }
+    .login-submit {
+      width: 100%;
+      margin-top: 8px;
+      padding: 10px 14px;
+      font-weight: 600;
+    }
+    .login-error {
+      display: none;
+      margin-top: 14px;
+      padding: 9px 11px;
+      border-radius: var(--radius-sm);
+      background: var(--red-glow);
+      border: 1px solid rgba(255, 51, 51, 0.35);
+      color: #ff8a8a;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .login-error.visible { display: block; }
+    .login-foot {
+      margin-top: 22px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .login-foot a { color: var(--text-muted); text-decoration: none; }
+    .login-foot a:hover { color: var(--nvidia-green); }
+  </style>
+</head>
+<body>
+  <div class="login-shell">
+    <form class="login-card" id="login-form" autocomplete="on" novalidate>
+      <div class="login-brand">
+        <img src="/static/img/logo.png" alt="AINode" class="logo-img">
+        <span class="logo-wordmark">
+          <span class="logo-wordmark-ai">AI</span><span class="logo-wordmark-node">Node</span><span class="logo-wordmark-tld">.dev</span>
+        </span>
+      </div>
+      <div class="login-title">Command Center · Sign in</div>
+
+      <div class="login-field">
+        <label class="form-label" for="login-user">User</label>
+        <input class="form-input" id="login-user" name="username" type="text"
+               autocomplete="username" autocapitalize="off" spellcheck="false"
+               value="admin" required>
+      </div>
+      <div class="login-field">
+        <label class="form-label" for="login-password">Password</label>
+        <input class="form-input" id="login-password" name="password"
+               type="password" autocomplete="current-password" required autofocus>
+      </div>
+
+      <button class="btn btn-primary login-submit" id="login-submit" type="submit">
+        Sign in
+      </button>
+      <div class="login-error" id="login-error" role="alert"></div>
+
+      <div class="login-foot">
+        <span>This node's web UI</span>
+        <span>Powered by <a href="https://argentos.ai" target="_blank" rel="noopener">argentos.ai</a></span>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    (function () {
+      var form = document.getElementById('login-form');
+      var button = document.getElementById('login-submit');
+      var error = document.getElementById('login-error');
+      var next = new URLSearchParams(location.search).get('next') || '/';
+
+      function show(message) {
+        error.textContent = message;
+        error.classList.add('visible');
+      }
+
+      form.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        error.classList.remove('visible');
+        button.disabled = true;
+        button.textContent = 'Signing in…';
+        try {
+          var response = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({
+              user: document.getElementById('login-user').value,
+              password: document.getElementById('login-password').value,
+              next: next,
+            }),
+          });
+          var data = await response.json().catch(function () { return {}; });
+          if (!response.ok) {
+            show(data.error || 'Sign-in failed.');
+            return;
+          }
+          location.replace(data.next || '/');
+        } catch (err) {
+          show('This node did not answer. Is AINode running?');
+        } finally {
+          button.disabled = false;
+          button.textContent = 'Sign in';
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

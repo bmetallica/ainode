@@ -566,8 +566,14 @@ def _peer_launch_specs(node) -> List[dict]:
     if not host:
         return []
     url = f"http://{host}:{getattr(node, 'web_port', 3000) or 3000}/api/instances/launch-config"
+    from ainode.auth.cluster_key import cluster_headers
+
     try:
-        with urllib.request.urlopen(url, timeout=_LAUNCH_CONFIG_TIMEOUT) as response:
+        # A peer's /api/* is behind the web sign-in; the cluster key is how one
+        # node asks another. See auth/cluster_key.py.
+        with urllib.request.urlopen(
+                urllib.request.Request(url, headers=cluster_headers()),
+                timeout=_LAUNCH_CONFIG_TIMEOUT) as response:
             payload = json.loads(response.read().decode())
     except Exception:
         # An older build has no such route, and a node that is down answers

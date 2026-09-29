@@ -101,6 +101,34 @@ def _gpu_info_table(gpu):
 
 
 
+def cmd_cluster_key(args):
+    """The secret the nodes present to each other's /api/*.
+
+    scripts/update-cluster.sh copies the head's to every peer; this is the way
+    to do it by hand. See ainode/auth/cluster_key.py.
+    """
+    import os
+
+    from ainode.auth.cluster_key import cluster_key, key_path
+
+    path = key_path()
+    if args.value:
+        value = args.value.strip()
+        if len(value) < 16:
+            console.print("[red]A cluster key should be at least 16 characters.[/red]")
+            return 1
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            path.unlink()
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as sink:
+            sink.write(value + "\n")
+        console.print(f"cluster key written to {path}")
+        return 0
+    print(cluster_key())
+    return 0
+
+
 def cmd_start(args):
     """Start AINode."""
     from ainode.core.gpu import detect_gpu
@@ -755,6 +783,13 @@ def main():
              "solo = standalone (default)",
     )
     role_parser.set_defaults(func=cmd_role)
+
+    ck_parser = subparsers.add_parser(
+        "cluster-key",
+        help="Print this node's cluster key, or set it (--set KEY)")
+    ck_parser.add_argument("--set", dest="value", default=None,
+                           help="write this key instead of printing the current one")
+    ck_parser.set_defaults(func=cmd_cluster_key)
 
     # stop
     stop_parser = subparsers.add_parser("stop", help="Stop AINode")

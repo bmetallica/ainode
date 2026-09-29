@@ -79,8 +79,10 @@ class TestSecuritySection:
         assert "renderConfigSecurity()" in APP_JS
 
     def test_it_says_auth_is_off_by_default(self):
-        """The single most important fact about a shared cluster."""
-        assert "off by default" in APP_JS
+        """The API keys are off by default — and now say what they guard,
+        which is /v1/* alone. The UI itself is behind the web sign-in."""
+        assert "Off by default" in APP_JS
+        assert "API keys for /v1/" in APP_JS
 
     def test_key_is_shown_once_in_a_blocking_panel(self):
         assert "_showOneTimeKey" in APP_JS

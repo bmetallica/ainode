@@ -24,6 +24,7 @@ from ainode.models.registry import ModelManager
 from ainode.onboarding.api_routes import register_onboarding_routes
 from ainode.auth.middleware import AuthConfig, auth_middleware
 from ainode.auth.api_routes import register_auth_routes
+from ainode.auth.web_routes import register_web_login, web_login_middleware
 from ainode.metrics.collector import MetricsCollector
 from ainode.metrics.api_routes import register_metrics_routes
 from ainode.training.engine import TrainingManager
@@ -105,7 +106,10 @@ def create_app(
     auth_config = AuthConfig.load()
 
     app = web.Application(
-        middlewares=[cors_middleware, request_log_middleware, auth_middleware],
+        # web_login_middleware before auth_middleware: the web login decides
+        # who may use the UI and /api/*, and the API keys now govern /v1/*.
+        middlewares=[cors_middleware, request_log_middleware,
+                     web_login_middleware, auth_middleware],
         client_max_size=_client_max_bytes(config),
     )
     init_server_state(app)
@@ -230,6 +234,7 @@ def create_app(
     register_onboarding_routes(app)
 
     register_auth_routes(app)
+    register_web_login(app, ui=getattr(config, "web_ui_enabled", True))
 
     # --- Metrics routes ------------------------------------------------------
     register_metrics_routes(app, collector)
@@ -457,7 +462,12 @@ def _build_announcement(config: NodeConfig, engine=None) -> NodeAnnouncement:
 
 
 async def _on_startup(app: web.Application) -> None:
-    app["client_session"] = aiohttp.ClientSession()
+    from ainode.auth.cluster_key import cluster_trace_config
+
+    # Peer calls carry the cluster key, added per request by destination so it
+    # never reaches a host outside the cluster. See auth/cluster_key.py.
+    app["client_session"] = aiohttp.ClientSession(
+        trace_configs=[cluster_trace_config(app)])
 
     # Before anything else can be launched. Its own thread, deliberately: the
     # launch path blocks this event loop for minutes, and a guard living in
