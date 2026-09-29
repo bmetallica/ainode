@@ -262,3 +262,26 @@ class TestTheCacheIsSharedBetweenSessions:
         out = self._build(None)
         limit = out["config"]["provider"]["vllm"]["models"]["org/m"]["limit"]
         assert limit == limits_for(131072)
+
+
+class TestAStaleCopyCanBeTold:
+    """F3: the dashboard keeps the fingerprint of the config it handed out
+    and compares it with what would be generated now."""
+
+    def test_the_same_launch_gives_the_same_fingerprint(self):
+        a = _build([_Entry("org/m", max_model_len=131072)])
+        b = _build([_Entry("org/m", max_model_len=131072)])
+        assert a["fingerprint"] == b["fingerprint"]
+
+    def test_a_relaunch_with_another_window_changes_it(self):
+        a = _build([_Entry("org/m", max_model_len=608512)])
+        b = _build([_Entry("org/m", max_model_len=131072)])
+        assert a["fingerprint"] != b["fingerprint"]
+
+    def test_the_dashboard_remembers_and_compares(self):
+        from pathlib import Path
+
+        app_js = (Path(__file__).resolve().parent.parent / "ainode" / "web"
+                  / "static" / "js" / "app.js").read_text()
+        assert "rememberOpencodeConfig(data)" in app_js
+        assert "checkOpencodeDrift()" in app_js
