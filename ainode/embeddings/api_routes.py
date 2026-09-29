@@ -243,13 +243,34 @@ async def handle_v1_embeddings(request: web.Request) -> web.Response:
                     f"not load it: {failure}", code="server_error", status=503)
             return await _forward_embeddings(request, body, placed)
 
+    # Counted here, where the vectors are computed — not on a node that only
+    # forwarded the request, or a request would be counted twice. Chat
+    # requests have always been counted; embedding requests never were, so
+    # the per-model statistics (and MQTT) had nothing for an embedding model.
+    import time as _time
+
+    started = _time.time()
+    collector = request.app.get("metrics_collector")
+
+    def _count(error: bool) -> None:
+        if collector is None:
+            return
+        try:
+            collector.record_request(model_id, (_time.time() - started) * 1000,
+                                     error=error)
+        except Exception:
+            logger.debug("could not count an embedding request", exc_info=True)
+
     try:
         vectors = await manager.aembed(model_id, texts)
     except RuntimeError as exc:
+        _count(True)
         return _error(str(exc), code="dependency_missing", status=503)
     except Exception as exc:  # pragma: no cover - defensive
+        _count(True)
         logger.exception("embedding failure for %s", model_id)
         return _error(f"embedding failed: {exc}", code="server_error", status=500)
+    _count(False)
 
     total_tokens = sum(_approx_tokens(t) for t in texts)
     data = [
