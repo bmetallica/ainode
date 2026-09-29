@@ -299,4 +299,12 @@ def build_opencode_config(app, base_url: str) -> dict:
         config["model"] = f"vllm/{by_window[-1]}"
         if len(by_window) > 1:
             config["small_model"] = f"vllm/{by_window[0]}"
-    return {"config": config, "notes": notes}
+    # What the copied config says, in one short string: the dashboard keeps
+    # the one it handed out and compares it with this, so a config that went
+    # stale when a model was reloaded with another window says so (F3) — the
+    # 608,512-against-131,072 case, which surfaced as an agent that stopped.
+    import hashlib
+    import json as _json
+
+    digest = hashlib.sha1(_json.dumps(models, sort_keys=True).encode()).hexdigest()
+    return {"config": config, "notes": notes, "fingerprint": digest[:12]}

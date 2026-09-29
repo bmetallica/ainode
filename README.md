@@ -276,7 +276,10 @@ tool calling switched off. Its context limit also fits the **KV cache**, not
 just the window: when the engine reported fewer cache tokens than
 `max-num-seqs` sessions at full length would need, each session's limit is its
 share of the cache, with a note saying so — otherwise the engine preempts one
-session mid-answer and the agent seems to stop by itself.
+session mid-answer and the agent seems to stop by itself. And the dashboard
+remembers the config it handed out (in this browser): once what is running no
+longer matches it — a model reloaded with another window, one gone, one new —
+the Server view says so, with the changes, until it is generated again.
 
 **One unit for memory** — model sizes come off the disk and out of the Hub in
 decimal GB, and node budgets used to come through MiB divided by 1024. Both

@@ -2342,6 +2342,84 @@ const AINode = {
   // what free(1) shows and what the memory guard watches. The launch USES the
   // weights, the engine and cache for context x concurrency. On unified memory
   // the gap is real memory held and not used.
+  // F3: a copied client config is a snapshot. Reloading a model with another
+  // window makes it silently wrong — 608,512 in the config against 131,072 in
+  // the engine, which looked like an agent that keeps stopping. The dashboard
+  // remembers what it handed out (this browser only) and says when what is
+  // running no longer matches it.
+  rememberOpencodeConfig(data) {
+    if (!data || !data.fingerprint) return;
+    var models = {};
+    var list = (((data.config || {}).provider || {}).vllm || {}).models || {};
+    Object.keys(list).forEach(function (id) {
+      models[id] = { context: (list[id].limit || {}).context,
+                     reasoning: !!list[id].reasoning };
+    });
+    try {
+      localStorage.setItem('ainode.opencodeCopied', JSON.stringify(
+        { fingerprint: data.fingerprint, at: Date.now(), models: models }));
+    } catch (e) { /* private window: nothing to compare against later */ }
+    this._opencodeDrift = { checkedAt: Date.now(), html: '' };
+    var slot = document.getElementById('opencode-stale');
+    if (slot) slot.innerHTML = '';
+  },
+
+  // What changed between the config that was copied and the one that would
+  // be generated now. Pure, so it can be tested without a browser.
+  opencodeDrift(saved, current) {
+    var out = [];
+    var now = {};
+    var list = (((current || {}).config || {}).provider || {}).vllm || {};
+    Object.keys(list.models || {}).forEach(function (id) {
+      var m = list.models[id];
+      now[id] = { context: (m.limit || {}).context, reasoning: !!m.reasoning };
+    });
+    var before = (saved || {}).models || {};
+    Object.keys(before).forEach(function (id) {
+      if (!now[id]) { out.push(id + ' is no longer served'); return; }
+      if (before[id].context !== now[id].context) {
+        out.push(id + ': context ' + Number(before[id].context).toLocaleString() +
+                 ' → ' + Number(now[id].context).toLocaleString());
+      }
+      if (before[id].reasoning !== now[id].reasoning) {
+        out.push(id + ': reasoning ' + before[id].reasoning + ' → ' + now[id].reasoning);
+      }
+    });
+    Object.keys(now).forEach(function (id) {
+      if (!before[id]) out.push(id + ' is new');
+    });
+    return out;
+  },
+
+  async checkOpencodeDrift() {
+    var saved = null;
+    try { saved = JSON.parse(localStorage.getItem('ainode.opencodeCopied') || 'null'); }
+    catch (e) { saved = null; }
+    if (!saved || !saved.fingerprint) return;
+    var state = this._opencodeDrift || {};
+    // The Server view redraws every few seconds; the question needs asking
+    // about once a minute, and it reads the whole cluster.
+    if (state.checkedAt && Date.now() - state.checkedAt < 60000) return;
+    this._opencodeDrift = { checkedAt: Date.now(), html: state.html || '' };
+    var base = location.protocol + '//' + location.host;
+    var current = await this.fetchJSON(
+      '/api/clients/opencode?base_url=' + encodeURIComponent(base)).catch(function () { return null; });
+    if (!current || !current.fingerprint) return;
+    var html = '';
+    if (current.fingerprint !== saved.fingerprint) {
+      var changes = this.opencodeDrift(saved, current);
+      html = '<div class="config-warning" style="margin-top:10px">⚠ The OpenCode ' +
+        'config you copied on ' + this.esc(new Date(saved.at).toLocaleString()) +
+        ' no longer matches what is running' +
+        (changes.length ? ': ' + changes.map(this.esc, this).join('; ') : '') +
+        '. Generate it again and replace the file, or sessions will be cut off ' +
+        'or refused mid-answer.</div>';
+    }
+    this._opencodeDrift.html = html;
+    var slot = document.getElementById('opencode-stale');
+    if (slot) slot.innerHTML = html;
+  },
+
   renderOccupancy(plan) {
     if (!plan || !plan.reserved_per_node_gb || !plan.node_total_gb) return '';
     var total = plan.node_total_gb;
@@ -8570,6 +8648,7 @@ const AINode = {
     html += '    <span style="font-size:11px;color:var(--text-muted)">' +
             'for every model the cluster is serving right now</span>';
     html += '  </div>';
+    html += '  <div id="opencode-stale">' + ((this._opencodeDrift || {}).html || '') + '</div>';
     html += '  <div id="opencode-config-out"></div>';
     html += '</section>';
 
@@ -8977,6 +9056,8 @@ const AINode = {
       });
     });
 
+    this.checkOpencodeDrift();
+
     var openCodeBtn = root.querySelector('#opencode-config');
     if (openCodeBtn) {
       openCodeBtn.addEventListener('click', async function () {
@@ -9008,6 +9089,7 @@ const AINode = {
             b.addEventListener('click', function () {
               navigator.clipboard.writeText(b.dataset.copy).then(function () {
                 self.toast('Config copied', 'success');
+                self.rememberOpencodeConfig(data);
               }).catch(function () { self.toast('Copy failed', 'error'); });
             });
           });
