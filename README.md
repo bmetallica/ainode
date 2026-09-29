@@ -243,6 +243,10 @@ last touched is the constraint and the other is filled in from the plan, live.
 Before this the advanced fields had no listener at all: typing a context length
 changed nothing above them, and the planner could only answer "how many requests
 fit at maximum length" rather than "I want N sessions, how long can each be".
+"Last touched" is per model and node selection — picking another model starts
+over rather than planning it with a field withheld that nobody set for it — and
+the occupancy forecast counts a derived concurrency at the value the plan
+derives, which is what the launch sends, instead of at one.
 
 **The plan describes the launch it will get** — the planner is asked with the
 KV-cache dtype the launch would actually use (the node default is fp8, and the

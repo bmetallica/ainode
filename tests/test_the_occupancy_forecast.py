@@ -107,6 +107,42 @@ class TestWhatTheLaunchUses:
         assert plan.needed_per_node_gb < plan.reserved_per_node_gb
 
 
+class TestADerivedConcurrencyIsForecastAtItsValue:
+    """B5: the launch form withholds the concurrency when the operator drove
+    the context, so the planner derives it — and the forecast counted 1 for
+    it. The bar read low exactly while the window was being pulled larger,
+    and the launch then went out with the derived --max-num-seqs."""
+
+    def test_the_forecast_uses_what_the_plan_derives(self):
+        placeholder = _plan(max_model_len=65536)
+        derived = _plan(max_model_len=65536, concurrency_derived=True)
+        assert derived.max_num_seqs > 1
+        assert derived.cache_used_per_node_gb == pytest.approx(
+            placeholder.cache_used_per_node_gb * derived.max_num_seqs)
+
+    def test_a_named_concurrency_is_still_the_one_counted(self):
+        asked = _plan(max_model_len=65536, concurrency=2)
+        again = _plan(max_model_len=65536, concurrency=2,
+                      concurrency_derived=False)
+        assert asked.cache_used_per_node_gb == again.cache_used_per_node_gb
+
+    def test_the_route_derives_when_only_a_window_is_sent(self):
+        source = (Path(__file__).resolve().parent.parent / "ainode" / "planner"
+                  / "api_routes.py").read_text()
+        assert "concurrency_derived=" in source
+
+
+class TestTheDrivenFieldBelongsToAModel:
+    """B6: which field the operator drove outlived a model change, so the
+    next model was planned with half the pair withheld."""
+
+    def test_it_is_scoped_to_the_model_and_nodes(self):
+        assert "launchLastEditedFor = self.launchEditScope()" in APP_JS
+        assert "launchDrove(want)" in APP_JS
+
+    def test_both_readers_go_through_the_scope(self):
+        assert "var drove = this.state.launchLastEdited" not in APP_JS
+
 class TestTheGapIsThePoint:
     def test_a_low_concurrency_leaves_the_pool_mostly_idle(self):
         plan = _plan(concurrency=1)
