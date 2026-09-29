@@ -116,7 +116,7 @@ Object.assign(AINode, {
             'for every model the cluster is serving right now</span>';
     html += '  </div>';
     html += '  <div id="opencode-stale">' + ((this._opencodeDrift || {}).html || '') + '</div>';
-    html += '  <div id="opencode-config-out"></div>';
+    html += '  <div id="opencode-config-out" data-keep></div>';
     html += '</section>';
 
     // --- Throughput benchmark ---
@@ -448,8 +448,10 @@ Object.assign(AINode, {
       }
       var panel = document.querySelector('#bench-panel');
       if (panel) {
-        panel.innerHTML = self._renderBenchPanel();
-        self._bindBenchPanel(document);
+        self._redraw(panel, function () {
+          panel.innerHTML = self._renderBenchPanel();
+          self._bindBenchPanel(document);
+        });
       }
       if (!(self._benchState.status && self._benchState.status.running)) {
         clearInterval(self._benchPoll);
@@ -538,6 +540,9 @@ Object.assign(AINode, {
           var base = location.protocol + '//' + location.host;
           var data = await self.fetchJSON(
             '/api/clients/opencode?base_url=' + encodeURIComponent(base));
+          // The view may have been redrawn while this was in flight; write
+          // into the element that is on the page now, not the one clicked on.
+          out = document.querySelector('#opencode-config-out') || out;
           var text = JSON.stringify(data.config, null, 2);
           var notes = (data.notes || []).map(function (n) {
             return '<div style="color:var(--text-muted);font-size:11px;' +

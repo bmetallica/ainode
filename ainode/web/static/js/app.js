@@ -316,7 +316,7 @@ const AINode = {
       });
       h += '  </tbody></table>';
     }
-    h += '  <div class="profile-report" id="profile-report-' + this.esc(profile.name) + '"></div>';
+    h += '  <div class="profile-report" data-keep id="profile-report-' + this.esc(profile.name) + '"></div>';
     h += '</div>';
     return h;
   },
@@ -521,6 +521,13 @@ const AINode = {
     } else {
       this.stopServerLogPolling();
     }
+    // Draw the page now, then refresh the status behind it. Drawing was left
+    // to refresh(), which first waited for five status requests and then —
+    // because the click that got here counts as an interaction — skipped the
+    // draw as "the user is busy". A page opened empty and filled in on the
+    // next five-second tick: most visible on Config, which has nothing to
+    // show until it is drawn.
+    this._renderCurrentView(true);
     this.refresh();
   },
 
@@ -629,6 +636,7 @@ const AINode = {
   },
 
   async refresh() {
+    var self = this;
     var results = await Promise.all([
       this.fetchJSON('/api/status'),
       this.fetchJSON('/api/nodes'),
@@ -664,47 +672,10 @@ const AINode = {
     var mainEl = document.querySelector('.main-content') || document.querySelector('#main') || document.scrollingElement;
     var savedScroll = mainEl ? mainEl.scrollTop : 0;
 
-    switch (this.state.currentView) {
-      case 'dashboard':
-        this.renderDashboard();
-        this.renderUpdateBanner();
-        break;
-      case 'downloads':
-        // Don't rebuild the downloads view during periodic refresh — just update the queue
-        // in place. Only do a full render when the user lands on the view.
-        if (this._downloadsViewInitialized) {
-          this.renderDownloadsQueue();
-          this.updateNavDownloadBadge();
-        } else {
-          this._downloadsViewInitialized = true;
-          this.renderDownloads();
-        }
-        break;
-      case 'training':
-        this.renderTraining();
-        break;
-      case 'images':
-        this.renderImages();
-        break;
-      case 'config':
-        // Rendered on entry and on a section switch, NOT on every poll.
-        // Rebuilding the section's innerHTML every few seconds destroyed
-        // whatever was half-typed into it — filling in the MQTT broker,
-        // username and password was close to impossible, and the same applied
-        // to every other form in here. Nothing on these pages ticks; a live
-        // status is worth less than being able to type.
-        if (!this._configViewInitialized) {
-          this._configViewInitialized = true;
-          this.renderConfig();
-        }
-        break;
-      case 'server':
-        this.renderServer();
-        break;
-      case 'profiles':
-        this.renderProfiles();
-        break;
-    }
+    // Redrawn through _redraw: not while someone is typing in the view, and
+    // without losing what was typed or produced there.
+    this._redraw(document.getElementById('center-stage'),
+                 function () { return self._renderCurrentView(false); });
 
     // Always update right panel
     this.renderInstances();
@@ -725,6 +696,149 @@ const AINode = {
 
   // True while the user is actively interacting, so the periodic poll doesn't
   // rebuild the DOM mid-action (drag / text-selection / just-clicked).
+  // Draw the current view. ``entering``: the operator just navigated here —
+  // views that are drawn once (config, downloads) are drawn now.
+  _renderCurrentView(entering) {
+    var done;
+    if (entering) {
+      if (this.state.currentView === 'config') this._configViewInitialized = false;
+      if (this.state.currentView === 'downloads') this._downloadsViewInitialized = false;
+    }
+    switch (this.state.currentView) {
+      case 'dashboard':
+        done = this.renderDashboard();
+        this.renderUpdateBanner();
+        break;
+      case 'downloads':
+        // Don't rebuild the downloads view during periodic refresh — just update the queue
+        // in place. Only do a full render when the user lands on the view.
+        if (this._downloadsViewInitialized) {
+          done = this.renderDownloadsQueue();
+          this.updateNavDownloadBadge();
+        } else {
+          this._downloadsViewInitialized = true;
+          done = this.renderDownloads();
+        }
+        break;
+      case 'training':
+        done = this.renderTraining();
+        break;
+      case 'images':
+        done = this.renderImages();
+        break;
+      case 'config':
+        // Rendered on entry and on a section switch, NOT on every poll.
+        // Rebuilding the section's innerHTML every few seconds destroyed
+        // whatever was half-typed into it — filling in the MQTT broker,
+        // username and password was close to impossible, and the same applied
+        // to every other form in here. Nothing on these pages ticks; a live
+        // status is worth less than being able to type.
+        if (!this._configViewInitialized) {
+          this._configViewInitialized = true;
+          done = this.renderConfig();
+        }
+        break;
+      case 'server':
+        done = this.renderServer();
+        break;
+      case 'profiles':
+        done = this.renderProfiles();
+        break;
+    }
+
+    return done;
+  },
+
+  // An editable field inside ``root`` has the focus: someone is typing there.
+  _typingIn(root) {
+    var el = document.activeElement;
+    if (!root || !el || el === document.body || !root.contains(el)) return false;
+    var tag = (el.tagName || '').toLowerCase();
+    if (el.isContentEditable || tag === 'textarea' || tag === 'select') return true;
+    if (tag !== 'input') return false;
+    return ['button', 'submit', 'reset', 'checkbox', 'radio', 'range', 'file',
+            'image', 'color'].indexOf(String(el.type || '').toLowerCase()) === -1;
+  },
+
+  // What has been typed or ticked inside ``root`` and not saved: every field
+  // with an id whose value differs from the one the page was drawn with.
+  _snapshotEdits(root) {
+    var edits = [];
+    if (!root) return edits;
+    root.querySelectorAll('input[id], textarea[id], select[id]').forEach(function (el) {
+      var type = String(el.type || '').toLowerCase();
+      if (type === 'checkbox' || type === 'radio') {
+        if (el.checked !== el.defaultChecked) edits.push({ id: el.id, checked: el.checked });
+      } else if (el.tagName === 'SELECT') {
+        var changed = Array.prototype.some.call(el.options, function (o) {
+          return o.selected !== o.defaultSelected;
+        });
+        if (changed) edits.push({ id: el.id, value: el.value });
+      } else if (type !== 'file' && el.value !== el.defaultValue) {
+        edits.push({ id: el.id, value: el.value });
+      }
+    });
+    return edits;
+  },
+
+  _restoreEdits(edits) {
+    (edits || []).forEach(function (edit) {
+      var el = document.getElementById(edit.id);
+      if (!el) return;
+      if ('checked' in edit) {
+        // Only where the redraw left the default: a value the server just
+        // changed wins over one typed before it changed.
+        if (el.checked === el.defaultChecked) el.checked = edit.checked;
+      } else if (el.value === el.defaultValue || el.tagName === 'SELECT') {
+        el.value = edit.value;
+      }
+    });
+  },
+
+  // Redraw part of the page without taking anything from the person using it.
+  //
+  // The periodic refresh rebuilt whole views with innerHTML every five
+  // seconds. Reported from the Profiles page:
+  //
+  //     wenn ich unter profiel die aktuelle konfiguration speichern will und
+  //     oben einen namen dafür eingeben will wird das feld ständig geleert
+  //
+  // and it had happened before (the MQTT form, fixed for Config alone). The
+  // Server view lost the OpenCode config it had just generated the same way,
+  // and the Images, Training and benchmark panels had the same shape. So,
+  // for every redraw instead of per page:
+  //   * nothing is redrawn while a field inside ``root`` has the focus;
+  //   * what was typed into a field (by id) is carried into the new HTML;
+  //   * an element marked data-keep (with an id) — a generated result, a
+  //     report — is carried over as the same node, listeners and all.
+  // ``draw`` may return a promise; the carrying-over waits for it.
+  _redraw(root, draw) {
+    if (this._typingIn(root)) return false;
+    var edits = this._snapshotEdits(root);
+    var kept = [];
+    if (root) {
+      root.querySelectorAll('[data-keep][id]').forEach(function (el) {
+        if (el.childNodes.length) kept.push(el);
+      });
+    }
+    var self = this;
+    var finish = function () {
+      kept.forEach(function (old) {
+        var fresh = document.getElementById(old.id);
+        if (fresh && fresh !== old && !fresh.childNodes.length) fresh.replaceWith(old);
+      });
+      self._restoreEdits(edits);
+    };
+    var done;
+    try { done = draw(); } catch (err) { finish(); throw err; }
+    if (done && typeof done.then === 'function') {
+      done.then(finish, finish);
+    } else {
+      finish();
+    }
+    return true;
+  },
+
   _userBusy() {
     if (this._pointerDown) return true;
     if (this._lastInteract && (Date.now() - this._lastInteract) < 1200) return true;

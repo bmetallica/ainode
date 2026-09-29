@@ -237,6 +237,15 @@ path does — it used to write only the model, peers and split, so after a
 restart the cluster came back with the window and cache dtype of whatever had
 last been loaded solo.
 
+**Nothing typed is redrawn away** — the dashboard refreshes every five
+seconds, and it used to rebuild whole pages to do it: a profile name, a
+half-typed prompt or a just-generated OpenCode config disappeared under the
+next tick. Every redraw now leaves a page alone while a field in it has the
+focus, carries typed values into the new page, and keeps results (the OpenCode
+config, reports, the image gallery) as they are. A page is drawn the moment it
+is opened rather than on the next tick — Config used to stay empty for up to
+five seconds.
+
 **The launch form's fields move together** — context length and concurrency
 multiply into one KV cache, so naming one is naming the other. Whichever you
 last touched is the constraint and the other is filled in from the plan, live.
