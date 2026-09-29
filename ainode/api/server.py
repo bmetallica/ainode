@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 import aiohttp
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from aiohttp import web
 
 from ainode.api.params import str_field
@@ -923,7 +923,13 @@ async def cors_middleware(request: web.Request, handler):
     """Add CORS headers to every response so the dashboard can fetch freely."""
     def _stamp(resp):
         origin = request.headers.get("Origin", "")
-        allowed = origin if origin.startswith(("http://localhost", "http://127.0.0.1")) else ""
+        # By host name, not by prefix: "http://localhost.example.com" starts
+        # with "http://localhost" and is somebody else's site.
+        try:
+            local = urlparse(origin).hostname in ("localhost", "127.0.0.1")
+        except ValueError:
+            local = False
+        allowed = origin if local else ""
         resp.headers["Access-Control-Allow-Origin"] = allowed
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
         resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
