@@ -6361,3 +6361,18 @@ select {
   color: var(--text-secondary);
   cursor: pointer;
 }
+
+/* Where a plan's numbers came from: measured, MoE-calibrated or estimated. */
+.plan-source {
+  display: inline-block;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  padding: 0 5px;
+  border-radius: 3px;
+  vertical-align: 1px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.plan-source-measured { color: var(--nvidia-green); border-color: rgba(118, 185, 0, 0.4); }
+.plan-source-calibrated { color: var(--text-secondary); }
+.plan-source-estimated { color: #e6b450; border-color: rgba(230, 180, 80, 0.35); }
