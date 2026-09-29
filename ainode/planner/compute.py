@@ -354,22 +354,22 @@ class _Candidate:
     kv_source: str = "estimated"
 
 
-def _evaluate(facts: ModelFacts, nodes: Sequence[NodeBudget], strategy: str,
-              bytes_per_token: int,
-              utilization_ceiling: float = 0.0,
-              measured_weights_per_node: float = 0.0,
-              measured_rank_count: int = 0,
-              moe_weight_factor: float = 0.0,
-              measured_bytes_per_token: int = 0) -> Optional[_Candidate]:
-    count = len(nodes)
+def weights_per_node(facts: ModelFacts, count: int, strategy: str,
+                     measured_weights_per_node: float = 0.0,
+                     measured_rank_count: int = 0,
+                     moe_weight_factor: float = 0.0):
+    """(GB of weights each rank holds, where the figure came from).
+
+    Shared by the single-model planner and the profile wizard's household
+    planner, so the two can never price the same launch differently.
+    """
+    count = max(1, int(count))
     weights = facts.weights_gb
     weights_source = "estimated"
     if strategy == "tensor":
         per_node = weights / count * (TP_REPLICATION if count > 1 else 1.0)
-        tp, pp = count, 1
     else:
         per_node = weights / count
-        tp, pp = 1, count
     # A mixture-of-experts loads to a different size than its checkpoint, and
     # not by a constant anyone could guess (P1 in upgrade-fixes.md). Where this
     # cluster has measured enough MoE launches, their median ratio of loaded
@@ -393,6 +393,21 @@ def _evaluate(facts: ModelFacts, nodes: Sequence[NodeBudget], strategy: str,
     if measured_weights_per_node > 0 and count == measured_rank_count:
         per_node = float(measured_weights_per_node)
         weights_source = "measured"
+    return per_node, weights_source
+
+
+def _evaluate(facts: ModelFacts, nodes: Sequence[NodeBudget], strategy: str,
+              bytes_per_token: int,
+              utilization_ceiling: float = 0.0,
+              measured_weights_per_node: float = 0.0,
+              measured_rank_count: int = 0,
+              moe_weight_factor: float = 0.0,
+              measured_bytes_per_token: int = 0) -> Optional[_Candidate]:
+    count = len(nodes)
+    tp, pp = (count, 1) if strategy == "tensor" else (1, count)
+    per_node, weights_source = weights_per_node(
+        facts, count, strategy, measured_weights_per_node, measured_rank_count,
+        moe_weight_factor)
     # The cost per token likewise: what the engine's own cache worked out to
     # (P2, P3, P5 — the indexer caches, the recurrent state of a hybrid, the
     # ds_mla scale block) — none of which the formula has, and all of which
