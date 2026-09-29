@@ -265,7 +265,13 @@ is the launch's: a dtype picked in the form, then the recipe's
 `--kv-cache-dtype` (Qwen3.8-27B's is `auto`), then the node's setting — fp8,
 or auto for a vision model. A form choice replaces the recipe's flag at launch
 instead of losing to it, and a measurement is recorded at the dtype vLLM was
-actually given, so the measured cost per token is found again next time. A
+actually given, so the measured cost per token is found again next time.
+`auto` is not always the model's dtype: a checkpoint whose quantization names
+an fp8 KV cache (`kv_cache_scheme` with 8-bit floats, or modelopt's
+`kv_cache_quant_algo: FP8`) is cached in fp8 under `auto`, with the
+checkpoint's calibrated scales — unsloth/Qwen3.8-27B-NVFP4 is one, and the
+planner now costs it at fp8 (it offered 709K tokens where 46.5 GB hold about
+1.2M). A
 measurement is compared per node against a per-node plan rather than against
 the weights across every node, and on-disk sizes are decimal GB everywhere, so
 one panel cannot show "148 GB" above "159.4 GB on disk".

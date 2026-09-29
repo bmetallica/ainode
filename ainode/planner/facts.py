@@ -58,6 +58,11 @@ class ModelFacts:
     max_position_embeddings: int = 0
     torch_dtype: str = ""
     quantization: str = ""
+    #: The KV-cache dtype the checkpoint itself asks for — "fp8" when its
+    #: quantization_config carries an 8-bit float kv_cache_scheme
+    #: (compressed-tensors) or kv_cache_quant_algo FP8 (modelopt). vLLM's
+    #: --kv-cache-dtype auto then caches in fp8, not in the model's dtype.
+    kv_cache_quant: str = ""
     #: DeepSeek-style multi-head latent attention caches one compressed vector
     #: per layer instead of a K and a V per head, which is a different formula
     #: entirely — a tenth of the bytes, or less.
@@ -244,6 +249,28 @@ def _attention_layers(config: dict, num_layers: int) -> tuple:
     return num_layers, False
 
 
+def _kv_cache_quant(quant: dict) -> str:
+    """"fp8" when the checkpoint's quantization asks for an fp8 KV cache.
+
+    unsloth/Qwen3.8-27B-NVFP4 carries ``kv_cache_scheme: {num_bits: 8, type:
+    float}`` and ran at 37.7 KB per token under --kv-cache-dtype auto — the
+    fp8 formula (32 KB) plus its recurrent state, not the bf16 one (65.5 KB)
+    the planner used for "auto", which offered 709K tokens in a cache that
+    holds about 1.2M.
+    """
+    scheme = quant.get("kv_cache_scheme")
+    if isinstance(scheme, dict):
+        try:
+            bits = int(scheme.get("num_bits") or 0)
+        except (TypeError, ValueError):
+            bits = 0
+        if bits == 8 and str(scheme.get("type") or "").lower() == "float":
+            return "fp8"
+    if str(quant.get("kv_cache_quant_algo") or "").upper() == "FP8":
+        return "fp8"
+    return ""
+
+
 def facts_from_config(config: dict, repo: str = "",
                       weight_bytes: int = 0) -> ModelFacts:
     """Turn a checkpoint's config.json into the facts the planner uses."""
@@ -279,6 +306,7 @@ def facts_from_config(config: dict, repo: str = "",
     if isinstance(quant, dict):
         facts.quantization = str(
             _first(quant, "quant_method", "quant_algo", default="") or "")
+        facts.kv_cache_quant = _kv_cache_quant(quant)
 
     facts.kv_lora_rank = int(_first(text, "kv_lora_rank", default=0) or 0)
     facts.qk_rope_head_dim = int(_first(text, "qk_rope_head_dim", default=0) or 0)
