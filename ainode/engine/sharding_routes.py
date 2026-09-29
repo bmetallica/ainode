@@ -285,6 +285,10 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
         request.app, model, node_ids=node_ids,
         strategy=str(strategy_str or "auto"),
         max_model_len=int_field(body, "max_model_len", minimum=0) or 0,
+        # The fraction this launch will run at: a measurement taken at
+        # another one is moved to it. Without it, Qwen3.8-Flash-Next's 114.6
+        # GB at 0.84 refused the 0.81 the wizard had planned for it.
+        gpu_memory_utilization=_launch_gmu(model, body),
         force=bool(body.get("force")))
     if refusal:
         return web.json_response(
@@ -675,6 +679,24 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
 #: the engine image and the weights on its peers before it answers — minutes
 #: on a first launch.
 FORWARD_TIMEOUT = 3600
+
+
+def _launch_gmu(model: str, body: dict):
+    """The memory fraction a launch body will run at: its own, else the
+    recipe's, else None (the gate then takes a measurement as it stands)."""
+    try:
+        gmu = float(body.get("gpu_memory_utilization"))
+        if 0.0 < gmu <= 1.0:
+            return gmu
+    except (TypeError, ValueError):
+        pass
+    try:
+        from ainode.models.api_routes import catalog_recipe
+
+        value = (catalog_recipe(model) or {}).get("gpu_memory_utilization")
+        return float(value) if value else None
+    except Exception:
+        return None
 
 
 async def _launch_from(request, cluster, node_ids, body) -> web.Response:

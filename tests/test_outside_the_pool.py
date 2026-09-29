@@ -66,3 +66,31 @@ class TestWhatTheGateCompares:
         monkeypatch.setattr(admission, "_budgets_with_reserve", lambda app, ids=None: [budget])
         measured = {"memory_gb": 114.6, "gpu_memory_utilization": 0.84}
         assert admission._measured_says({}, "q", measured, 0, None, None)
+
+
+class TestTheDistributedGateKnowsTheFraction:
+    """The multi-node path called the gate without the launch's fraction, so
+    a measurement at 0.84 refused the 0.81 the wizard planned."""
+
+    def test_the_bodys_own(self):
+        from ainode.engine.sharding_routes import _launch_gmu
+
+        assert _launch_gmu("org/x", {"gpu_memory_utilization": 0.81}) == 0.81
+
+    def test_else_the_recipes(self):
+        from ainode.engine.sharding_routes import _launch_gmu
+
+        assert _launch_gmu("unsloth/Qwen3.8-27B-NVFP4", {}) == 0.6
+
+    def test_else_none(self):
+        from ainode.engine.sharding_routes import _launch_gmu
+
+        assert _launch_gmu("org/unknown", {"gpu_memory_utilization": "x"}) is None
+
+    def test_it_is_passed(self):
+        import inspect
+
+        from ainode.engine import sharding_routes
+
+        source = inspect.getsource(sharding_routes)
+        assert "gpu_memory_utilization=_launch_gmu(model, body)" in source
