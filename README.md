@@ -1149,12 +1149,18 @@ curl -X POST localhost:3000/v1/images/generations \
 ### Profiles — one deployment, saved and restored
 
 A profile is the set of models the **cluster** should be serving, with
-placement and per-load settings. Applying one converges onto it: missing models
-are started one after another — each on the node its entry names — and models
-that should not be running *here* are stopped here, including a local copy of
-something the profile places on another node. A default profile is applied at
-startup and replaces the instance-manifest replay, which could only record
-single-node instances.
+placement and per-load settings. Applying one converges **every node it
+uses** onto it: first each of those nodes stops what the profile does not ask
+it to run (the head directly, every peer through `POST /api/profiles/converge`,
+cluster key only), then the head starts its own and the distributed entries,
+then each peer starts its own — one at a time per node, and a model already
+running as the profile describes is left running. Nodes the profile does not
+name are left alone; a peer on an older build is started through the old load
+routes but not cleared. The same model may appear once per node — replicas.
+A default profile is applied at startup and replaces the instance-manifest
+replay, which could only record single-node instances. Deleting a profile with
+`DELETE /api/profiles/<name>?stop=1` stops its own models on every node it
+names, and nothing else.
 
 Placement is exclusive. An embedding model assigned to node 3 is unloaded from
 every other node when the profile is applied, and an embeddings request for it

@@ -193,6 +193,11 @@ class Profile:
     entries: List[ProfileEntry] = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
+    #: The profile wizard's draft (wizzard.md §7): what the operator chose —
+    #: cache modes, priorities, axes, node limits — so the profile opens in
+    #: the wizard again exactly as it was left. ``entries`` stay what is
+    #: applied; this is only for editing. None for a captured profile.
+    wizard: Optional[dict] = None
 
     def __post_init__(self) -> None:
         self.name = str(self.name or "").strip()
@@ -207,14 +212,22 @@ class Profile:
             e if isinstance(e, ProfileEntry) else ProfileEntry.from_dict(e)
             for e in (self.entries or [])
         ]
-        seen = set()
+        # The same model may appear more than once — as replicas, one per node
+        # (wizzard.md, E4) — but never twice on one node, and never where
+        # either copy has no placement ("wherever the profile is applied"
+        # would put both on the same node).
+        placed: Dict[str, List[set]] = {}
         for e in self.entries:
-            if e.model in seen:
-                raise ProfileError(
-                    f"{e.model} appears twice in profile {self.name!r}; a model "
-                    f"can only be served once per node set."
-                )
-            seen.add(e.model)
+            nodes = {n for n in (e.node_ids or []) if n} or {"*"}
+            for other in placed.get(e.model, []):
+                if "*" in nodes or "*" in other or nodes & other:
+                    raise ProfileError(
+                        f"{e.model} appears twice on the same node in profile "
+                        f"{self.name!r}; a replica belongs on another node."
+                    )
+            placed.setdefault(e.model, []).append(nodes)
+        if self.wizard is not None and not isinstance(self.wizard, dict):
+            raise ProfileError("The wizard draft must be an object.")
         self.created_at = self.created_at or _now()
         self.updated_at = self.updated_at or self.created_at
 
@@ -225,6 +238,7 @@ class Profile:
             "entries": [e.to_dict() for e in self.entries],
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "wizard": self.wizard,
         }
 
     @classmethod
@@ -237,6 +251,7 @@ class Profile:
             entries=data.get("entries") or [],
             created_at=str(data.get("created_at") or ""),
             updated_at=str(data.get("updated_at") or ""),
+            wizard=data.get("wizard"),
         )
 
 

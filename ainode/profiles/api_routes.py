@@ -40,6 +40,9 @@ def register_profile_routes(app: web.Application) -> None:
     app.router.add_delete("/api/profiles/{name}", handle_delete_profile)
     app.router.add_post("/api/profiles/{name}/apply", handle_apply_profile)
     app.router.add_post("/api/profiles/{name}/default", handle_set_default)
+    # Registered before the {name} routes would matter only for GET; this is a
+    # POST on a path no profile route has.
+    app.router.add_post("/api/profiles/converge", handle_converge)
 
 
 async def _body(request) -> dict:
@@ -109,12 +112,58 @@ async def handle_put_profile(request: web.Request) -> web.Response:
 
 
 async def handle_delete_profile(request: web.Request) -> web.Response:
+    """DELETE /api/profiles/{name}[?stop=1] — with ``stop``, the profile's own
+    models are stopped on every node it names first (nothing else is)."""
     store = get_store(request.app)
     name = request.match_info.get("name", "")
-    if not store.delete(name):
+    profile = store.get(name)
+    if profile is None:
         return web.json_response({"error": f"No profile named {name!r}."}, status=404)
-    return web.json_response({"ok": True, "deleted": name,
+    stopped = []
+    query = getattr(request, "query", None) or {}
+    if query.get("stop") in ("1", "true", "yes"):
+        stopped = await _stop_profile_models(request.app, profile)
+    store.delete(name)
+    return web.json_response({"ok": True, "deleted": name, "stopped": stopped,
                               "default": store.default_name})
+
+
+async def _stop_profile_models(app, profile) -> list:
+    from ainode.profiles.apply import _entry_runs_here, _peer_converge, _unload_listed
+
+    own = str(getattr(app.get("config"), "node_id", "") or "")
+    stopped = _unload_listed(app, [e for e in profile.entries
+                                   if _entry_runs_here(app, e) or e.is_distributed])
+    by_peer: dict = {}
+    for entry in profile.entries:
+        if not _entry_runs_here(app, entry) and not entry.is_distributed:
+            by_peer.setdefault(entry.node_ids[0], []).append(entry)
+    for node_id, entries in by_peer.items():
+        if node_id == own:
+            continue
+        answer = await _peer_converge(app, node_id, "unload", entries)
+        stopped.extend(f"{m} ({node_id})" for m in (answer or {}).get("stopped") or [])
+    return stopped
+
+
+async def handle_converge(request: web.Request) -> web.Response:
+    """POST /api/profiles/converge {phase, entries} — the head asking this
+    node to converge onto its part of a profile (profiles/apply.py). Cluster
+    key only: it stops models without asking anyone."""
+    from ainode.auth.cluster_key import is_cluster_request
+    from ainode.profiles.apply import converge_here
+    from ainode.profiles.store import ProfileEntry
+
+    if not is_cluster_request(request.headers):
+        return web.json_response({"error": "cluster key required"}, status=403)
+    body = await _body(request)
+    phase = str(body.get("phase") or "")
+    try:
+        entries = [ProfileEntry.from_dict(e) for e in (body.get("entries") or [])]
+        result = await converge_here(request.app, phase, entries)
+    except (ProfileError, ValueError, TypeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    return web.json_response({"ok": True, **result})
 
 
 async def handle_set_default(request: web.Request) -> web.Response:
