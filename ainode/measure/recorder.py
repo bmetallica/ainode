@@ -94,7 +94,7 @@ def _launch_of(record, config) -> dict:
         "extra_vllm_args": args,
     }
     if out["engine_backend"] == "diffusers":
-        for field in ("max_image_size", "image_steps", "image_size"):
+        for field in ("max_image_size", "image_steps", "image_size", "image_dtype"):
             value = getattr(config, field, None)
             if value:
                 out[field] = value

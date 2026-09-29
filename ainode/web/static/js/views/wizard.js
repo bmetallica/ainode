@@ -486,10 +486,13 @@ Object.assign(AINode, {
         '<label>Guidance ' + this._pwInput(i, 'image_guidance', m.image_guidance,
           'type="number" min="0" max="30" step="0.5" placeholder="model default"') + '</label>' +
         '<label>Precision ' + this._pwSelect(i, 'image_dtype',
-          [['', 'bfloat16 (default)'], ['float16', 'float16'], ['float32', 'float32']],
+          [['', 'bfloat16 (default)'], ['fp8', 'FP8 weights (about half the memory)'],
+           ['float16', 'float16'], ['float32', 'float32']],
           m.image_dtype || '') + '</label></div>' +
         '<div class="pw-kind">The largest image sets the memory it holds; size, steps and ' +
-        'guidance are what a request gets when it names none.</div>' +
+        'guidance are what a request gets when it names none. FP8 keeps the transformer and ' +
+        'text encoder in 8 bit and computes in bfloat16: about half their memory, a little ' +
+        'quality and speed.</div>' +
         '<details class="pw-more"><summary>More settings</summary><div class="pw-row">' +
         '<label>API name(s) ' + this._pwInput(i, 'served_model_name',
           Array.isArray(m.served_model_name) ? m.served_model_name.join(', ') : (m.served_model_name || ''),

@@ -82,9 +82,16 @@ class TestWhatCanActuallyBeLoaded:
 
     def test_every_quantisation_a_pipeline_can_carry_is_fine(self):
         # The requirement: arbitrary quantisation, as long as it loads.
-        for repo in ("Rin247/Qwen-Image-2.1-FP8", "Rin247/Qwen-Image-2.1-INT4",
+        for repo in ("someone/Qwen-Image-2.1-FP8", "someone/Qwen-Image-2.1-INT4",
                      "someone/Qwen-Image-2.1-bf16"):
             assert ModelManager.servable("image", repo)[0] is True
+
+    def test_a_mecha_package_is_refused(self):
+        # Rin247/Qwen-Image-2.1-FP8: weight + weight_scale, no
+        # quantization_config — diffusers ignores the scales.
+        ok, why = ModelManager.servable("image", "Rin247/Qwen-Image-2.1-FP8",
+                                        tags=["quantized", "diffusers", "mecha", "fp8"])
+        assert ok is False and "FP8" in why
 
     def test_the_usual_llm_quantisations_are_fine(self):
         for repo in ("org/m-AWQ", "org/m-GPTQ", "org/m-NVFP4", "org/m-FP8",
@@ -183,11 +190,11 @@ class TestTheSearchRoute:
 
 class TestAnyImageModelNotJustTheCuratedOnes:
     def test_the_catalog_entries_are_suggestions_not_the_whole_list(self):
-        # Two curated entries exist for convenience. Nothing in the load path
+        # A curated entry exists for convenience. Nothing in the load path
         # consults that list to decide whether a model may run.
         curated = [k for k, v in CURATED_CLUSTER_MODELS.items()
                    if getattr(v, "modality", "") == "image"]
-        assert len(curated) == 2
+        assert len(curated) == 1
 
     def test_a_repo_nobody_curated_is_detected_from_its_own_files(self):
         import tempfile

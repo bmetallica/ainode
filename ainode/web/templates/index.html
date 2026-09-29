@@ -218,6 +218,11 @@
               <label class="form-label">Default size</label>
               <input id="launch-image-size" class="form-input" type="text"
                      placeholder="1024x1024">
+              <label class="form-label">Weights precision</label>
+              <select id="launch-image-dtype" class="form-select">
+                <option value="bfloat16">bfloat16 (default)</option>
+                <option value="fp8">FP8 weights — about half the memory, computed in bfloat16</option>
+              </select>
               <p class="launch-advanced-note">A diffusion run has no KV cache
                 and no context length. What bounds it is the picture:
                 activations and the VAE decode grow with the square of the

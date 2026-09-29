@@ -137,10 +137,10 @@ def app(tmp_path, monkeypatch):
     catalog = {"org/a": _facts("org/a"), "org/b": _facts("org/b", 30e9),
                "org/big": _facts("org/big", 150e9)}
     monkeypatch.setattr(facts_module, "local_facts",
-                        lambda manager, model: catalog.get(model) or _facts(model, 0))
+                        lambda manager, model, dtype="": catalog.get(model) or _facts(model, 0))
     monkeypatch.setattr(api_routes, "_recipe", lambda app, model: None)
     monkeypatch.setattr(api_routes, "_image_weights_gb",
-                        lambda manager, model: 20.0 if model == "org/flux" else 0.0)
+                        lambda manager, model, dtype="": 20.0 if model == "org/flux" else 0.0)
     nodes = [_Node("s1"), _Node("s2"), _Node("s3")]
     cluster = type("C", (), {"members": lambda self: list(nodes)})()
     manager = type("M", (), {"model_dirs_for_repo": lambda self, m: [],

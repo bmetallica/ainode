@@ -457,7 +457,7 @@ def _evaluate(facts: ModelFacts, nodes: Sequence[NodeBudget], strategy: str,
 
 def plan_for_image(weights_gb: float, nodes: Sequence[NodeBudget], *,
                    max_image_size: int = 1536,
-                   model: str = "") -> Plan:
+                   model: str = "", fp8: bool = False) -> Plan:
     """Whether an image model fits, and how big a picture it may be asked for.
 
     A different calculation, not the same one with different constants. There
@@ -492,7 +492,9 @@ def plan_for_image(weights_gb: float, nodes: Sequence[NodeBudget], *,
     plan.strategy = "solo"
     plan.weights_per_node_gb = weights_gb
     plan.notes = [
-        f"Weights: {weights_gb:.1f} GB on disk",
+        (f"Weights: {weights_gb:.1f} GB with the transformer and text encoder "
+         f"stored in FP8 (an estimate until it has run once)" if fp8
+         else f"Weights: {weights_gb:.1f} GB on disk"),
         f"Engine plus the peak of one {max_image_size}x{max_image_size} "
         f"image: {overhead:.1f} GB — activations and the VAE decode, and that "
         f"peak lands at the END of a run, not at the start",

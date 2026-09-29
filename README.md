@@ -1154,18 +1154,46 @@ the same way a chat request is.
 
 In **Open WebUI**: Settings → Images → *Image Generation (Experimental)*,
 engine **OpenAI**, API Base URL `http://<head>:3000/v1`, any non-empty API
-key, and the model typed in by name (`Rin247/Qwen-Image-2.1-FP8`, say) —
+key, and the model typed in by name (`Qwen/Qwen-Image-2.1`, say) —
 plain `/v1/models` deliberately does not offer image models as things to chat
 with, so the picker will not list it for you.
 
 ```bash
 curl -X POST localhost:3000/v1/images/generations \
   -H 'Content-Type: application/json' \
-  -d '{"model":"Rin247/Qwen-Image-2.1-FP8","prompt":"a lighthouse at dusk",
+  -d '{"model":"Qwen/Qwen-Image-2.1","prompt":"a lighthouse at dusk",
        "size":"1024x1024","steps":20}' |
   python3 -c 'import base64,json,sys; open("out.png","wb").write(
       base64.b64decode(json.load(sys.stdin)["data"][0]["b64_json"]))'
 ```
+
+#### FP8 weights for an image model
+
+Qwen-Image-2.1 holds about 33 GB in bfloat16 — a 17.5 GB text encoder and a
+14.2 GB transformer. **Weights precision → FP8** (launch dialog, profile
+wizard; `"image_dtype": "fp8"` in a load body) stores both in 8 bit and
+computes in bfloat16: about 18 GB. It is diffusers' layerwise casting — every
+Linear/Conv weight kept as `float8_e4m3fn`, upcast for the duration of its
+layer; norms, embeddings and the input/output projections stay 16-bit, and
+the VAE is not touched. Nothing to install and nothing to download: it works
+on the checkpoint you already have. The components are loaded one after
+another and cast before the next is read, so the load does not peak at the
+bfloat16 size first. The planner, the admission gate and the stacked-load
+check count such a model at the FP8 size (transformer and text encoder at
+0.55 of their disk size) until it has been measured.
+
+Measured on real Qwen-Image-2.1 weights, the plain cast loses about 3 % of a
+matrix (relative error), against 2.65 % for FP8 with a per-tensor scale —
+close enough that a scaled format is not worth its own loader. What it costs
+in pictures has to be judged by eye: the same prompt and seed at both
+precisions.
+
+Why not a pre-quantised repo: there is no diffusers-format one that loads
+correctly. `Rin247/Qwen-Image-2.1-FP8` and `-INT4` store scaled weights
+(`weight` + `weight_scale`) without a `quantization_config`; diffusers loads
+the FP8 values as bfloat16 and drops the scales, so every matrix comes out
+wrong, and at full size. The Hub search marks such packages (tag `mecha`) as
+not loadable. The others are GGUF, ComfyUI single files or MLX.
 
 ### Profiles — one deployment, saved and restored
 
@@ -1222,7 +1250,8 @@ supports, then more sessions) or **more sessions** at a fixed context. Under
 *More settings*: tool calling (automatic, off, or a named parser), API names,
 quantization, trust remote code, extra vLLM flags (checked against the engine
 image at launch) and environment. Image models: largest image (which sets
-their memory), default size, default steps, default guidance and precision.
+their memory), default size, default steps, default guidance and precision
+(bfloat16, FP8 weights, float16, float32).
 Image and embedding models are fixed blocks. The arithmetic is
 `POST /api/planner/household`: every node planned as its total minus its
 measured idle use and its limit, weights measured where they have been, the

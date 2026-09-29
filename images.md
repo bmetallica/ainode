@@ -696,7 +696,16 @@ Danach, jeder Schritt ein PR:
 2. **Ob es neben qwen3.8 auf Node 3 passt.** Braucht die aktuelle Belegung,
    siehe Abschnitt 4. Die Antwort entscheidet zwischen bf16 und FP8, nicht
    zwischen „geht" und „geht nicht".
-3. **Ob das FP8-Repo hier lädt.** `Rin247/Qwen-Image-2.1-FP8` ist eine
+3. **Ob das FP8-Repo hier lädt.** *Beantwortet (2026-09-29): nein.* Die
+   safetensors enthalten `weight` (F8_E4M3) plus `weight_scale` (F32 je
+   Tensor), aber keine `quantization_config`; diffusers lädt die FP8-Werte als
+   bf16 und verwirft die Skalen als unbenutzte Schlüssel — an einem gleich
+   quantisierten Mini-Checkpoint waren 22 von 22 Matrizen falsch, und der
+   Speicher ist trotzdem der volle bf16-Bedarf. INT4 ist dasselbe Format mit
+   gepackten Gewichten. Stattdessen: das Original mit Gewichtspräzision FP8
+   (`image_dtype: fp8`, diffusers-Layerwise-Casting), ~18 GB statt ~33 GB.
+   Der Katalogeintrag `qwen-image-2.1-fp8` ist entfernt. Ursprünglicher Text:
+   `Rin247/Qwen-Image-2.1-FP8` ist eine
    Fremdkonvertierung in vollständigem diffusers-Layout. Das Layout spricht
    dafür, dass es ohne Sonderbehandlung lädt; belegt ist es nicht. Dasselbe
    gilt für INT4, wo zusätzlich offen ist, welches Quantisierungs-Backend

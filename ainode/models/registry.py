@@ -285,35 +285,16 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
     # Not vLLM: a diffusers pipeline, served by the engine in
     # scripts/Dockerfile.diffusers. See images.md.
     #
-    # FP8 rather than the bf16 original, for three reasons that all apply on
-    # this hardware: it is a complete diffusers pipeline so it loads by the
-    # same path, fp8 is native on Blackwell tensor cores rather than unpacked
-    # to bf16 to compute, and 18 GB instead of ~33 GB is the difference
-    # between fitting on a node that already serves a coding model and fitting
-    # comfortably.
+    # The bf16 original, loaded with image_dtype "fp8" where memory is short:
+    # the image server then stores the transformer and text encoder in FP8
+    # (about half their memory) and computes in bf16.
     #
-    # NOT verified: nothing here has been run on the fleet yet. The figures
-    # below are the repo's own size and a conservative headroom; step 0 in
-    # images.md replaces min_memory_gb and the description with measurements.
-    "qwen-image-2.1-fp8": ModelInfo(
-        id="qwen-image-2.1-fp8",
-        name="Qwen-Image 2.1 (FP8)",
-        hf_repo="Rin247/Qwen-Image-2.1-FP8",
-        size_gb=18.0,
-        modality="image",
-        engine_backend="diffusers",
-        min_memory_gb=28.0,
-        description=(
-            "Text-to-image, 20B MMDiT, FP8. Served by the diffusers engine, "
-            "not vLLM. No CPU offload on this hardware: the CPU and the GPU "
-            "share one physical pool, so offloading moves nothing and pays "
-            "for the copies. Speed and peak memory are not measured yet — "
-            "see images.md, step 0."
-        ),
-        quantization="FP8", family="qwen", license="Apache-2.0",
-        format="safetensors", capabilities=["image_generation"],
-        verified=False, recommended=False,
-    ),
+    # There used to be an FP8 entry here, Rin247/Qwen-Image-2.1-FP8. It is
+    # per-tensor-scaled FP8 (weight + weight_scale) with no
+    # quantization_config, so diffusers loads the FP8 values as bf16 and
+    # drops the scales as unused keys: every matrix wrong, and the full bf16
+    # memory besides. Checked on a tiny checkpoint quantised the same way —
+    # 22 of 22 matrices off after a plain from_pretrained.
     "qwen-image-2.1": ModelInfo(
         id="qwen-image-2.1",
         name="Qwen-Image 2.1 (bf16)",
@@ -323,9 +304,12 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         engine_backend="diffusers",
         min_memory_gb=43.0,
         description=(
-            "The full-precision original. Prefer the FP8 entry unless it "
-            "turns out not to load: 15 GB more for a quality difference that "
-            "has to be judged by eye, side by side."
+            "Text-to-image, 20B MMDiT. Served by the diffusers engine, not "
+            "vLLM. Held 33.6 GB after loading on a GB10. Weights precision "
+            "FP8 keeps the transformer and text encoder in 8 bit (computed "
+            "in bf16): about 18 GB. No CPU offload on this hardware: the CPU "
+            "and the GPU share one physical pool, so offloading moves nothing "
+            "and pays for the copies."
         ),
         family="qwen", license="Apache-2.0", format="safetensors",
         capabilities=["image_generation"], verified=False, recommended=False,
@@ -2282,6 +2266,13 @@ class ModelManager:
             if has("diffusion-single-file", "comfyui", "comfy-org"):
                 return False, ("A single-file checkpoint for ComfyUI, not a "
                                "diffusers pipeline directory.")
+            if has("mecha"):
+                # Rin247's "MECHA Forge" packages: scaled FP8/INT4 tensors
+                # with no quantization_config, so diffusers drops the scales.
+                return False, ("Its weights carry scales diffusers does not "
+                               "apply: it would load wrong, and at full size. "
+                               "Load the original with weights precision FP8 "
+                               "instead.")
         if kind == "embedding" and has("onnx") and not has("safetensors"):
             return False, "ONNX-only; the embedding runtime loads safetensors."
         return True, ""

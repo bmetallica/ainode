@@ -75,7 +75,8 @@ def load_pipeline(path: str, dtype_name: str) -> None:
              "float32": torch.float32}.get(dtype_name, torch.bfloat16)
     try:
         logger.info("Loading model weights from %s", path)
-        pipeline = DiffusionPipeline.from_pretrained(path, torch_dtype=dtype)
+        stored = _load_fp8_components(path, dtype) if dtype_name == "fp8" else {}
+        pipeline = DiffusionPipeline.from_pretrained(path, torch_dtype=dtype, **stored)
         # .to("cuda") and nothing else. enable_model_cpu_offload() is the
         # standard advice for a machine with separate VRAM and is meaningless
         # here: on GB10 the CPU and the GPU share one physical pool, so
@@ -95,6 +96,57 @@ def load_pipeline(path: str, dtype_name: str) -> None:
         # failed, with these lines as the evidence.
         logging.shutdown()
         os._exit(1)
+
+
+#: The components kept in FP8 by ``--dtype fp8``: the big ones. The VAE is
+#: left alone — it is small, and its decode is where precision shows first.
+_FP8_COMPONENTS = re.compile(r"^(transformer|unet|text_encoder)(_\d+)?$")
+
+
+def _load_fp8_components(path: str, compute_dtype) -> dict:
+    """Load the large components one at a time, each stored in FP8 and computed
+    in ``compute_dtype`` (bfloat16).
+
+    Asked for because Qwen-Image-2.1 held about 33 GB in bfloat16 and there is
+    no pre-quantized diffusers version of it. diffusers' layerwise casting
+    keeps every Linear/Conv weight as float8_e4m3fn and upcasts it for the
+    duration of that layer's forward; norms, embeddings and the input/output
+    projections stay in bfloat16 (diffusers' own skip list, plus the model's).
+    About half the memory of those components, at a small quality and speed
+    cost; nothing to install.
+
+    One component at a time, cast before the next is read: on GB10 the CPU
+    and the GPU share one pool, so loading everything in bfloat16 first would
+    peak at the full size — the very amount the option is there to avoid.
+    """
+    import importlib
+
+    import torch
+    from diffusers.hooks import apply_layerwise_casting
+
+    index = json.loads((Path(path) / "model_index.json").read_text())
+    out = {}
+    for name, spec in index.items():
+        if not _FP8_COMPONENTS.match(name) or not isinstance(spec, list) or len(spec) != 2 \
+                or not spec[0] or not spec[1]:
+            continue
+        library, class_name = spec
+        cls = getattr(importlib.import_module(library), class_name)
+        component = cls.from_pretrained(path, subfolder=name, torch_dtype=compute_dtype)
+        before = sum(p.numel() * p.element_size() for p in component.parameters())
+        if hasattr(component, "enable_layerwise_casting"):
+            # A diffusers model: it knows its own layers that must stay wide.
+            component.enable_layerwise_casting(storage_dtype=torch.float8_e4m3fn,
+                                               compute_dtype=compute_dtype)
+        else:
+            apply_layerwise_casting(component, storage_dtype=torch.float8_e4m3fn,
+                                    compute_dtype=compute_dtype, skip_modules_pattern="auto")
+        after = sum(p.numel() * p.element_size() for p in component.parameters())
+        logger.info("%s stored in FP8: %.1f GB -> %.1f GB", name, before / 1e9, after / 1e9)
+        out[name] = component.to("cuda") if torch.cuda.is_available() else component
+    if not out:
+        raise ValueError("fp8 found no transformer, unet or text encoder in model_index.json")
+    return out
 
 
 #: diffusers instantiates the class named in model_index.json by looking it
