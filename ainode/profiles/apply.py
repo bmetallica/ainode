@@ -275,74 +275,67 @@ def _stop_llm(app, instance) -> None:
 
 
 async def apply_profile(app, profile: Profile, *, wait: bool = True) -> dict:
-    """Converge this node onto ``profile``. Never raises; reports per entry."""
+    """Converge every node the profile uses onto it. Never raises; reports
+    per entry.
+
+    This node (the head) converges itself, and each other node the profile
+    names is asked to converge itself through POST /api/profiles/converge —
+    first everyone stops what they should not be running, then the head starts
+    its own and the distributed entries, then the peers start theirs. Nodes
+    the profile does not name are left alone (wizzard.md, E1). A peer too old
+    for the converge route falls back to the cluster load routes, as before:
+    it is started, but nothing on it is stopped.
+    """
     config = app.get("config")
-    manager = app.get("instances")
-    embeddings = app.get("embedding_manager")
+    own = str(getattr(config, "node_id", "") or "")
 
-    llm_entries = [e for e in profile.entries if e.kind != KIND_EMBEDDING]
-    emb_entries = [e for e in profile.entries if e.kind == KIND_EMBEDDING]
-    # What should be running HERE — not what is in the profile. The two differ
-    # exactly when an entry names another node, which is the case this fork
-    # exists for.
-    wanted_llm = {e.model for e in llm_entries if _entry_runs_here(app, e)}
-    wanted_emb = {e.model for e in emb_entries if _entry_runs_here(app, e)}
+    local: List[ProfileEntry] = []
+    by_peer: dict = {}
+    for entry in profile.entries:
+        if _entry_runs_here(app, entry) or entry.is_distributed:
+            # A distributed entry is launched from here whatever it names.
+            local.append(entry)
+        else:
+            by_peer.setdefault(entry.node_ids[0], []).append(entry)
+    peers = sorted({n for e in profile.entries for n in (e.node_ids or [])
+                    if n and n != own})
 
-    results: List[ApplyResult] = []
-    stopped: List[str] = []
+    # 1. Stop. Here, then on every peer, so the memory is free everywhere
+    #    before anything new reserves any.
+    stopped = _stop_unwanted(app, local)
+    reachable = {}
+    for node_id in peers:
+        answer = await _peer_converge(app, node_id, "stop", by_peer.get(node_id, []))
+        reachable[node_id] = answer is not None
+        if answer:
+            stopped.extend(f"{m} ({node_id})" for m in answer.get("stopped") or [])
 
-    # 1. Stop what the profile does not ask for. First, so the memory it held
-    #    is free before anything new reserves.
-    running = {i.record.model: i for i in manager.instances()} if manager else {}
-    for model, instance in list(running.items()):
-        if model not in wanted_llm:
-            _stop_llm(app, instance)
-            stopped.append(model)
-            running.pop(model, None)
+    # 2. Start: the head's own entries and the distributed ones, one at a
+    #    time; then each peer's, the peers side by side (they do not share
+    #    memory) and each one serially (it does).
+    results: List[ApplyResult] = list(await _start_wanted(app, local, wait=wait))
 
-    if embeddings is not None:
-        for meta in list(embeddings.list_loaded()):
-            model_id = meta.get("id") or ""
-            if model_id and model_id not in wanted_emb:
-                try:
-                    embeddings.unload(model_id)
-                    embeddings.save_manifest()
-                    stopped.append(model_id)
-                except Exception:
-                    logger.exception("profile: unload failed for %s", model_id)
+    async def _peer_start(node_id):
+        entries = by_peer.get(node_id, [])
+        if not entries:
+            return []
+        if reachable.get(node_id):
+            answer = await _peer_converge(app, node_id, "start", entries,
+                                          timeout=ENTRY_READY_TIMEOUT * len(entries) + 120)
+            if answer is not None:
+                return [ApplyResult(**{**r, "node_id": node_id})
+                        for r in answer.get("results") or []]
+            return [ApplyResult(e.model, "launch_failed", False,
+                                f"{node_id} did not answer", node_id=node_id)
+                    for e in entries]
+        # An older peer: the cluster load routes, which start but compare
+        # nothing — as profiles always did.
+        return list(await _start_wanted(app, entries, wait=wait))
 
-    # 2. Start what is missing, one at a time, waiting for each to answer.
-    from ainode.models.api_routes import _wait_port_ready, save_instance_manifest
+    for batch in await asyncio.gather(*[_peer_start(n) for n in peers]):
+        results.extend(batch)
 
-    for entry in llm_entries:
-        instance = running.get(entry.model)
-        if instance is not None and _entry_matches(entry, instance, config):
-            results.append(ApplyResult(entry.model, "already_running", True,
-                                       api_port=instance.record.api_port))
-            continue
-        if instance is not None:
-            logger.info("profile %s: %s is running with a different "
-                        "configuration — relaunching", profile.name, entry.model)
-        result = await _start_llm_entry(app, entry)
-        results.append(result)
-        if result.get("ok") and wait and result.get("api_port"):
-            ready = await _wait_port_ready(int(result["api_port"]),
-                                           timeout=ENTRY_READY_TIMEOUT)
-            result["serving"] = ready
-            if not ready:
-                # Not a failure of the launch — the engine may still be reading
-                # weights. Say so plainly instead of calling it either way.
-                result["error"] = (
-                    f"{entry.model} did not answer on port {result['api_port']} "
-                    f"within {int(ENTRY_READY_TIMEOUT)}s; it may still be "
-                    f"loading. The next model was started anyway."
-                )
-
-    # Embedding models load in-process and do not contend for the engine's
-    # memory reservation the way a vLLM instance does, so they go last and
-    # without the readiness wait.
-    for entry in emb_entries:
-        results.append(await _start_embedding_entry(app, entry))
+    from ainode.models.api_routes import save_instance_manifest
 
     try:
         save_instance_manifest(app)
@@ -358,7 +351,152 @@ async def apply_profile(app, profile: Profile, *, wait: bool = True) -> dict:
         "ok": ok,
         "results": list(results),
         "stopped": stopped,
+        "nodes": [own] + peers,
+        "unreachable": [n for n in peers if not reachable.get(n)],
     }
+
+
+def _stop_unwanted(app, entries: List[ProfileEntry]) -> List[str]:
+    """Stop, on THIS node, every model ``entries`` do not ask to run here."""
+    manager = app.get("instances")
+    embeddings = app.get("embedding_manager")
+    wanted_llm = {e.model for e in entries
+                  if e.kind != KIND_EMBEDDING and _entry_runs_here(app, e)}
+    wanted_emb = {e.model for e in entries
+                  if e.kind == KIND_EMBEDDING and _entry_runs_here(app, e)}
+    stopped: List[str] = []
+    running = {i.record.model: i for i in manager.instances()} if manager else {}
+    for model, instance in list(running.items()):
+        if model not in wanted_llm:
+            _stop_llm(app, instance)
+            stopped.append(model)
+    if embeddings is not None:
+        for meta in list(embeddings.list_loaded()):
+            model_id = meta.get("id") or ""
+            if model_id and model_id not in wanted_emb:
+                try:
+                    embeddings.unload(model_id)
+                    embeddings.save_manifest()
+                    stopped.append(model_id)
+                except Exception:
+                    logger.exception("profile: unload failed for %s", model_id)
+    return stopped
+
+
+def _unload_listed(app, entries: List[ProfileEntry]) -> List[str]:
+    """Stop, on THIS node, exactly the models ``entries`` name — a deleted
+    profile's own models, nothing else."""
+    manager = app.get("instances")
+    embeddings = app.get("embedding_manager")
+    names = {e.model for e in entries}
+    stopped: List[str] = []
+    for instance in (list(manager.instances()) if manager else []):
+        if instance.record.model in names:
+            _stop_llm(app, instance)
+            stopped.append(instance.record.model)
+    if embeddings is not None:
+        for meta in list(embeddings.list_loaded()):
+            model_id = meta.get("id") or ""
+            if model_id in names:
+                try:
+                    embeddings.unload(model_id)
+                    embeddings.save_manifest()
+                    stopped.append(model_id)
+                except Exception:
+                    logger.exception("profile: unload failed for %s", model_id)
+    return stopped
+
+
+async def _start_wanted(app, entries: List[ProfileEntry], *, wait: bool = True) -> list:
+    """Start what ``entries`` ask for and is not already running as asked,
+    one at a time, waiting for each to answer before the next."""
+    from ainode.models.api_routes import _wait_port_ready
+
+    config = app.get("config")
+    manager = app.get("instances")
+    running = {i.record.model: i for i in manager.instances()} if manager else {}
+    results: List[ApplyResult] = []
+    for entry in [e for e in entries if e.kind != KIND_EMBEDDING]:
+        instance = running.get(entry.model) if _entry_runs_here(app, entry) else None
+        if instance is not None and _entry_matches(entry, instance, config):
+            results.append(ApplyResult(entry.model, "already_running", True,
+                                       api_port=instance.record.api_port))
+            continue
+        if instance is not None:
+            logger.info("profile: %s is running with a different "
+                        "configuration — relaunching", entry.model)
+        result = await _start_llm_entry(app, entry)
+        results.append(result)
+        if result.get("ok") and wait and result.get("api_port"):
+            ready = await _wait_port_ready(int(result["api_port"]),
+                                           timeout=ENTRY_READY_TIMEOUT)
+            result["serving"] = ready
+            if not ready:
+                # Not a failure of the launch — the engine may still be reading
+                # weights. Say so plainly instead of calling it either way.
+                result["error"] = (
+                    f"{entry.model} did not answer on port {result['api_port']} "
+                    f"within {int(ENTRY_READY_TIMEOUT)}s; it may still be "
+                    f"loading. The next model was started anyway."
+                )
+    # Embedding models load in-process and do not contend for the engine's
+    # memory reservation the way a vLLM instance does, so they go last and
+    # without the readiness wait.
+    for entry in [e for e in entries if e.kind == KIND_EMBEDDING]:
+        results.append(await _start_embedding_entry(app, entry))
+    return results
+
+
+async def _peer_converge(app, node_id: str, phase: str, entries: List[ProfileEntry],
+                         timeout: float = 120.0) -> Optional[dict]:
+    """Ask a peer to converge itself. None when it cannot (unreachable, or a
+    build without the route)."""
+    cluster = app.get("cluster_state")
+    session = app.get("client_session")
+    node = None
+    if cluster is not None:
+        try:
+            node = next((n for n in cluster.members() if n.node_id == node_id), None)
+        except Exception:
+            node = None
+    host = (getattr(node, "fabric_ip", "") or getattr(node, "peer_ip", "") or "").strip() \
+        if node is not None else ""
+    if not host or session is None:
+        logger.warning("profile: cannot reach %s to %s it", node_id, phase)
+        return None
+    url = f"http://{host}:{getattr(node, 'web_port', 3000) or 3000}/api/profiles/converge"
+    body = {"phase": phase, "entries": [e.to_dict() for e in entries]}
+    try:
+        # The cluster key rides along (auth/cluster_key.py trace config).
+        async with session.post(url, json=body, timeout=timeout) as resp:
+            if resp.status == 404:
+                return None
+            payload = await resp.json(content_type=None)
+            if resp.status != 200:
+                logger.warning("profile: %s refused %s: %s", node_id, phase, payload)
+                return None
+            return payload
+    except Exception as exc:
+        logger.warning("profile: %s did not answer %s: %s", node_id, phase, exc)
+        return None
+
+
+async def converge_here(app, phase: str, entries: List[ProfileEntry]) -> dict:
+    """What a peer does when the head asks it to converge (see above)."""
+    if phase == "stop":
+        return {"stopped": _stop_unwanted(app, entries)}
+    if phase == "unload":
+        return {"stopped": _unload_listed(app, entries)}
+    if phase == "start":
+        results = await _start_wanted(app, entries, wait=True)
+        from ainode.models.api_routes import save_instance_manifest
+
+        try:
+            save_instance_manifest(app)
+        except Exception:
+            logger.exception("profile: could not persist the instance manifest")
+        return {"results": [dict(r) for r in results]}
+    raise ValueError(f"unknown phase {phase!r}")
 
 
 def local_launch_specs(app) -> List[dict]:
@@ -493,13 +631,21 @@ def capture_profile(app, name: str, description: str = "") -> Profile:
     # parameters of every model it runs. A profile without them restores the
     # models and loses the flags they need, which is a failure nobody sees
     # until the first request.
-    served = {e.model for e in entries}
+    # Keyed by model AND node: the same model on two nodes is two replicas
+    # (wizzard.md, E4), and keeping only the first dropped the second from
+    # every profile saved while both ran.
+    def _where(entry_nodes, fallback):
+        return (entry_nodes or [fallback])[0]
+
+    served = {(e.model, _where(e.node_ids, own_id)) for e in entries}
     for node in nodes:
         for spec in _peer_launch_specs(node):
             model_id = str(spec.get("model") or "")
-            if not model_id or model_id in served:
+            key = (model_id, _where([n for n in (spec.get("node_ids") or []) if n],
+                                    node.node_id))
+            if not model_id or key in served:
                 continue
-            served.add(model_id)
+            served.add(key)
             spec = dict(spec)
             # What the peer said it is, not what we assume. Forcing KIND_LLM
             # here captured an image model running on node 3 as an LLM, and
@@ -521,13 +667,13 @@ def capture_profile(app, name: str, description: str = "") -> Profile:
             if not isinstance(record, dict):
                 continue
             model_id = str(record.get("model") or "")
-            if not model_id or model_id in served:
+            if not model_id or (model_id, node.node_id) in served:
                 continue
             if str(record.get("status") or "serving") == "failed":
                 # A profile is what should be running, and a launch that died
                 # is not that. Capturing it would restore the failure.
                 continue
-            served.add(model_id)
+            served.add((model_id, node.node_id))
             peers = list(record.get("peer_ips") or [])
             node_ids = [node.node_id] + [_peer_node_id(app, ip) or ip for ip in peers]
             entries.append(ProfileEntry(
