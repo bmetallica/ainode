@@ -1,7 +1,37 @@
 # Upgrade- und Fix-Liste
 
-Stand: 2026-09-29, `main` bei `24bab34` (#218). Nur eine Liste — nichts davon
-ist umgesetzt.
+Stand: 2026-09-29, `main` bei `24bab34` (#218). Ursprünglich nur eine Liste;
+der Umsetzungsstand steht direkt darunter.
+
+## Umsetzungsstand (2026-09-29)
+
+| Punkt | Stand | PR |
+|---|---|---|
+| K1 | ✅ Anmeldung fürs Web-UI (admin/admin, im UI änderbar, auf alle Nodes), Cluster-Key zwischen den Nodes | #220 |
+| K2 | ✅ API-Keys gelten nur noch für `/v1/*`; das Dashboard sperrt sich nicht mehr aus | #220 |
+| K3 | ✅ Origin-Prüfung für jede ändernde Anfrage, auch über Loopback; CORS nach Hostname | #220, #222 |
+| B1 | ✅ laufende Engines (auch verteilt) werden nach Neustart übernommen, nicht neu gestartet | #221 |
+| B2, R2 | ✅ Import aus `/model-import` als Job; Löschen/Compile-Cache/Docker-Sweep im Executor | #223 |
+| B3 | ✅ verteilter Primary speichert Fenster/Dtype/gmu | #224 |
+| B4 | ✅ opencode-Limit passt in den gemessenen KV-Cache pro Sitzung | #225 |
+| B5, B6 | ✅ Prognose zählt abgeleitete Parallelität; „zuletzt bearbeitet“ pro Modell | #226 |
+| B7 | ✅ Ankündigungsschleife überlebt Fehler (wahrscheinliche Phantom-Ursache); Phantom-Zeile im Code nicht mehr reproduzierbar | #227 |
+| P1–P5, P7 | ✅ Kosten/Token und Gewichte aus Messung, MoE-Faktor aus Daten, Quellen-Badges, Overhead sichtbar, vLLM-Version | #228 |
+| P6 | ✅ verteilte Starts auf jedem Node gemessen (+ GiB→GB-Fehler im Fußabdruck) | #229 |
+| R1 | ✅ Log-Rotation beim Start ab 50 MB | #230 |
+| R3 | ⏳ Diagnose auf dem Head nötig → H5 | — |
+| R4 | ✅ Leser nehmen die rohen MiB | #232 |
+| R5 | ✅ nachvollziehbar + umkehrbar (`vllm-node:previous`, `engine-build.env`); echtes Pinnen ginge nur über eugrs Repo | #233 |
+| O1 | ✅ Cache für die Gewichtsgröße | #231 |
+| O2 | ⛔ auf deinen Wunsch nicht umgesetzt | — |
+| O3 | ➡ in den Profil-Wizard verschoben (`wizzard.md`, Phase 6, Entscheidung E4) | — |
+| W1, W4 | ✅ `lib.js` + Node-Tests; `scripts/dev-setup.sh`, `scripts/test.sh` | #236 |
+| W2 | ✅ `app.js` nach Ansichten aufgeteilt | #237 |
+| W3 | ⛔ „Behalten wie ist“ | — |
+| F1, F2 | ✅ Engine-Image wird gefragt: Reasoning-Parser automatisch, Flags vor dem Start geprüft | #234 |
+| F3 | ✅ veraltete opencode-Config wird gemeldet | #235 |
+| F4 | ⏳ braucht einen guten Start von Smaug / Qwen3.8 auf den Sparks (Messwerte → `verified=True`) | — |
+| H1–H5 | ⏳ Experimente auf der Hardware, Befehle in der Antwort an dich | — |
 
 Jeder Punkt sagt, **wo** er sitzt, **warum** er zählt, **was** ich tun würde
 und wie groß das ist (S = Stunden, M = ein Tag, L = mehrere Tage). Und jeder
