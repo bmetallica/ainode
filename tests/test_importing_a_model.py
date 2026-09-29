@@ -49,6 +49,21 @@ def _partial(tmp_path, repo="org/model"):
     return directory
 
 
+
+async def _take(client, **body):
+    """Take something in from the drop directory and follow its job to the
+    end, the way the UI does. Returns the job as it finished."""
+    resp = await client.post("/api/models/import/dropbox", json=body)
+    data = await resp.json()
+    assert resp.status == 202, data
+    for _ in range(500):
+        job = await (await client.get(
+            f"/api/models/download/status?job_id={data['job_id']}")).json()
+        if job["status"] not in ("importing", "mirroring"):
+            return job
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"the take never finished: {job}")
+
 class TestThePlan:
     @pytest.mark.asyncio
     async def test_it_names_what_is_missing(self, client, tmp_path, monkeypatch):
@@ -275,9 +290,8 @@ class TestTheDropDirectory:
 
         monkeypatch.setattr("ainode.models.api_routes._mirror_after_download",
                             _mirror)
-        data = await (await client.post("/api/models/import/dropbox",
-                                        json={"name": "org--model"})).json()
-        assert data["moved"] == 3
+        data = await _take(client, name="org--model")
+        assert data["moved"] == 3 and data["files_total"] == 3
         assert (tmp_path / "org--model" / "tokenizer.json").is_file()
         # Moved, not copied: 129 GB should not exist twice.
         assert not (dropped / "org--model" / "tokenizer.json").exists()
@@ -292,10 +306,9 @@ class TestTheDropDirectory:
 
         monkeypatch.setattr("ainode.models.api_routes._mirror_after_download",
                             _mirror)
-        data = await (await client.post("/api/models/import/dropbox",
-                                        json={"name": "org--model"})).json()
-        assert data["complete"] is True and data["mirroring"] is True
-        await asyncio.sleep(0)
+        data = await _take(client, name="org--model")
+        assert data["complete"] is True and data["status"] == "completed"
+        assert data["mirror"] == {"n2": "ok"}
         assert sent["model"] == "org/model"
 
     @pytest.mark.asyncio
@@ -306,10 +319,10 @@ class TestTheDropDirectory:
         (drop / "org--half" / "merges.txt").write_text("a b\n")
         (drop / "org--half" / "model.safetensors").write_bytes(b"x")
         monkeypatch.setenv("AINODE_IMPORT_DIR", str(drop))
-        data = await (await client.post("/api/models/import/dropbox",
-                                        json={"name": "org--half"})).json()
+        data = await _take(client, name="org--half")
         assert data["complete"] is False
-        assert data["mirroring"] is False
+        assert data["status"] == "imported"   # taken in, not sent anywhere
+        assert data["incomplete_reason"]
 
     @pytest.mark.asyncio
     async def test_a_name_that_says_nothing_about_the_repo_is_refused(
@@ -329,6 +342,47 @@ class TestTheDropDirectory:
         resp = await client.post("/api/models/import/dropbox",
                                  json={"name": "../etc", "hf_repo": "a/b"})
         assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_the_move_does_not_hold_the_server(self, client, dropped,
+                                                    monkeypatch):
+        """B2: with /model-import on its own disk, shutil.move is a copy — of
+        129 GB, and it ran inside the request handler. The server has to go on
+        answering while it runs, and the request has to return at once."""
+        import threading
+
+        from ainode.models import import_routes
+
+        release = threading.Event()
+        real = import_routes._move_tree
+
+        def _slow(source, target, job):
+            release.wait(5)
+            real(source, target, job)
+
+        monkeypatch.setattr(import_routes, "_move_tree", _slow)
+        resp = await client.post("/api/models/import/dropbox",
+                                 json={"name": "org--model"})
+        assert resp.status == 202
+        job_id = (await resp.json())["job_id"]
+        # The copy is still "running" — and the server answers.
+        health = await client.get("/api/health")
+        assert health.status == 200
+        job = await (await client.get(
+            f"/api/models/download/status?job_id={job_id}")).json()
+        assert job["status"] == "importing"
+        # A second take of the same repo while the first is moving is refused.
+        again = await client.post("/api/models/import/dropbox",
+                                  json={"name": "org--model"})
+        assert again.status == 409
+        release.set()
+        for _ in range(500):
+            job = await (await client.get(
+                f"/api/models/download/status?job_id={job_id}")).json()
+            if job["status"] != "importing":
+                break
+            await asyncio.sleep(0.01)
+        assert job["moved"] == 3
 
 
 class TestTheImportClearsWhatItReplaced:
@@ -369,8 +423,7 @@ class TestTheImportClearsWhatItReplaced:
 
         monkeypatch.setattr("ainode.models.api_routes._mirror_after_download",
                             _mirror)
-        data = await (await client.post("/api/models/import/dropbox",
-                                        json={"name": "org--model"})).json()
+        data = await _take(client, name="org--model")
         assert data["cleared_partials"] == 2
         assert data["reclaimed_bytes"] == 3000
         assert not list((tmp_path / "org--model").rglob("*.incomplete"))
@@ -384,9 +437,8 @@ class TestTheImportClearsWhatItReplaced:
 
         monkeypatch.setattr("ainode.models.api_routes._mirror_after_download",
                             _mirror)
-        data = await (await client.post("/api/models/import/dropbox",
-                                        json={"name": "org--model"})).json()
-        assert data["complete"] is True and data["mirroring"] is True
+        data = await _take(client, name="org--model")
+        assert data["complete"] is True and data["status"] == "completed"
 
     @pytest.mark.asyncio
     async def test_finishing_again_clears_them_too(

@@ -85,9 +85,12 @@ files are missing, with a direct Hugging Face URL for each. Small files can
 go through the browser; a whole checkpoint goes in **`/model-import`** on the
 head — the installer mounts that directory into the container at the same
 path when it exists, so `org--name/` dropped there appears in the panel and
-is *moved* (not copied) into place with one click. Either way the finished
-model is checked and then sent to the other nodes **as a job** — the request
-answers as soon as the check passes and the push shows up under Downloads,
+is *moved* (not copied) into place with one click. The move itself is a job
+too, with a file count in the panel: when `/model-import` is on a different
+disk than `~/.ainode/models`, a move is a copy, and that copy used to run
+inside the request and stand the whole server still until it ended. Either
+way the finished model is checked and then sent to the other nodes **as a
+job** — the request answers at once and the push shows up under Downloads,
 because a 129 GB transfer awaited inside an HTTP request dies with the client
 that closes the tab. An incomplete model is never mirrored: that would spread
 the problem rather than the model. An

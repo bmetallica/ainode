@@ -4677,6 +4677,43 @@ const AINode = {
         return j.job_id === jobId;
       })[0];
       if (!job) { if (line) line.textContent = ''; return; }
+      if (job.status === 'importing') {
+        if (line) {
+          line.textContent = 'moving ' + (repo || job.model_id) + ' in — ' +
+            (job.moved || 0) + '/' + (job.files_total == null ? '?' : job.files_total) +
+            ' file(s), ' + ((job.moved_bytes || 0) / 1e9).toFixed(1) + ' GB';
+        }
+        setTimeout(tick, 1000);
+        return;
+      }
+      if (job.status === 'failed' && job.moved != null && job.complete == null) {
+        if (line) line.textContent = '';
+        self.toast('Could not take ' + (repo || job.model_id) + ' in: ' +
+                   (job.error || 'failed') + ' (' + job.moved + ' file(s) moved)', 'error');
+        self.invalidate();
+        self.loadDropBox().catch(function () {});
+        return;
+      }
+      if (job.complete != null) {
+        // Once, when the move is over: what was taken in and whether it is
+        // whole. The mirror line takes over from here.
+        if (!self.state.importTook) self.state.importTook = {};
+        if (!self.state.importTook[jobId]) {
+          self.state.importTook[jobId] = true;
+          self.toast('Took ' + job.moved + ' file(s) in' + self.clearedNote(job) +
+                     (job.complete ? ' — now sending it to the other nodes'
+                                   : ' — ' + (job.incomplete_reason || 'still incomplete')),
+                     job.complete ? 'success' : 'info');
+          self.invalidate();
+          self.loadDropBox().then(function () { return self.loadImportPlan(); })
+            .catch(function () {});
+        }
+      }
+      if (job.status === 'imported') {
+        if (line) line.textContent = '';
+        self.renderDownloads();
+        return;
+      }
       var states = job.mirror || {};
       var names = Object.keys(states);
       var done = names.filter(function (n) { return states[n] === 'ok'; });
@@ -4720,19 +4757,11 @@ const AINode = {
         this.toast(out.error || 'Could not take it in', 'error');
         return;
       }
-      if (out.complete) {
-        this.toast('Took ' + out.moved + ' file(s) in' + this.clearedNote(out) +
-                   ' — now sending it to the other nodes', 'success');
-        this.watchImportMirror(out.job_id, out.hf_repo);
-      } else {
-        this.toast('Took ' + out.moved + ' file(s) in' + this.clearedNote(out) +
-                   ' — ' + (out.incomplete_reason || 'still incomplete'), 'info');
-      }
-      this.invalidate();
+      // A job now, not a reply: with /model-import on its own disk the move
+      // is a copy, and it used to hold the whole server until it finished.
+      // The same job goes on to send the model to the other nodes.
       this.state.importRepo = out.hf_repo || this.state.importRepo;
-      await this.loadDropBox();
-      await this.loadImportPlan();
-      this.renderDownloads();
+      this.watchImportMirror(out.job_id, out.hf_repo);
     } catch (err) {
       if (progress) progress.textContent = '';
       this.toast('Error: ' + err.message, 'error');
