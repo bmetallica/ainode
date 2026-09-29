@@ -86,7 +86,8 @@ def check_admission(app, model: str, *, node_ids=None, strategy: str = "auto",
             return blocked
 
     return _planner_says(app, model, node_ids=node_ids, strategy=strategy,
-                         max_model_len=max_model_len, image=image)
+                         max_model_len=max_model_len, image=image,
+                         gpu_memory_utilization=gpu_memory_utilization)
 
 
 def _guard_history_says(app, model: str, *, node_ids=None,
@@ -254,7 +255,8 @@ def _unnamed_method_says(app, model: str, config: dict) -> str:
 
 
 def _planner_says(app, model: str, *, node_ids=None, strategy: str = "auto",
-                  max_model_len: int = 0, image: dict = None) -> str:
+                  max_model_len: int = 0, image: dict = None,
+                  gpu_memory_utilization=None) -> str:
     """The planner's verdict, or "" when it cannot form one.
 
     Silence is deliberate on anything it cannot compute. A planner that
@@ -291,7 +293,8 @@ def _planner_says(app, model: str, *, node_ids=None, strategy: str = "auto",
         # This model has run here. What it actually cost beats any arithmetic
         # about what it ought to cost — but only when it was launched the same
         # way: a memory figure from a 64k context says nothing about 256k.
-        refusal = _measured_says(app, model, measured, max_model_len, node_ids)
+        refusal = _measured_says(app, model, measured, max_model_len, node_ids,
+                                 gpu_memory_utilization)
         if refusal is not None:
             return refusal
 
@@ -339,7 +342,7 @@ def _measured_cost(app, model: str):
 
 
 def _measured_says(app, model: str, measured: dict, max_model_len: int,
-                   node_ids=None):
+                   node_ids=None, gpu_memory_utilization=None):
     """Verdict from what the model actually cost, or None to fall through.
 
     Only when this launch matches the measured one. A model measured at 64k
@@ -355,6 +358,14 @@ def _measured_says(app, model: str, measured: dict, max_model_len: int,
     if not budgets:
         return None
     need = float(measured["memory_gb"])
+    # At another memory fraction the pool is another size: what it took
+    # beyond its pool stays, the pool moves with the fraction. The wizard
+    # plans a smaller fraction exactly so that the whole of it fits.
+    was = float(measured.get("gpu_memory_utilization") or 0)
+    total = float(measured.get("node_total_gb") or 0) or max(
+        (b.total_gb for b in budgets), default=0.0)
+    if was and gpu_memory_utilization and total:
+        need = max(0.0, need + (float(gpu_memory_utilization) - was) * total)
     roomiest = max(b.usable_gb for b in budgets)
     if roomiest >= need:
         return ""

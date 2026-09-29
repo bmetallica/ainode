@@ -453,3 +453,23 @@ class TestAnImageModelOnTheBooks:
         inst.record = type("R", (), {"model": "m"})()
         inst.backend = type("B", (), {"config": NodeConfig(gpu_memory_utilization=0.48)})()
         assert api_routes._reserved_share({}, inst) == 0.48
+
+
+class TestWhatALaunchHoldsBeyondItsFraction:
+    """The gate refused a profile's Flash-Next: the wizard had planned its
+    fraction against the budget and not the 4.8 GB the launch held beyond it."""
+
+    def test_the_fraction_leaves_room_for_it(self, app):
+        from ainode.planner.household import plan_household
+
+        spec = {"id": "a", "model": "org/a", "node_ids": ["s1"], "mode": "auto",
+                "max_model_len": 32768}
+        plain = plan_household(app, {"models": [dict(spec)]})["models"][0]
+        measured = {"org/a": [{"node_id": "s1", "gpu_memory_utilization": 0.8,
+                               "memory_gb": 0.8 * 128 + 5.0, "node_total_gb": 128,
+                               "launch": {"nodes": 1}}]}
+        held = plan_household(app, {"models": [dict(spec)]}, measured)["models"][0]
+        assert held["outside_pool_gb"] == pytest.approx(5.0, abs=0.05)
+        # The whole of it on the node, the fraction smaller by as much.
+        assert held["gpu_memory_utilization"] == pytest.approx(
+            plain["gpu_memory_utilization"] - 5.0 / 128, abs=0.011)

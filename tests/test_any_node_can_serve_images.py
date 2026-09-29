@@ -107,7 +107,7 @@ class TestTheGateAsksAboutTheRightNode:
         from ainode.safety import admission
 
         source = inspect.getsource(admission._planner_says)
-        assert "_measured_says(app, model, measured, max_model_len, node_ids)" \
+        assert "_measured_says(app, model, measured, max_model_len, node_ids," \
             in source
         assert "_image_says(app, manager, model, node_ids, image)" in source
 

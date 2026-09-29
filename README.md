@@ -1266,7 +1266,12 @@ their memory), default size, default steps, default guidance and precision
 Image and embedding models are fixed blocks. The arithmetic is
 `POST /api/planner/household`: every node planned as its total minus its
 measured idle use and its limit, weights measured where they have been, the
-same functions as the launch planner. A model across several nodes need not
+same functions as the launch planner. What a launch was measured to hold
+beyond its memory fraction (the API process, Ray, NCCL — 4.8 GB for
+Qwen3.8-Flash-Next across two nodes) is counted against the node and left out
+of the fraction, so the gate, which compares the measured total, admits what
+the wizard planned; the gate in turn moves a measurement to the fraction of
+the launch in front of it. A model across several nodes need not
 include the head: a set without it is led by its first node (the head
 forwards the launch there), which needs passwordless SSH to the others. The
 launcher connects by address, so before every distributed launch AINode gives

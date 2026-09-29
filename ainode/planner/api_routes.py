@@ -41,6 +41,28 @@ async def handle_household_models(request: web.Request) -> web.Response:
     return web.json_response({"models": models})
 
 
+async def _cluster_measurements_for_planning(app, max_age: float = 30.0) -> dict:
+    """The fleet's measurements, asked for at most every ``max_age`` seconds:
+    the wizard plans on every edit, and each ask is a request to every peer."""
+    import time
+
+    cached = app.get("_household_measured")
+    if cached and time.time() - cached[0] < max_age:
+        return cached[1]
+    try:
+        from ainode.measure.api_routes import gather_cluster_measurements
+
+        measured = await gather_cluster_measurements(app)
+    except Exception:
+        logger.debug("could not gather the cluster's measurements", exc_info=True)
+        measured = {}
+    try:
+        app["_household_measured"] = (time.time(), measured)
+    except Exception:
+        pass
+    return measured
+
+
 async def handle_household(request: web.Request) -> web.Response:
     """POST /api/planner/household — plan a profile wizard draft
     (planner/household.py). Read-only: computes, launches nothing."""
@@ -54,9 +76,10 @@ async def handle_household(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid JSON"}, status=400)
     if not isinstance(draft, dict):
         return web.json_response({"error": "a draft is an object"}, status=400)
+    measured = await _cluster_measurements_for_planning(request.app)
     # In an executor: resolving reads every checkpoint's config and sizes.
     result = await asyncio.get_event_loop().run_in_executor(
-        None, plan_household, request.app, draft)
+        None, plan_household, request.app, draft, measured)
     return web.json_response(result)
 
 
