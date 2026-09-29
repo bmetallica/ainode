@@ -804,9 +804,11 @@ def _fit_check(model, surviving_nodes, cluster, config, plan) -> str:
     per_node = required if plan.data_parallel_size > 1 else required / len(nodes)
 
     def free_gb(n):
-        total = float(getattr(n, "gpu_memory_gb", 0) or 0)
-        used = float(getattr(n, "gpu_memory_used_mb", 0) or 0) / 1024.0
-        return max(0.0, total - used)
+        # Both from the raw MiB the node sends: this subtracted binary GB of
+        # use from (since #212) decimal GB of total.
+        from ainode.core.units import node_total_gb, node_used_gb
+
+        return max(0.0, node_total_gb(n) - node_used_gb(n))
 
     short = [n for n in nodes if free_gb(n) < per_node]
     if not short:

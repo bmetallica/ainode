@@ -60,8 +60,11 @@ def node_budgets(app, node_ids=None) -> list:
         # gigabytes of weights from binary gigabytes of memory — 7.4% in the
         # direction that makes the model look bigger than the node, all of it
         # landing on the KV cache. See ainode/core/units.py.
+        # The fallback is the rendering as sent, which is decimal since #212;
+        # converting it as GiB overstated an updated node by 7%. Only a node
+        # that sends no raw figure gets here (R4).
         total_gb = gb_from_mib(total_mb) if total_mb else \
-            gb_from_gib(getattr(node, "gpu_memory_gb", 0) or 0)
+            float(getattr(node, "gpu_memory_gb", 0) or 0)
         free_gb = gb_from_mib(total_mb - used_mb) if total_mb else total_gb
         out.append(NodeBudget(
             node_id=node_id,

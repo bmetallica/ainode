@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional
 
+from ainode.core.units import node_total_gb
 from ainode.discovery.cluster import ClusterNode, ClusterState
 
 logger = logging.getLogger(__name__)
@@ -151,7 +152,7 @@ class ShardingPlanner:
         if not nodes:
             return False
         total_available = sum(
-            n.gpu_memory_gb * self.memory_utilization for n in nodes
+            node_total_gb(n) * self.memory_utilization for n in nodes
         )
         return total_available >= required
 
@@ -178,11 +179,11 @@ class ShardingPlanner:
             raise ValueError("No online nodes in cluster")
 
         # Sort nodes by available memory (largest first)
-        nodes_sorted = sorted(nodes, key=lambda n: n.gpu_memory_gb, reverse=True)
+        nodes_sorted = sorted(nodes, key=lambda n: node_total_gb(n), reverse=True)
 
         # Check if a single node can handle it
         best_node = nodes_sorted[0]
-        best_usable = best_node.gpu_memory_gb * self.memory_utilization
+        best_usable = node_total_gb(best_node) * self.memory_utilization
 
         if best_usable >= required:
             # Single node — no sharding needed
@@ -209,7 +210,7 @@ class ShardingPlanner:
         accumulated = 0.0
         for node in nodes_sorted:
             selected_nodes.append(node)
-            accumulated += node.gpu_memory_gb * self.memory_utilization
+            accumulated += node_total_gb(node) * self.memory_utilization
             if accumulated >= required:
                 break
 
