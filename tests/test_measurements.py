@@ -141,7 +141,8 @@ class _Guard:
     def read(self):
         from ainode.safety.memory_guard import MemoryReading
 
-        return MemoryReading(available_mb=self.available_gb * 1024,
+        # The guard reads MiB; the recorder speaks decimal GB, like the plan.
+        return MemoryReading(available_mb=self.available_gb * 1e9 / 1048576,
                              total_mb=122 * 1024, readable=True)
 
 
@@ -384,3 +385,59 @@ class TestTheUIShowsIt:
         assert "line" in assembly
         assert assembly.index("line") < assembly.index("measured")
         assert assembly.index("measured") < assembly.index("warn")
+
+
+class TestThePeersAreMeasuredToo:
+    """P6: in a distributed launch the head measured only itself, and the
+    peer is often the tighter node."""
+
+    class _Node:
+        def __init__(self, node_id, fabric_ip, used_gb):
+            self.node_id = node_id
+            self.fabric_ip = fabric_ip
+            self.peer_ip = ""
+            self.ib_ips = []
+            self.gpu_memory_used_mb = used_gb * 1e9 / 1048576
+
+    class _Cluster:
+        def __init__(self, nodes):
+            self.nodes = nodes
+
+        def members(self):
+            return list(self.nodes)
+
+    def test_the_fullest_node_is_the_figure(self, store):
+        from ainode.measure.recorder import Recorder
+
+        backend = _Backend("loading_weights", config=_Config())
+        instance = _Instance("org/m", backend)
+        instance.record.peer_ips = ["10.0.0.2"]
+        peer = self._Node("n2", "10.0.0.2", used_gb=10.0)
+        app = {"config": _Config(), "measurement_store": store,
+               "memory_guard": _Guard(100.0),
+               "instances": _Manager([instance]),
+               "cluster_state": self._Cluster([peer])}
+        recorder = Recorder(app)
+        recorder.poll()                         # baselines: head and peer
+        backend.load_phase = "ready"
+        app["memory_guard"] = _Guard(30.0)      # head: 70 GB
+        peer.gpu_memory_used_mb = 88.0 * 1e9 / 1048576   # peer: 78 GB
+        recorder.poll()
+        entry = store.get("org/m")
+        assert entry.memory_by_node == {"n3": 70.0, "n2": 78.0}
+        assert entry.memory_gb == 78.0
+
+    def test_a_solo_load_is_the_head_alone(self, store):
+        from ainode.measure.recorder import Recorder
+
+        backend = _Backend("loading_weights", config=_Config())
+        app = {"config": _Config(), "measurement_store": store,
+               "memory_guard": _Guard(100.0),
+               "instances": _Manager([_Instance("org/m", backend)])}
+        recorder = Recorder(app)
+        recorder.poll()
+        backend.load_phase = "ready"
+        app["memory_guard"] = _Guard(40.0)
+        recorder.poll()
+        entry = store.get("org/m")
+        assert entry.memory_gb == 60.0 and entry.memory_by_node == {}

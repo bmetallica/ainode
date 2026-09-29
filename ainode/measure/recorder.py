@@ -65,6 +65,9 @@ class Recorder:
         #: Host memory free when each model's load was first seen, so the
         #: cost of the load is a subtraction rather than a guess.
         self._baseline: Dict[str, float] = {}
+        #: The same for the peers of a distributed load: memory IN USE per
+        #: peer, from their announcements.
+        self._peer_baseline: Dict[str, Dict[str, float]] = {}
         self._store = None
 
     @property
@@ -101,6 +104,10 @@ class Recorder:
                 # baseline can be taken.
                 if phase not in _TERMINAL and available:
                     self._baseline.setdefault(model, available)
+                if phase not in _TERMINAL:
+                    peers = self._peer_used_gb(instance)
+                    if peers:
+                        self._peer_baseline.setdefault(model, peers)
                 continue
             if phase == previous or phase not in _TERMINAL:
                 continue
@@ -109,6 +116,7 @@ class Recorder:
         for model in [m for m in self._phase if m not in seen]:
             del self._phase[model]
             self._baseline.pop(model, None)
+            self._peer_baseline.pop(model, None)
 
         self._record_speeds()
 
@@ -123,6 +131,20 @@ class Recorder:
         cost = 0.0
         if phase == "ready" and baseline and available:
             cost = max(0.0, baseline - available)
+        by_node: Dict[str, float] = {}
+        peer_before = self._peer_baseline.pop(model, {})
+        if phase == "ready" and peer_before:
+            own = str(getattr(self._app.get("config"), "node_id", "") or "")
+            if cost:
+                by_node[own or "head"] = round(cost, 1)
+            after = self._peer_used_gb(instance)
+            for node_id, before in peer_before.items():
+                if node_id in after:
+                    by_node[node_id] = round(max(0.0, after[node_id] - before), 1)
+            # The tightest node is the one that counts: a plan is per node, and
+            # the next launch fits only if it fits on the fullest one.
+            if by_node:
+                cost = max(by_node.values())
 
         timeline = list(getattr(backend, "load_timeline", None) or [])
         seconds = sum(e.get("seconds", 0) for e in timeline) or float(
@@ -137,6 +159,7 @@ class Recorder:
             load_seconds=seconds,
             load_timeline=timeline,
             memory_gb=cost,
+            memory_by_node=by_node,
             max_model_len=int(getattr(config, "max_model_len", 0) or 0),
             gpu_memory_utilization=float(
                 getattr(config, "gpu_memory_utilization", 0) or 0),
@@ -230,18 +253,58 @@ class Recorder:
         The guard reads /proc/meminfo every two seconds anyway; asking it
         costs nothing and keeps one definition of "free" in the process.
         """
+        # Decimal GB, like everything this is compared with: the weights and
+        # cache figures from the engine report and the plan's footprint. The
+        # guard's MB are MiB, and dividing them by 1024 gave GiB — a footprint
+        # read 7% below the plan it was set beside.
+        from ainode.core.units import gb_from_mib
+
         guard = self._app.get("memory_guard")
         if guard is not None:
             try:
                 reading = guard.read()
                 if reading.readable and reading.available_mb:
-                    return reading.available_mb / 1024
+                    return gb_from_mib(reading.available_mb)
             except Exception:
                 logger.debug("could not read host memory", exc_info=True)
         from ainode.safety.memory_guard import host_available_mb
 
         value = host_available_mb()
-        return (value / 1024) if value else 0.0
+        return gb_from_mib(value) if value else 0.0
+
+    def _peer_used_gb(self, instance) -> Dict[str, float]:
+        """{node id: GB in use} for the peers this instance runs on, from
+        their own announcements (P6).
+
+        The head measured only itself, and in a distributed launch the peer
+        is often the tighter node — the one whose figure decides whether the
+        next launch fits. Each node broadcasts its memory in use every few
+        seconds; before and after the load, that is the peer's cost.
+        """
+        from ainode.core.units import gb_from_mib
+
+        record = getattr(instance, "record", None)
+        peers = {str(ip) for ip in (getattr(record, "peer_ips", None) or [])
+                 if ip}
+        cluster = self._app.get("cluster_state")
+        if not peers or cluster is None:
+            return {}
+        out: Dict[str, float] = {}
+        try:
+            members = cluster.members()
+        except Exception:
+            return {}
+        for node in members:
+            addresses = {str(getattr(node, "fabric_ip", "") or ""),
+                         str(getattr(node, "peer_ip", "") or "")}
+            addresses.update(str(a) for a in (getattr(node, "ib_ips", None)
+                                               or []))
+            if not (addresses & peers):
+                continue
+            used = float(getattr(node, "gpu_memory_used_mb", 0) or 0)
+            if used > 0:
+                out[str(node.node_id)] = gb_from_mib(used)
+        return out
 
 
 def guard_stopped_for(app, model: str) -> Optional[dict]:
