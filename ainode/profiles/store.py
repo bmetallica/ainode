@@ -198,6 +198,10 @@ class Profile:
     #: the wizard again exactly as it was left. ``entries`` stay what is
     #: applied; this is only for editing. None for a captured profile.
     wizard: Optional[dict] = None
+    #: What each entry actually took the last time the profile was applied,
+    #: gathered from every node it ran on: {"model@nodes": {memory_gb,
+    #: memory_by_node, kv_tokens, …, "at": …}}. None until then.
+    measured: Optional[dict] = None
 
     def __post_init__(self) -> None:
         self.name = str(self.name or "").strip()
@@ -239,6 +243,7 @@ class Profile:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "wizard": self.wizard,
+            "measured": self.measured,
         }
 
     @classmethod
@@ -252,6 +257,7 @@ class Profile:
             created_at=str(data.get("created_at") or ""),
             updated_at=str(data.get("updated_at") or ""),
             wizard=data.get("wizard"),
+            measured=data.get("measured"),
         )
 
 

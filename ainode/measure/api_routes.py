@@ -12,7 +12,7 @@ from ainode.measure.store import MeasurementStore
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["register_measurement_routes"]
+__all__ = ["register_measurement_routes", "gather_cluster_measurements"]
 
 
 def register_measurement_routes(app: web.Application) -> None:
@@ -82,9 +82,15 @@ async def handle_cluster(request: web.Request) -> web.Response:
     machines are identical — so the fleet's measurements are worth more than
     any one node's.
     """
-    config = request.app.get("config")
-    cluster = request.app.get("cluster_state")
-    session = request.app.get("client_session")
+    return web.json_response({"models": await gather_cluster_measurements(request.app)})
+
+
+async def gather_cluster_measurements(app) -> dict:
+    """{model: [measurement dicts, each with its node_id]} across the fleet.
+    Shared with the profile apply job, which writes them into the profile."""
+    config = app.get("config")
+    cluster = app.get("cluster_state")
+    session = app.get("client_session")
 
     async def _peer(node) -> dict:
         host = (getattr(node, "fabric_ip", "") or "").strip()
@@ -112,9 +118,8 @@ async def handle_cluster(request: web.Request) -> web.Response:
     results = await asyncio.gather(*[_peer(n) for n in peers],
                                    return_exceptions=True)
 
-    import json as _json
-
-    rows = [_json.loads((await handle_local(request)).body)]
+    rows = [{"node_id": str(getattr(config, "node_id", "") or ""),
+             "measurements": [m.to_dict() for m in _store(app).load().values()]}]
     for result in results:
         if not isinstance(result, BaseException) and isinstance(result, dict):
             rows.append(result)
@@ -128,4 +133,4 @@ async def handle_cluster(request: web.Request) -> web.Response:
                 continue
             bucket = by_model.setdefault(model, [])
             bucket.append({**entry, "node_id": entry.get("node_id") or node_id})
-    return web.json_response({"models": by_model})
+    return by_model

@@ -274,7 +274,27 @@ def _stop_llm(app, instance) -> None:
         app["engine"] = None
 
 
-async def apply_profile(app, profile: Profile, *, wait: bool = True) -> dict:
+class ApplyProgress:
+    """What an apply is doing, for a job to show (profiles/jobs.py). The
+    default does nothing, so apply_profile works the same without one."""
+
+    def phase(self, text: str) -> None:
+        pass
+
+    def entry(self, entry: ProfileEntry, state: str, detail: str = "") -> None:
+        pass
+
+    def cancelled(self) -> bool:
+        return False
+
+
+def _entry_key(entry: ProfileEntry) -> str:
+    """One entry, as the progress reports name it: model and placement."""
+    return entry.model + "@" + ",".join(entry.node_ids or [])
+
+
+async def apply_profile(app, profile: Profile, *, wait: bool = True,
+                        progress: Optional[ApplyProgress] = None) -> dict:
     """Converge every node the profile uses onto it. Never raises; reports
     per entry.
 
@@ -288,6 +308,9 @@ async def apply_profile(app, profile: Profile, *, wait: bool = True) -> dict:
     """
     config = app.get("config")
     own = str(getattr(config, "node_id", "") or "")
+    progress = progress or ApplyProgress()
+    for entry in profile.entries:
+        progress.entry(entry, "pending")
 
     local: List[ProfileEntry] = []
     by_peer: dict = {}
@@ -302,9 +325,11 @@ async def apply_profile(app, profile: Profile, *, wait: bool = True) -> dict:
 
     # 1. Stop. Here, then on every peer, so the memory is free everywhere
     #    before anything new reserves any.
+    progress.phase("Stopping what the profile does not list")
     stopped = _stop_unwanted(app, local)
     reachable = {}
     for node_id in peers:
+        progress.phase(f"Stopping what the profile does not list on {node_id}")
         answer = await _peer_converge(app, node_id, "stop", by_peer.get(node_id, []))
         reachable[node_id] = answer is not None
         if answer:
@@ -313,24 +338,38 @@ async def apply_profile(app, profile: Profile, *, wait: bool = True) -> dict:
     # 2. Start: the head's own entries and the distributed ones, one at a
     #    time; then each peer's, the peers side by side (they do not share
     #    memory) and each one serially (it does).
-    results: List[ApplyResult] = list(await _start_wanted(app, local, wait=wait))
+    progress.phase("Starting")
+    results: List[ApplyResult] = list(
+        await _start_wanted(app, local, wait=wait, progress=progress))
 
     async def _peer_start(node_id):
         entries = by_peer.get(node_id, [])
         if not entries:
             return []
-        if reachable.get(node_id):
-            answer = await _peer_converge(app, node_id, "start", entries,
-                                          timeout=ENTRY_READY_TIMEOUT * len(entries) + 120)
-            if answer is not None:
-                return [ApplyResult(**{**r, "node_id": node_id})
-                        for r in answer.get("results") or []]
-            return [ApplyResult(e.model, "launch_failed", False,
-                                f"{node_id} did not answer", node_id=node_id)
-                    for e in entries]
-        # An older peer: the cluster load routes, which start but compare
-        # nothing — as profiles always did.
-        return list(await _start_wanted(app, entries, wait=wait))
+        if not reachable.get(node_id):
+            # An older peer: the cluster load routes, which start but compare
+            # nothing — as profiles always did.
+            return list(await _start_wanted(app, entries, wait=wait, progress=progress))
+        out = []
+        # One entry per request, so each one's progress shows and a cancel
+        # takes effect between two of them — a node still loads one at a time.
+        for entry in entries:
+            if progress.cancelled():
+                progress.entry(entry, "skipped", "cancelled")
+                out.append(ApplyResult(entry.model, "skipped", False, "cancelled",
+                                       node_id=node_id))
+                continue
+            progress.entry(entry, "starting", f"on {node_id}")
+            answer = await _peer_converge(app, node_id, "start", [entry],
+                                          timeout=ENTRY_READY_TIMEOUT + 120)
+            got = [ApplyResult(**{**r, "node_id": node_id})
+                   for r in (answer or {}).get("results") or []] if answer else \
+                [ApplyResult(entry.model, "launch_failed", False,
+                             f"{node_id} did not answer", node_id=node_id)]
+            for result in got:
+                progress.entry(entry, _state_of(result), result.get("error") or "")
+            out.extend(got)
+        return out
 
     for batch in await asyncio.gather(*[_peer_start(n) for n in peers]):
         results.extend(batch)
@@ -407,27 +446,49 @@ def _unload_listed(app, entries: List[ProfileEntry]) -> List[str]:
     return stopped
 
 
-async def _start_wanted(app, entries: List[ProfileEntry], *, wait: bool = True) -> list:
+def _state_of(result) -> str:
+    """A progress state for an ApplyResult."""
+    if result.get("action") == "already_running":
+        return "unchanged"
+    if result.get("action") == "skipped":
+        return "skipped"
+    if not result.get("ok"):
+        return "failed"
+    if result.get("serving") is False:
+        return "slow"
+    return "ready"
+
+
+async def _start_wanted(app, entries: List[ProfileEntry], *, wait: bool = True,
+                        progress: Optional[ApplyProgress] = None) -> list:
     """Start what ``entries`` ask for and is not already running as asked,
     one at a time, waiting for each to answer before the next."""
     from ainode.models.api_routes import _wait_port_ready
 
+    progress = progress or ApplyProgress()
     config = app.get("config")
     manager = app.get("instances")
     running = {i.record.model: i for i in manager.instances()} if manager else {}
     results: List[ApplyResult] = []
     for entry in [e for e in entries if e.kind != KIND_EMBEDDING]:
+        if progress.cancelled():
+            progress.entry(entry, "skipped", "cancelled")
+            results.append(ApplyResult(entry.model, "skipped", False, "cancelled"))
+            continue
         instance = running.get(entry.model) if _entry_runs_here(app, entry) else None
         if instance is not None and _entry_matches(entry, instance, config):
+            progress.entry(entry, "unchanged")
             results.append(ApplyResult(entry.model, "already_running", True,
                                        api_port=instance.record.api_port))
             continue
         if instance is not None:
             logger.info("profile: %s is running with a different "
                         "configuration — relaunching", entry.model)
+        progress.entry(entry, "starting")
         result = await _start_llm_entry(app, entry)
         results.append(result)
         if result.get("ok") and wait and result.get("api_port"):
+            progress.entry(entry, "loading")
             ready = await _wait_port_ready(int(result["api_port"]),
                                            timeout=ENTRY_READY_TIMEOUT)
             result["serving"] = ready
@@ -439,11 +500,20 @@ async def _start_wanted(app, entries: List[ProfileEntry], *, wait: bool = True) 
                     f"within {int(ENTRY_READY_TIMEOUT)}s; it may still be "
                     f"loading. The next model was started anyway."
                 )
+        progress.entry(entry, _state_of(result), result.get("error") or "")
     # Embedding models load in-process and do not contend for the engine's
     # memory reservation the way a vLLM instance does, so they go last and
     # without the readiness wait.
     for entry in [e for e in entries if e.kind == KIND_EMBEDDING]:
-        results.append(await _start_embedding_entry(app, entry))
+        if progress.cancelled():
+            progress.entry(entry, "skipped", "cancelled")
+            results.append(ApplyResult(entry.model, "skipped", False, "cancelled"))
+            continue
+        progress.entry(entry, "starting")
+        result = await _start_embedding_entry(app, entry)
+        progress.entry(entry, "unchanged" if result.get("action") == "already_running"
+                       else _state_of(result), result.get("error") or "")
+        results.append(result)
     return results
 
 

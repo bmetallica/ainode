@@ -32,6 +32,9 @@ def get_store(app) -> ProfileStore:
 
 
 def register_profile_routes(app: web.Application) -> None:
+    # Before the app starts: the apply jobs (profiles/jobs.py) live here.
+    if app.get("profile_jobs") is None:
+        app["profile_jobs"] = {}
     app.router.add_get("/api/profiles", handle_list_profiles)
     app.router.add_post("/api/profiles", handle_create_profile)
     app.router.add_post("/api/profiles/capture", handle_capture_profile)
@@ -43,6 +46,79 @@ def register_profile_routes(app: web.Application) -> None:
     # Registered before the {name} routes would matter only for GET; this is a
     # POST on a path no profile route has.
     app.router.add_post("/api/profiles/converge", handle_converge)
+    app.router.add_get("/api/profiles/jobs/current", handle_current_job)
+    app.router.add_get("/api/profiles/jobs/{job_id}", handle_get_job)
+    app.router.add_post("/api/profiles/jobs/{job_id}/cancel", handle_cancel_job)
+    app.router.add_post("/api/profiles/jobs/{job_id}/restore", handle_restore_job)
+    app.router.add_get("/api/profiles/{name}/opencode", handle_profile_opencode)
+
+
+async def handle_current_job(request: web.Request) -> web.Response:
+    """GET /api/profiles/jobs/current — the running apply, or the last one;
+    ``{"job": null}`` when there has been none since this node started."""
+    from ainode.profiles.jobs import current_job
+
+    job = current_job(request.app)
+    return web.json_response({"job": job.to_dict() if job else None})
+
+
+async def handle_get_job(request: web.Request) -> web.Response:
+    from ainode.profiles.jobs import get_job
+
+    job = get_job(request.app, request.match_info["job_id"])
+    if job is None:
+        return web.json_response({"error": "no such job"}, status=404)
+    return web.json_response({"job": job.to_dict()})
+
+
+async def handle_cancel_job(request: web.Request) -> web.Response:
+    """Stop after the entry that is starting now; the rest are skipped."""
+    from ainode.profiles.jobs import get_job
+
+    job = get_job(request.app, request.match_info["job_id"])
+    if job is None:
+        return web.json_response({"error": "no such job"}, status=404)
+    if job.state == "running":
+        job.cancel_requested = True
+    return web.json_response({"job": job.to_dict()})
+
+
+async def handle_restore_job(request: web.Request) -> web.Response:
+    """Apply what ran before this job — its own capture — as a new job."""
+    from ainode.profiles.jobs import get_job, start_apply_job
+
+    job = get_job(request.app, request.match_info["job_id"])
+    if job is None:
+        return web.json_response({"error": "no such job"}, status=404)
+    if job.before is None:
+        return web.json_response({"error": "nothing was captured before this job"},
+                                 status=409)
+    try:
+        restore = await start_apply_job(request.app, job.before,
+                                        restore_of=job.profile.name)
+    except RuntimeError as exc:
+        return web.json_response({"error": str(exc)}, status=409)
+    return web.json_response({"ok": True, "job": restore.to_dict()}, status=202)
+
+
+async def handle_profile_opencode(request: web.Request) -> web.Response:
+    """GET /api/profiles/{name}/opencode?base_url= — an OpenCode config for
+    what the profile will serve (clients/opencode.py), not for what runs now."""
+    import asyncio
+
+    from ainode.clients.opencode import build_opencode_config_for_profile
+
+    profile = get_store(request.app).get(request.match_info.get("name", ""))
+    if profile is None:
+        return web.json_response({"error": "no such profile"}, status=404)
+    base = str(request.query.get("base_url") or "")
+    if not base:
+        config = request.app.get("config")
+        host = getattr(config, "fabric_ip", "") or "127.0.0.1"
+        base = f"http://{host}:{getattr(config, 'web_port', 3000)}"
+    payload = await asyncio.get_event_loop().run_in_executor(
+        None, build_opencode_config_for_profile, request.app, profile, base)
+    return web.json_response(payload)
 
 
 async def _body(request) -> dict:
@@ -220,6 +296,15 @@ async def handle_apply_profile(request: web.Request) -> web.Response:
         return web.json_response({"error": f"No profile named {name!r}."}, status=404)
 
     body = await _body(request)
+    if body.get("background"):
+        # As a job the page can follow, cancel and undo (profiles/jobs.py).
+        from ainode.profiles.jobs import start_apply_job
+
+        try:
+            job = await start_apply_job(request.app, profile)
+        except RuntimeError as exc:
+            return web.json_response({"error": str(exc)}, status=409)
+        return web.json_response({"ok": True, "job": job.to_dict()}, status=202)
     wait = body.get("wait") is not False
     try:
         report = await apply_profile(request.app, profile, wait=wait)

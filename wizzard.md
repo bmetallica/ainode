@@ -1,6 +1,6 @@
 # Profil-Wizard — Plan und Roadmap
 
-Stand: 2026-09-29. **Umgesetzt** (#239–#243); was vom Plan abweicht, steht in §10.
+Stand: 2026-09-29. **Umgesetzt** (#239–#245); was vom Plan abweicht, steht in §10.
 
 Dein Wunsch, in eigenen Worten zusammengefasst:
 
@@ -317,7 +317,7 @@ und alles Weitere steht auf ihnen.
 | 2 Profil-Entwurf, E1 (jeder Node konvergiert), Replikate im Profil | ✅ | #241 |
 | 6 Replikate im Router (E4: gleich mit) | ✅ | #242 |
 | 3–5 Wizard-Oberfläche: Name, Modelle, Zuordnung, Parameter live, Übersicht, Speichern/Anwenden, Bearbeiten, Löschen mit Stoppen | ✅ | #243 |
-| 7 Fortschrittspanel beim Anwenden, Messung ins Profil, opencode-Config aus Profil | ⏳ offen | — |
+| 7 Anwenden als Job mit Fortschrittspanel, Abbrechen, Wiederherstellen; Messung ins Profil; opencode-Config aus Profil | ✅ | #245 |
 
 **Abweichungen vom Plan, bewusst:**
 

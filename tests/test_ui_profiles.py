@@ -50,7 +50,10 @@ class TestProfilesTab:
         assert "loaded at startup" in APP_JS
 
     def test_per_entry_errors_are_rendered(self):
-        assert "_renderApplyReport" in APP_JS
+        # Per entry, live, from the apply job (profiles/jobs.py): every entry's
+        # state and its error beside it.
+        assert "_renderProfileJob" in APP_JS
+        assert "job-state-" in APP_JS and "e.detail" in APP_JS
         assert "profile-report-line" in APP_JS
 
     def test_the_tab_is_styled(self):

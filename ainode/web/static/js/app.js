@@ -223,7 +223,7 @@ const AINode = {
   //  PROFILES — the set of models this node should be serving
   // ========================================================================
 
-  _profileState: { editing: null, applying: '' },
+  _profileState: { editing: null, applying: '', job: null, jobChecked: false, dismissed: '' },
 
   async renderProfiles() {
     var mount = document.getElementById('profiles-content');
@@ -232,8 +232,17 @@ const AINode = {
     var data = await this.fetchJSON('/api/profiles');
     var profiles = (data && data.profiles) || [];
     var defaultName = (data && data.default) || '';
+    // An apply started in another tab, or before a reload, is picked up here.
+    if (!this._profileState.jobChecked) {
+      this._profileState.jobChecked = true;
+      var current = await this.fetchJSON('/api/profiles/jobs/current').catch(function () { return null; });
+      if (current && current.job) {
+        this._profileState.job = current.job;
+        if (current.job.state === 'running') this._pollProfileJob();
+      }
+    }
 
-    var html = '';
+    var html = '<div id="profile-apply-panel">' + this._renderProfileJob() + '</div>';
 
     // Capture is the realistic way to a first profile: get the deployment
     // right by hand, then keep it — rather than filling in a dozen fields
@@ -280,6 +289,7 @@ const AINode = {
     h += '    <span class="profile-card-actions">';
     h += '      <button class="btn-nvidia server-btn-sm" data-profile-apply="' + this.esc(profile.name) + '">Apply</button>';
     h += '      <button class="btn-ghost server-btn-sm" data-profile-wizard="' + this.esc(profile.name) + '">Edit in wizard</button>';
+    h += '      <button class="btn-ghost server-btn-sm" data-profile-opencode="' + this.esc(profile.name) + '">OpenCode config</button>';
     h += '      <button class="btn-ghost server-btn-sm" data-profile-default="' + this.esc(profile.name) + '">' + (isDefault ? 'Unset default' : 'Set default') + '</button>';
     h += '      <button class="btn-ghost server-btn-sm" data-profile-delete="' + this.esc(profile.name) + '">Delete</button>';
     h += '    </span>';
@@ -292,7 +302,7 @@ const AINode = {
       h += '  <div class="server-empty">Empty profile — applying it stops everything.</div>';
     } else {
       h += '  <table class="profile-table"><thead><tr>' +
-           '<th>Model</th><th>Nodes</th><th>Split</th><th>Memory</th><th>Context</th><th>KV</th>' +
+           '<th>Model</th><th>Nodes</th><th>Split</th><th>Memory</th><th>Context</th><th>KV</th><th>Measured</th>' +
            '</tr></thead><tbody>';
       // Node names where the cluster knows them; a profile stores ids.
       var names = {};
@@ -312,6 +322,7 @@ const AINode = {
              '<td>' + mem + '</td>' +
              '<td>' + ctx + '</td>' +
              '<td>' + self.esc(e.kv_cache_dtype || 'auto') + '</td>' +
+             '<td>' + self._measuredCell((profile.measured || {})[e.model + '@' + (e.node_ids || []).join(',')]) + '</td>' +
              '</tr>';
       });
       h += '  </tbody></table>';
@@ -323,6 +334,13 @@ const AINode = {
 
   _bindProfileActions() {
     var self = this;
+
+    document.querySelectorAll('[data-profile-opencode]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        self.showProfileOpencode(btn.getAttribute('data-profile-opencode'));
+      });
+    });
+    this._bindProfileJob();
 
     var wizardBtn = document.getElementById('profile-wizard-btn');
     if (wizardBtn) {
@@ -391,53 +409,193 @@ const AINode = {
   },
 
   async applyProfile(name, btn, confirmed) {
-    if (!name || this._profileState.applying) return;
+    if (!name) return;
+    var job = this._profileState.job;
+    if (job && job.state === 'running') {
+      this.toast('"' + job.profile + '" is still being applied', 'warning');
+      return;
+    }
     // Applying converges: it stops what the profile does not list. Say so
     // before doing it, because "apply" reads like "add" to most people. The
     // wizard has already shown exactly what will stop, so it does not ask.
     if (!confirmed && !confirm('Apply "' + name + '"?\n\nOn every node this profile uses, models it does not list there will be stopped, and missing ones started one after another. This can take several minutes.')) return;
-
-    this._profileState.applying = name;
-    var original = btn ? btn.textContent : '';
-    if (btn) { btn.textContent = 'Applying…'; btn.disabled = true; }
-    var report = document.getElementById('profile-report-' + name);
-    if (report) report.innerHTML = '<div class="profile-report-line">Applying — each model has to answer before the next one starts.</div>';
-
-    try {
-      var resp = await fetch('/api/profiles/' + encodeURIComponent(name) + '/apply', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      var data = await resp.json().catch(function () { return {}; });
-      if (report) report.innerHTML = this._renderApplyReport(data);
-      this.toast(data.ok ? 'Applied "' + name + '"' : 'Applied "' + name + '" with errors',
-                 data.ok ? 'success' : 'error');
-    } catch (e) {
-      if (report) report.innerHTML = '<div class="profile-report-line error">Request failed: ' + this.esc(String(e)) + '</div>';
-      this.toast('Applying the profile failed', 'error');
-    } finally {
-      this._profileState.applying = '';
-      if (btn) { btn.textContent = original || 'Apply'; btn.disabled = false; }
-      this.refresh();
+    var resp = await fetch('/api/profiles/' + encodeURIComponent(name) + '/apply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ background: true }),
+    });
+    var data = await resp.json().catch(function () { return {}; });
+    if (!resp.ok) {
+      this.toast(data.error || 'Could not apply "' + name + '"', 'error');
+      return;
     }
+    this._profileState.job = data.job;
+    this._profileState.dismissed = '';
+    this._drawProfileJob();
+    this._pollProfileJob();
   },
 
-  _renderApplyReport(data) {
+  // -- the apply job (profiles/jobs.py) ------------------------------------
+
+  _pollProfileJob() {
     var self = this;
-    if (!data || (!data.results && !data.error)) return '';
-    if (data.error) return '<div class="profile-report-line error">' + this.esc(data.error) + '</div>';
-    var h = '';
-    (data.stopped || []).forEach(function (m) {
-      h += '<div class="profile-report-line">■ stopped ' + self.esc(m) + '</div>';
+    if (this._profileJobTimer) return;
+    var tick = async function () {
+      var job = self._profileState.job;
+      if (!job) { self._profileJobTimer = null; return; }
+      var data = await self.fetchJSON('/api/profiles/jobs/' + job.id).catch(function () { return null; });
+      if (data && data.job) {
+        var was = job.state;
+        self._profileState.job = data.job;
+        self._drawProfileJob();
+        if (data.job.state !== 'running') {
+          self._profileJobTimer = null;
+          if (was === 'running') {
+            self.toast(data.job.state === 'done' ? 'Applied "' + data.job.profile + '"'
+                       : 'Applying "' + data.job.profile + '": ' + data.job.state,
+                       data.job.state === 'done' ? 'success' : 'error');
+            self.renderProfiles();
+            self.refresh();
+          }
+          return;
+        }
+      }
+      self._profileJobTimer = setTimeout(tick, 1500);
+    };
+    this._profileJobTimer = setTimeout(tick, 800);
+  },
+
+  _drawProfileJob() {
+    var slot = document.getElementById('profile-apply-panel');
+    if (!slot) return;
+    slot.innerHTML = this._renderProfileJob();
+    this._bindProfileJob();
+  },
+
+  _renderProfileJob() {
+    var self = this;
+    var job = this._profileState.job;
+    if (!job || job.id === this._profileState.dismissed) return '';
+    var names = {};
+    (this.state.nodes || []).forEach(function (n) { names[n.node_id] = n.node_name || n.node_id; });
+    var clock = function (seconds) { return self.formatSeconds(Math.max(0, seconds || 0)); };
+    var now = job.now || (Date.now() / 1000);
+    var running = job.state === 'running';
+    var title = (job.restore_of ? 'Restoring what ran before “' + job.restore_of + '”'
+                                : (running ? 'Applying' : 'Applied') + ' “' + job.profile + '”');
+    var labels = {
+      pending: 'waiting', starting: 'starting', loading: 'loading', ready: 'ready',
+      unchanged: 'already running', slow: 'still loading', failed: 'failed', skipped: 'skipped',
+    };
+    var h = '<section class="server-section profile-job profile-job-' + job.state + '">';
+    h += '<div class="server-section-header"><h3 class="server-section-title">' + this.esc(title) + '</h3>';
+    h += '<span class="server-section-meta">' + this.esc(job.phase || '') + ' · ' +
+      clock((job.finished_at || now) - job.started_at) + '</span>';
+    h += '<span class="profile-card-actions">';
+    if (running && !job.cancel_requested) {
+      h += '<button class="btn-ghost server-btn-sm" data-profile-job="cancel">Cancel</button>';
+    }
+    if (running && job.cancel_requested) {
+      h += '<span class="pw-kind">cancelling after the current model…</span>';
+    }
+    if (!running && job.can_restore && !job.restore_of) {
+      h += '<button class="btn-ghost server-btn-sm" data-profile-job="restore">Restore what ran before</button>';
+    }
+    if (!running) {
+      h += '<button class="btn-ghost server-btn-sm" data-profile-job="dismiss">Dismiss</button>';
+    }
+    h += '</span></div>';
+    h += '<table class="profile-table"><thead><tr><th>Model</th><th>Nodes</th><th>State</th>' +
+      '<th></th><th>Measured</th></tr></thead><tbody>';
+    (job.entries || []).forEach(function (e) {
+      var nodes = (e.node_ids || []).map(function (id) { return names[id] || id; }).join(', ') || 'head';
+      var since = e.since ? ' · ' + clock(now - e.since) : '';
+      var live = (e.state === 'starting' || e.state === 'loading') && running;
+      h += '<tr><td class="mono">' + self.esc(e.model) + '</td><td>' + self.esc(nodes) + '</td>' +
+        '<td><span class="job-state job-state-' + self.esc(e.state) + '">' +
+          self.esc(labels[e.state] || e.state) + '</span>' + (live ? since : '') + '</td>' +
+        '<td class="job-detail">' + self.esc(e.detail || '') + '</td>' +
+        '<td>' + self._measuredCell((job.measured || {})[e.key]) + '</td></tr>';
     });
-    (data.results || []).forEach(function (r) {
-      var mark = r.ok ? '✓' : '✕';
-      var cls = r.ok ? '' : ' error';
-      var line = mark + ' ' + self.esc(r.model) + ' — ' + self.esc(r.action);
-      if (r.error) line += ': ' + self.esc(r.error);
-      h += '<div class="profile-report-line' + cls + '">' + line + '</div>';
+    h += '</tbody></table>';
+    if ((job.stopped || []).length) {
+      h += '<div class="profile-report-line">■ stopped: ' +
+        job.stopped.map(function (m) { return self.esc(m); }).join(', ') + '</div>';
+    }
+    if ((job.unreachable || []).length) {
+      h += '<div class="profile-report-line error">Not cleared (older build or unreachable): ' +
+        job.unreachable.map(function (id) { return self.esc(names[id] || id); }).join(', ') + '</div>';
+    }
+    if (job.error) h += '<div class="profile-report-line error">' + this.esc(job.error) + '</div>';
+    return h + '</section>';
+  },
+
+  _bindProfileJob() {
+    var self = this;
+    document.querySelectorAll('[data-profile-job]').forEach(function (btn) {
+      if (btn.dataset.bound) return;
+      btn.dataset.bound = '1';
+      btn.addEventListener('click', async function () {
+        var job = self._profileState.job;
+        if (!job) return;
+        var action = btn.getAttribute('data-profile-job');
+        if (action === 'dismiss') {
+          self._profileState.dismissed = job.id;
+          self._drawProfileJob();
+          return;
+        }
+        if (action === 'restore' && !confirm('Put back what ran before "' + job.profile +
+            '" was applied? This converges the same nodes again.')) return;
+        var resp = await fetch('/api/profiles/jobs/' + job.id + '/' + action, { method: 'POST' });
+        var data = await resp.json().catch(function () { return {}; });
+        if (!resp.ok) {
+          self.toast(data.error || 'Could not ' + action, 'error');
+          return;
+        }
+        self._profileState.job = data.job;
+        self._drawProfileJob();
+        self._pollProfileJob();
+      });
     });
-    return h;
+  },
+
+  // What a model took the last time its profile was applied.
+  _measuredCell(m) {
+    if (!m || !m.memory_gb) return '<span class="pw-kind">—</span>';
+    var parts = [m.memory_gb + ' GB'];
+    if (m.kv_tokens) parts.push(this.formatNumber(m.kv_tokens) + ' tok');
+    var byNode = m.memory_by_node || {};
+    var title = Object.keys(byNode).map(function (id) { return id + ': ' + byNode[id] + ' GB'; }).join(', ');
+    return '<span title="' + this.esc(title) + '">' + this.esc(parts.join(' · ')) + '</span>';
+  },
+
+  async showProfileOpencode(name) {
+    var self = this;
+    var slot = document.getElementById('profile-report-' + name);
+    if (!slot) return;
+    var base = location.protocol + '//' + location.host;
+    var data = await this.fetchJSON('/api/profiles/' + encodeURIComponent(name) +
+                                    '/opencode?base_url=' + encodeURIComponent(base))
+      .catch(function () { return null; });
+    slot = document.getElementById('profile-report-' + name) || slot;
+    if (!data || !data.config) {
+      slot.innerHTML = '<div class="profile-report-line error">Could not build it.</div>';
+      return;
+    }
+    var text = JSON.stringify(data.config, null, 2);
+    slot.innerHTML = (data.notes || []).map(function (n) {
+      return '<div class="profile-report-line">' + self.esc(n) + '</div>';
+    }).join('') +
+      '<div style="display:flex;gap:8px;margin:8px 0"><button class="btn-nvidia server-btn-sm" ' +
+      'data-copy="' + this.esc(text) + '">Copy</button><span class="pw-kind" style="align-self:center">' +
+      'For what this profile serves once applied · save as ~/.config/opencode/opencode.json</span></div>' +
+      '<pre class="profile-opencode">' + this.esc(text) + '</pre>';
+    slot.querySelectorAll('[data-copy]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        navigator.clipboard.writeText(b.dataset.copy).then(function () {
+          self.toast('Config copied', 'success');
+        }).catch(function () { self.toast('Copy failed', 'error'); });
+      });
+    });
   },
 
   async setDefaultProfile(name, clear) {

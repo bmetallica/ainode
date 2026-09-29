@@ -78,8 +78,10 @@ class TestEveryNodeTheProfileUses:
             {"model": "rag", "kind": "embedding", "node_ids": ["s3"]},
             {"model": "chat", "node_ids": ["head"]},
         ]))
+        # One start per entry, in order, so each shows its own progress and a
+        # cancel takes effect between them.
         starts = [m for n, p, m in peers if p == "start"]
-        assert starts == [["coder", "rag"]]
+        assert starts == [["coder"], ["rag"]]
         assert [c["model"] for c in launches["solo"]] == ["chat"]
 
     def test_an_older_peer_falls_back_to_the_load_routes(self, app, launches,
