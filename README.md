@@ -260,7 +260,12 @@ derives, which is what the launch sends, instead of at one.
 **The plan describes the launch it will get** — the planner is asked with the
 KV-cache dtype the launch would actually use (the node default is fp8, and the
 form says so), not with the model's own dtype, which doubled the cost per token
-and halved every reported cache for a model without a catalog recipe. A
+and halved every reported cache for a model without a catalog recipe. The order
+is the launch's: a dtype picked in the form, then the recipe's
+`--kv-cache-dtype` (Qwen3.8-27B's is `auto`), then the node's setting — fp8,
+or auto for a vision model. A form choice replaces the recipe's flag at launch
+instead of losing to it, and a measurement is recorded at the dtype vLLM was
+actually given, so the measured cost per token is found again next time. A
 measurement is compared per node against a per-node plan rather than against
 the weights across every node, and on-disk sizes are decimal GB everywhere, so
 one panel cannot show "148 GB" above "159.4 GB on disk".

@@ -47,13 +47,36 @@ def _engine_report(backend, record=None) -> dict:
         # The dtype the cache figures belong to, written with them so the two
         # can never come from different launches.
         if report.get("kv_tokens"):
-            config = getattr(backend, "config", None)
-            report["kv_cache_dtype"] = str(
-                getattr(config, "kv_cache_dtype", "") or "auto")
+            report["kv_cache_dtype"] = launched_kv_dtype(getattr(backend, "config", None))
         return report
     except Exception:
         logger.debug("could not read the engine's memory report", exc_info=True)
         return {}
+
+
+def launched_kv_dtype(config) -> str:
+    """The KV dtype vLLM was given, by the launch's own rule
+    (backends/eugr.py): a --kv-cache-dtype in the extra args — the operator's
+    or the recipe's — suppresses the built-in one; otherwise the node's
+    setting, with fp8 turned into auto for a vision model unless asked for.
+
+    It used to be the node's setting alone. unsloth/Qwen3.8-27B-NVFP4 ran
+    with the recipe's --kv-cache-dtype auto and was recorded as fp8, so the
+    planner, planning it at auto, never used its measured cost per token.
+    """
+    if config is None:
+        return "auto"
+    flag = _flag(getattr(config, "extra_vllm_args", None), "--kv-cache-dtype")
+    if flag:
+        return str(flag)
+    try:
+        from ainode.engine.serve_args import effective_kv_cache_dtype, local_model_dir
+
+        directory = local_model_dir(str(getattr(config, "model", "") or ""),
+                                    str(getattr(config, "models_dir", "") or ""))
+        return str(effective_kv_cache_dtype(config, directory) or "auto")
+    except Exception:
+        return str(getattr(config, "kv_cache_dtype", "") or "auto")
 
 
 def _flag(args, name):
@@ -86,8 +109,7 @@ def _launch_of(record, config) -> dict:
         "nodes": 1 + len(list(getattr(record, "peer_ips", None) or [])),
         "max_model_len": int(getattr(config, "max_model_len", 0) or
                              int(_flag(args, "--max-model-len") or 0)),
-        "kv_cache_dtype": str(_flag(args, "--kv-cache-dtype") or
-                              getattr(config, "kv_cache_dtype", "") or ""),
+        "kv_cache_dtype": launched_kv_dtype(config),
         "gpu_memory_utilization": float(getattr(config, "gpu_memory_utilization", 0) or 0),
         "max_num_seqs": int(_flag(args, "--max-num-seqs") or 0),
         "quantization": str(getattr(config, "quantization", "") or ""),

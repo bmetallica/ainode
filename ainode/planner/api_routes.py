@@ -547,7 +547,7 @@ async def handle_plan(request: web.Request) -> web.Response:
         return web.json_response(payload)
 
     kv_dtype = planning_kv_dtype(request.app, recipe,
-                                 request.query.get("kv_cache_dtype") or "")
+                                 request.query.get("kv_cache_dtype") or "", model)
     measured_weights, measured_ranks = _measured_weights(request.app, model)
     moe_factor, moe_samples = _moe_weight_factor(request.app, model)
 
@@ -574,12 +574,23 @@ async def handle_plan(request: web.Request) -> web.Response:
     return _plan_response(request.app, model, recipe, facts, nodes, plan, kv_dtype)
 
 
-def planning_kv_dtype(app, recipe, requested: str = "") -> str:
+def planning_kv_dtype(app, recipe, requested: str = "", model: str = "") -> str:
     """The KV-cache dtype a launch of this model would use, for planning.
 
     Shared with the profile wizard's household planner (planner/household.py).
+    The launch's order: an explicit choice, then the recipe's
+    --kv-cache-dtype (it travels in the extra args, which suppress the
+    built-in flag), then the node's setting — fp8, turned into auto for a
+    vision model. The node's setting used to come before the recipe, so a
+    recipe's auto (Qwen3.8-27B) was planned at fp8 and launched at auto.
     """
     kv_dtype = str(requested or "")
+    if not kv_dtype and recipe is not None:
+        args = [str(a) for a in (getattr(recipe, "extra_vllm_args", None) or [])]
+        if "--kv-cache-dtype" in args:
+            index = args.index("--kv-cache-dtype")
+            if index + 1 < len(args):
+                kv_dtype = args[index + 1]
     if not kv_dtype:
         # What the LAUNCH would use if nobody said otherwise — NodeConfig's
         # default is fp8, and the launch form says so in words ("Default (fp8
@@ -591,17 +602,17 @@ def planning_kv_dtype(app, recipe, requested: str = "") -> str:
         #
         # The recipe branch below was added for exactly this reason and only
         # covered curated models. The default is the other half of it.
-        kv_dtype = str(getattr(app.get("config"), "kv_cache_dtype",
-                               "") or "")
-    if not kv_dtype and recipe is not None:
-        # The recipe's own flags are part of the plan: a model whose proven
-        # configuration is fp8 should be planned with an fp8-sized cache, or
-        # the planner and the launch disagree by a factor of two.
-        args = list(getattr(recipe, "extra_vllm_args", None) or [])
-        if "--kv-cache-dtype" in args:
-            index = args.index("--kv-cache-dtype")
-            if index + 1 < len(args):
-                kv_dtype = args[index + 1]
+        config = app.get("config")
+        kv_dtype = str(getattr(config, "kv_cache_dtype", "") or "")
+        if kv_dtype == "fp8" and model:
+            try:
+                from ainode.engine.serve_args import is_multimodal_model, local_model_dir
+
+                if is_multimodal_model(local_model_dir(
+                        model, str(getattr(config, "models_dir", "") or ""))):
+                    kv_dtype = "auto"
+            except Exception:
+                logger.debug("could not tell whether %s is multimodal", model, exc_info=True)
     return kv_dtype
 
 

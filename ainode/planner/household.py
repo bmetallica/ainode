@@ -277,7 +277,7 @@ def _resolve_llm(app, spec: dict, item: Item, nodes: Dict[str, HouseholdNode],
             item.errors.append(f"Pipeline across {count} nodes: only {facts.num_layers} layers.")
 
     requested_dtype = str(spec.get("kv_cache_dtype") or "")
-    dtype = routes.planning_kv_dtype(app, recipe, requested_dtype) or "auto"
+    dtype = routes.planning_kv_dtype(app, recipe, requested_dtype, item.model) or "auto"
     info["kv_cache_dtype"] = dtype
     measured_w, measured_ranks = routes._measured_weights(app, item.model)
     moe_factor, _ = routes._moe_weight_factor(app, item.model)
