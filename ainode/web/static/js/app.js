@@ -254,6 +254,7 @@ const AINode = {
     html += '  <div class="server-section-header">';
     html += '    <h3 class="server-section-title">Profiles</h3>';
     html += '    <span class="server-section-meta">' + profiles.length + ' saved</span>';
+    html += '    <button class="btn-nvidia server-btn-sm" id="profile-wizard-btn">New profile (wizard)</button>';
     html += '  </div>';
     if (!profiles.length) {
       html += '  <div class="server-empty">No profiles yet. Load the models you want, then click <strong>Save current state</strong>.</div>';
@@ -275,8 +276,10 @@ const AINode = {
     h += '  <div class="profile-card-head">';
     h += '    <span class="profile-name">' + this.esc(profile.name) + '</span>';
     if (isDefault) h += '    <span class="profile-default-badge">DEFAULT · loaded at startup</span>';
+    if (profile.wizard) h += '    <span class="pw-kind">planned in the wizard</span>';
     h += '    <span class="profile-card-actions">';
     h += '      <button class="btn-nvidia server-btn-sm" data-profile-apply="' + this.esc(profile.name) + '">Apply</button>';
+    h += '      <button class="btn-ghost server-btn-sm" data-profile-wizard="' + this.esc(profile.name) + '">Edit in wizard</button>';
     h += '      <button class="btn-ghost server-btn-sm" data-profile-default="' + this.esc(profile.name) + '">' + (isDefault ? 'Unset default' : 'Set default') + '</button>';
     h += '      <button class="btn-ghost server-btn-sm" data-profile-delete="' + this.esc(profile.name) + '">Delete</button>';
     h += '    </span>';
@@ -291,9 +294,15 @@ const AINode = {
       h += '  <table class="profile-table"><thead><tr>' +
            '<th>Model</th><th>Nodes</th><th>Split</th><th>Memory</th><th>Context</th><th>KV</th>' +
            '</tr></thead><tbody>';
+      // Node names where the cluster knows them; a profile stores ids.
+      var names = {};
+      (self.state.nodes || []).forEach(function (n) { names[n.node_id] = n.node_name || n.node_id; });
       entries.forEach(function (e) {
-        var nodes = (e.node_ids && e.node_ids.length) ? e.node_ids.join(', ') : 'this node';
-        var split = e.kind === 'embedding' ? 'embedding' : (e.strategy || 'auto');
+        var nodes = (e.node_ids && e.node_ids.length)
+          ? e.node_ids.map(function (id) { return names[id] || id; }).join(', ') : 'this node';
+        var split = e.kind === 'embedding' ? 'embedding'
+          : (e.kind === 'image' ? 'image'
+             : (e.strategy || ((e.node_ids || []).length > 1 ? 'auto' : 'solo')));
         var mem = e.gpu_memory_utilization ? Math.round(e.gpu_memory_utilization * 100) + '%' : '—';
         var ctx = e.max_model_len ? self.formatNumber(e.max_model_len) : '—';
         h += '<tr>' +
@@ -314,6 +323,16 @@ const AINode = {
 
   _bindProfileActions() {
     var self = this;
+
+    var wizardBtn = document.getElementById('profile-wizard-btn');
+    if (wizardBtn) {
+      wizardBtn.addEventListener('click', function () { self.openProfileWizard(); });
+    }
+    document.querySelectorAll('[data-profile-wizard]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        self.openProfileWizard(btn.getAttribute('data-profile-wizard'));
+      });
+    });
 
     var captureBtn = document.getElementById('profile-capture-btn');
     if (captureBtn) {
@@ -371,11 +390,12 @@ const AINode = {
     this.renderProfiles();
   },
 
-  async applyProfile(name, btn) {
+  async applyProfile(name, btn, confirmed) {
     if (!name || this._profileState.applying) return;
     // Applying converges: it stops what the profile does not list. Say so
-    // before doing it, because "apply" reads like "add" to most people.
-    if (!confirm('Apply "' + name + '"?\n\nModels this profile does not list will be stopped, and missing ones started one after another. This can take several minutes.')) return;
+    // before doing it, because "apply" reads like "add" to most people. The
+    // wizard has already shown exactly what will stop, so it does not ask.
+    if (!confirmed && !confirm('Apply "' + name + '"?\n\nOn every node this profile uses, models it does not list there will be stopped, and missing ones started one after another. This can take several minutes.')) return;
 
     this._profileState.applying = name;
     var original = btn ? btn.textContent : '';
@@ -436,8 +456,12 @@ const AINode = {
   },
 
   async deleteProfile(name) {
-    if (!confirm('Delete the profile "' + name + '"? Running models are not touched.')) return;
-    var resp = await fetch('/api/profiles/' + encodeURIComponent(name), { method: 'DELETE' });
+    if (!confirm('Delete the profile "' + name + '"?')) return;
+    // Its models may be running. Stopping them is a separate decision, and
+    // stops only what this profile placed — nothing else on those nodes.
+    var stop = confirm('Also stop the models of "' + name + '" on the nodes it uses?\n\nOK = stop them · Cancel = leave them running');
+    var resp = await fetch('/api/profiles/' + encodeURIComponent(name) + (stop ? '?stop=1' : ''),
+                           { method: 'DELETE' });
     if (!resp.ok) {
       this.toast('Could not delete "' + name + '"', 'error');
       return;

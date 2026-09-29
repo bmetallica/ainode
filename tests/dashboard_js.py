@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 JS = Path(__file__).resolve().parent.parent / "ainode" / "web" / "static" / "js"
-VIEWS = ("launch", "chat", "downloads", "training", "config", "server")
+VIEWS = ("launch", "chat", "downloads", "training", "config", "server", "wizard")
 
 
 def parts() -> str:

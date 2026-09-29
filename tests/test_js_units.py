@@ -25,8 +25,9 @@ def test_the_scripts_parse():
     node = shutil.which("node")
     if not node:
         pytest.skip("node is not installed")
-    for name in ("app.js", "lib.js", "topology.js"):
-        path = ROOT / "ainode" / "web" / "static" / "js" / name
+    js = ROOT / "ainode" / "web" / "static" / "js"
+    for path in sorted(list(js.glob("*.js")) + list((js / "views").glob("*.js"))):
+        name = path.name
         done = subprocess.run([node, "--check", str(path)],
                               capture_output=True, text=True, timeout=60)
         assert done.returncode == 0, f"{name}: {done.stderr}"

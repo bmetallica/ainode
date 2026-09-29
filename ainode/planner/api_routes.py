@@ -24,6 +24,19 @@ __all__ = ["register_planner_routes", "node_budgets"]
 def register_planner_routes(app: web.Application) -> None:
     app.router.add_get("/api/planner", handle_plan)
     app.router.add_post("/api/planner/household", handle_household)
+    app.router.add_get("/api/planner/household/models", handle_household_models)
+
+
+async def handle_household_models(request: web.Request) -> web.Response:
+    """GET /api/planner/household/models — what the profile wizard offers:
+    every downloaded model, with its kind and size."""
+    import asyncio
+
+    from ainode.planner.household import wizard_models
+
+    models = await asyncio.get_event_loop().run_in_executor(
+        None, wizard_models, request.app)
+    return web.json_response({"models": models})
 
 
 async def handle_household(request: web.Request) -> web.Response:

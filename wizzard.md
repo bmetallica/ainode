@@ -1,6 +1,6 @@
 # Profil-Wizard — Plan und Roadmap
 
-Stand: 2026-09-29. Plan nach #237; Umsetzung läuft (Entscheidungen in §8).
+Stand: 2026-09-29. **Umgesetzt** (#239–#243); was vom Plan abweicht, steht in §10.
 
 Dein Wunsch, in eigenen Worten zusammengefasst:
 
@@ -305,3 +305,31 @@ Aufwand grob: Phase 0 S–M, 1 M, 2 S, 3 M, 4 L, 5 M, 6 M, 7 M.
 
 Ich würde mit Phase 0 und 1 anfangen — beide sind auch ohne Wizard nützlich
 und alles Weitere steht auf ihnen.
+
+---
+
+## 10. Umsetzungsstand
+
+| Phase | Stand | PR |
+|---|---|---|
+| 0 VRAM-Grenze + Grundlast | ✅ | #239 |
+| 1 Haushalts-Planer | ✅ | #240 |
+| 2 Profil-Entwurf, E1 (jeder Node konvergiert), Replikate im Profil | ✅ | #241 |
+| 6 Replikate im Router (E4: gleich mit) | ✅ | #242 |
+| 3–5 Wizard-Oberfläche: Name, Modelle, Zuordnung, Parameter live, Übersicht, Speichern/Anwenden, Bearbeiten, Löschen mit Stoppen | ✅ | #243 |
+| 7 Fortschrittspanel beim Anwenden, Messung ins Profil, opencode-Config aus Profil | ⏳ offen | — |
+
+**Abweichungen vom Plan, bewusst:**
+
+- Ein Modell über mehrere Nodes muss den **Head einschließen**: die verteilte
+  Engine wird immer vom Head gestartet. Der Wizard sagt das, statt es zu
+  versuchen.
+- Der Schieber für eine feste Cache-Größe endet dort, wo der Plan gerade noch
+  passt (die automatischen Nachbarn auf ihrem Minimum) — im Browser-Test ließ
+  sich sonst mit einem Zug ein Konflikt erzeugen.
+- Die VRAM-Grenze ist nur im Wizard einstellbar (deine Antwort); über die API
+  geht `POST /api/nodes/<id>/memory-limit`.
+- „Automatisch zuordnen“ ist eine Startlösung nach Plattengröße; ob es passt,
+  sagt danach der Planer.
+- Die Oberfläche ist englisch wie der Rest des Dashboards.
+
