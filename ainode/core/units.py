@@ -43,7 +43,7 @@ converted explicitly rather than assumed — see ``gb_from_gib``.
 from __future__ import annotations
 
 __all__ = ["BYTES_PER_GB", "BYTES_PER_GIB", "gb_from_bytes", "gb_from_mib",
-           "gb_from_gib", "gib_from_gb"]
+           "gb_from_gib", "gib_from_gb", "node_total_gb", "node_used_gb"]
 
 BYTES_PER_GB = 1_000_000_000
 BYTES_PER_GIB = 1024 ** 3
@@ -67,3 +67,24 @@ def gb_from_gib(value) -> float:
 def gib_from_gb(value) -> float:
     """GiB from decimal GB, for comparing against ``free -g``."""
     return float(value or 0) * BYTES_PER_GB / BYTES_PER_GIB
+
+
+def node_total_gb(node) -> float:
+    """A cluster member's memory in decimal GB, from the raw figure it sends.
+
+    ``gpu_memory_total_mb`` is MiB straight from psutil/NVML on every version.
+    ``gpu_memory_gb`` is a rendering, and #212 changed its unit: a node that
+    has been updated sends 128 (decimal), one that has not yet sends 119
+    (binary) — and during a rolling update the head sees both at once. So the
+    raw figure first, converted here by the reader, and the rendering only as
+    the fallback for a node that sends no metrics (R4 in upgrade-fixes.md).
+    """
+    raw = float(getattr(node, "gpu_memory_total_mb", 0) or 0)
+    if raw > 0:
+        return gb_from_mib(raw)
+    return float(getattr(node, "gpu_memory_gb", 0) or 0)
+
+
+def node_used_gb(node) -> float:
+    """A cluster member's memory in use, decimal GB, from its raw MiB."""
+    return gb_from_mib(getattr(node, "gpu_memory_used_mb", 0) or 0)

@@ -287,7 +287,10 @@ remainder. On a 159 GB model across two nodes that was 5.7 GiB per node of
 cache spent on a rounding convention. Everything the planner compares is
 decimal now (`ainode/core/units.py`); the memory guard keeps its own GiB
 arithmetic and the conversion at that boundary is explicit. `free -g` prints
-GiB and will read about 7% below these figures.
+GiB and will read about 7% below these figures. Between nodes, the raw MiB each
+one broadcasts is what is read, and converted by the reader — the rounded
+`gpu_memory_gb` changed unit with this, so during a rolling update an updated
+and a not-yet-updated node would otherwise be compared in two units.
 
 **What it will occupy, before it occupies it** — the launch sidebar forecasts
 per node, live, as the fields change: a bar and a line saying what the engine

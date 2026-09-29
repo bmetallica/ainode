@@ -1161,7 +1161,9 @@ async def handle_nodes(request: web.Request) -> web.Response:
                 except Exception:
                     pass
             if not total_mb and n.gpu_memory_gb:
-                total_mb = n.gpu_memory_gb * 1024
+                # No raw figure: back to MiB from the rendering, which is
+                # decimal GB (#212), not GiB.
+                total_mb = float(n.gpu_memory_gb) * 1e9 / (1024 * 1024)
             used_pct = round(used_mb / total_mb * 100) if total_mb else 0
             nodes_list.append({
                 "node_id": n.node_id,
