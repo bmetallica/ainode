@@ -525,7 +525,7 @@ Object.assign(AINode, {
       '<button class="config-btn" id="image-go">Generate</button>' +
       '<span class="config-field-hint" id="image-status"></span>' +
       '</div></div>';
-    html += '<div id="image-gallery" class="image-gallery"></div>';
+    html += '<div id="image-gallery" class="image-gallery" data-keep></div>';
     mount.innerHTML = html;
 
     document.getElementById('image-go').addEventListener('click', function () {
