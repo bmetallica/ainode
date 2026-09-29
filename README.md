@@ -337,7 +337,11 @@ The plan marks each of the two numbers **measured**, **MoE-calibrated** or
 **estimated**, and a refusal that rests on an estimate says so. Each
 measurement also records the vLLM version that produced it, the plan flags one
 from another build, and it shows what the engine cost beyond weights and cache
-next to the 2.5 GB the planner assumes.
+next to the 2.5 GB the planner assumes. A distributed load is measured on
+**every node it runs on** — the peers' memory in use comes from their own
+announcements before and after — and the footprint is the fullest node's, since
+that is the one the next launch has to fit on. Footprints are decimal GB like
+the plan they sit beside; they were GiB until now, 7% low.
 
 **`reasoning` in a client config comes from the launch, not the catalog** — the
 catalog capability says the model thinks; the client field says the thinking

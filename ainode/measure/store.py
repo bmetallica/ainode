@@ -91,6 +91,10 @@ class Measurement:
     #: Serving speed, once anything has been asked of it.
     tokens_per_second: float = 0.0
     seconds_per_image: float = 0.0
+    #: A distributed load's cost on each node it ran on, head and peers.
+    #: memory_gb is then the largest of them — the node that decides whether
+    #: the next launch fits.
+    memory_by_node: Dict[str, float] = field(default_factory=dict)
     #: The last few loads, newest last: [{at, seconds, memory_gb, ok}].
     history: List[dict] = field(default_factory=list)
     #: GB of host memory that were free when the guard stopped this model,
@@ -177,7 +181,8 @@ class MeasurementStore:
                       memory_gb: float = 0.0, max_model_len: int = 0,
                       gpu_memory_utilization: float = 0.0,
                       max_image_size: int = 0,
-                      engine_report=None) -> Measurement:
+                      engine_report=None,
+                      memory_by_node=None) -> Measurement:
         """Write down what a launch did. Never raises."""
         current = self.load()
         entry = current.get(model) or Measurement(model=model)
@@ -195,6 +200,7 @@ class MeasurementStore:
                 entry.load_timeline = list(load_timeline)
             if memory_gb > 0:
                 entry.memory_gb = round(float(memory_gb), 1)
+                entry.memory_by_node = dict(memory_by_node or {})
             if max_model_len:
                 entry.max_model_len = int(max_model_len)
             if gpu_memory_utilization:

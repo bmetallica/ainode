@@ -312,6 +312,7 @@ def _attach_measurement(app, model: str, payload: dict) -> None:
         "kv_at_max_model_len": measurement.get("kv_at_max_model_len"),
         "kv_cache_dtype": measurement.get("kv_cache_dtype"),
         "engine_version": measurement.get("engine_version"),
+        "memory_by_node": measurement.get("memory_by_node") or {},
     }
     # P7: the base image follows a rolling upstream build. A figure from
     # another vLLM is still the best there is, but it is said.

@@ -2447,6 +2447,11 @@ const AINode = {
         (m.failures ? ', ' + m.failures + ' failed' : '') +
         (m.vs_plan_gb ? ' (' + (m.vs_plan_gb > 0 ? '+' : '') + m.vs_plan_gb +
          ' GB vs the plan)' : '') +
+        (Object.keys(m.memory_by_node || {}).length > 1 ? ' · per node: ' +
+         Object.keys(m.memory_by_node).map(function (id) {
+           var node = (plan.nodes || []).find(function (n) { return n.node_id === id; });
+           return this.esc((node && node.name) || id) + ' ' + m.memory_by_node[id];
+         }, this).join(', ') : '') +
         (m.overhead_gb != null ? ' · engine beyond weights and cache: ' +
          m.overhead_gb + ' GB (planned ' + plan.overhead_per_node_gb + ')' : '') +
         (m.other_build ? ' · <span class="plan-source-estimated">measured on vLLM ' +
