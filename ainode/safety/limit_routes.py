@@ -22,6 +22,20 @@ MIN_LIMIT_GB = 8.0
 
 def register_limit_routes(app: web.Application) -> None:
     app.router.add_post("/api/nodes/{node_id}/memory-limit", handle_set_limit)
+    app.router.add_get("/api/cluster/ssh-check", handle_ssh_check)
+
+
+async def handle_ssh_check(request: web.Request) -> web.Response:
+    """GET /api/cluster/ssh-check — can THIS node reach the others the way a
+    distributed launch it leads will (cluster/ssh_aliases.py)? Per node: ok,
+    the error, and the user and keys ssh will use."""
+    import asyncio
+
+    from ainode.cluster.ssh_aliases import check_ssh
+
+    results = await asyncio.get_event_loop().run_in_executor(None, check_ssh, request.app)
+    return web.json_response({"nodes": results,
+                              "ok": all(r.get("ok") for r in results)})
 
 
 def _parse(body) -> float:

@@ -1232,8 +1232,11 @@ forwards the launch there), which needs passwordless SSH to the others. The
 launcher connects by address, so before every distributed launch AINode gives
 each node's addresses the user and key of your `~/.ssh/config` alias for that
 node (`Host Spark3` / `HostName 192.168.1.4` / `IdentityFile …`) — in the
-container's copy of the file; yours is not touched. Without such an alias,
-`ssh-copy-id <user>@<address>` on the leading node does it. The
+container's copy of the file; yours is not touched. An address no alias
+matches (its HostName may be a name only the host resolves) is offered every
+key in `~/.ssh`. `curl -s localhost:3000/api/cluster/ssh-check` on a node tries
+exactly that from there to every other node and reports, per node, success or
+the ssh error and the user and keys used. The
 wizard keeps its draft in the profile, so a saved profile opens exactly as it
 was left; a captured profile opens too, each cache fixed at what it was
 launched with.

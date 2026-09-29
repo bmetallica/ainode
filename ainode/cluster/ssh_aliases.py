@@ -81,8 +81,26 @@ def _resolve(name: str) -> List[str]:
         return []
 
 
+def private_keys(directory: Path) -> List[str]:
+    """Every private key in ``directory``: a file with a matching .pub, or an
+    ``id_*`` file that is not one."""
+    out = []
+    try:
+        for entry in sorted(directory.iterdir()):
+            if not entry.is_file() or entry.suffix == ".pub":
+                continue
+            if entry.name in ("config", "known_hosts", "authorized_keys") or \
+                    entry.name.startswith("known_hosts"):
+                continue
+            if (directory / (entry.name + ".pub")).exists() or entry.name.startswith("id_"):
+                out.append(str(entry))
+    except OSError:
+        pass
+    return out
+
+
 def ip_blocks(blocks: Sequence[Dict[str, object]], nodes: Iterable[Sequence[str]],
-              resolve=_resolve) -> str:
+              resolve=_resolve, keys: Sequence[str] = ()) -> str:
     """The generated section: one Host block per node whose alias is found.
 
     ``nodes`` are the address groups of the nodes involved — each a list of
@@ -102,22 +120,32 @@ def ip_blocks(blocks: Sequence[Dict[str, object]], nodes: Iterable[Sequence[str]
         aliases.append((names, block))
 
     out: List[str] = []
+    unmatched: List[str] = []
     for group in nodes:
         addresses = [a for a in group if a]
         wanted = {a.lower() for a in addresses}
-        match = next((block for names, block in aliases if names & wanted), None)
-        if match is None:
-            continue
-        carried = [(k, v) for k, v in match["options"] if k in _CARRIED]
-        if not carried:
-            continue
         targets = sorted({a for a in addresses if a.replace(".", "").isdigit() or ":" in a})
         if not targets:
+            continue
+        match = next((block for names, block in aliases if names & wanted), None)
+        carried = [(k, v) for k, v in match["options"] if k in _CARRIED] if match else []
+        if not carried:
+            unmatched.extend(t for t in targets if t not in unmatched)
             continue
         out.append(f"# for {' '.join(match['patterns'])}")
         out.append("Host " + " ".join(targets))
         for key, value in carried:
             out.append(f"    {_canonical(key)} {value}")
+        out.append("")
+    # No alias found for these — its HostName may be a name only the host
+    # resolves, or there is none. Then every key there is: ssh tries each,
+    # and the one the operator set up for the cluster is among them. Still
+    # after any alias block, so a matched node keeps exactly its settings.
+    if unmatched and keys:
+        out.append("# no alias found: every key in ~/.ssh")
+        out.append("Host " + " ".join(unmatched))
+        for key in keys:
+            out.append(f"    IdentityFile {key}")
         out.append("")
     return "\n".join(out)
 
@@ -141,7 +169,8 @@ def ensure_ip_aliases(nodes: Iterable[Sequence[str]],
     except OSError:
         return 0
     try:
-        section = ip_blocks(parse_ssh_config(text), list(nodes), resolve=resolve)
+        section = ip_blocks(parse_ssh_config(text), list(nodes), resolve=resolve,
+                            keys=private_keys(path.parent))
         kept = []
         inside = False
         for line in text.splitlines():
@@ -160,9 +189,69 @@ def ensure_ip_aliases(nodes: Iterable[Sequence[str]],
         path.write_text(body if body.endswith("\n") else body + "\n")
         path.chmod(0o600)
         if section:
-            logger.info("ssh: node addresses now use their aliases' settings (%d node(s))",
-                        section.count("Host "))
+            logger.info("ssh: node addresses now use their aliases' settings (%d block(s)):\n%s",
+                        section.count("Host "), section)
+        else:
+            logger.warning("ssh: no alias and no key found for the peers %s — "
+                           "passwordless ssh to them will fail",
+                           ", ".join(a for g in nodes for a in g if a))
         return section.count("Host ") if section else 0
     except Exception:
         logger.exception("could not write the node addresses into %s", path)
         return 0
+
+
+def node_groups(app) -> List[List[str]]:
+    """The address group of every other cluster member."""
+    cluster = app.get("cluster_state")
+    own = str(getattr(app.get("config"), "node_id", "") or "")
+    out = []
+    for node in (cluster.members() if cluster is not None else []):
+        if node.node_id == own:
+            continue
+        out.append([str(getattr(node, "fabric_ip", "") or ""),
+                    str(getattr(node, "peer_ip", "") or ""),
+                    str(getattr(node, "node_name", "") or ""),
+                    *[str(a) for a in (getattr(node, "ib_ips", None) or [])]])
+    return out
+
+
+def check_ssh(app, timeout: int = 8) -> List[Dict[str, object]]:
+    """Map the other members' addresses to their aliases, then try a
+    passwordless ``ssh <address> true`` to each — what the launcher does
+    first. Blocking; run it in an executor."""
+    import subprocess
+
+    groups = node_groups(app)
+    ensure_ip_aliases(groups)
+    cluster = app.get("cluster_state")
+    own = str(getattr(app.get("config"), "node_id", "") or "")
+    results = []
+    for node in (cluster.members() if cluster is not None else []):
+        if node.node_id == own:
+            continue
+        address = str(getattr(node, "fabric_ip", "") or getattr(node, "peer_ip", "") or "")
+        row: Dict[str, object] = {"node_id": node.node_id,
+                                  "node_name": getattr(node, "node_name", ""),
+                                  "address": address}
+        if not address:
+            row.update(ok=False, error="no address")
+            results.append(row)
+            continue
+        try:
+            done = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={timeout}",
+                 address, "true"], capture_output=True, text=True, timeout=timeout + 5)
+            row["ok"] = done.returncode == 0
+            if not row["ok"]:
+                row["error"] = (done.stderr or "").strip()[-300:]
+            settings = subprocess.run(["ssh", "-G", address], capture_output=True,
+                                      text=True, timeout=5).stdout
+            row["user"] = next((line.split(None, 1)[1] for line in settings.splitlines()
+                                if line.startswith("user ")), "")
+            row["identity_files"] = [line.split(None, 1)[1] for line in settings.splitlines()
+                                     if line.startswith("identityfile ")]
+        except Exception as exc:
+            row.update(ok=False, error=f"{exc.__class__.__name__}: {exc}")
+        results.append(row)
+    return results
