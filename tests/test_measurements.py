@@ -259,12 +259,20 @@ class TestTheRecorder:
         store.record_launch("org/m", ok=True, memory_gb=40.0)
 
         class _Collector:
-            def model_stats(self):
-                return {"org/m": {"requests": 40, "avg_tokens_per_second": 98.5}}
+            # Counted from the moment this launch was first seen serving.
+            stats = {"org/m": {"requests": 0}}
 
+            def model_stats(self):
+                return self.stats
+
+        collector = _Collector()
         app = self._app(store, _Backend("ready", config=_Config()))
-        app["metrics_collector"] = _Collector()
-        Recorder(app).poll()
+        app["metrics_collector"] = collector
+        recorder = Recorder(app)
+        recorder.poll()
+        collector.stats = {"org/m": {"requests": 40, "tokens_generated": 40 * 197,
+                                     "avg_latency_ms": 2000.0}}
+        recorder.poll()
         assert store.get("org/m").tokens_per_second == 98.5
 
     def test_a_broken_instance_list_is_silence(self, store):

@@ -18,6 +18,7 @@ __all__ = ["register_measurement_routes", "gather_cluster_measurements"]
 def register_measurement_routes(app: web.Application) -> None:
     app.router.add_get("/api/measurements", handle_local)
     app.router.add_post("/api/measurements/forget-stops", handle_forget_stops)
+    app.router.add_post("/api/measurements/speed", handle_speed)
     app.router.add_delete("/api/measurements/{model:.+}", handle_forget)
     app.router.add_get("/api/cluster/measurements", handle_cluster)
     app.router.add_get("/api/measurements/export", handle_export)
@@ -41,6 +42,30 @@ def _store(app) -> MeasurementStore:
         store = MeasurementStore()
         app["measurement_store"] = store
     return store
+
+
+async def handle_speed(request: web.Request) -> web.Response:
+    """POST /api/measurements/speed — how fast a model this node runs answered,
+    as counted by the node its requests arrive at (usually the head).
+
+    Body: {"model", "tokens_per_second"?, "seconds_per_image"?}. Cluster key
+    only: it is one node telling another, never a browser.
+    """
+    from ainode.auth.cluster_key import is_cluster_request
+
+    if not is_cluster_request(request.headers):
+        return web.json_response({"error": "cluster key required"}, status=403)
+    try:
+        body = await request.json()
+        model = str(body.get("model") or "").strip()
+        tps = float(body.get("tokens_per_second") or 0)
+        spi = float(body.get("seconds_per_image") or 0)
+    except Exception:
+        return web.json_response({"error": "invalid body"}, status=400)
+    if not model or not (0 <= tps < 100000 and 0 <= spi < 100000):
+        return web.json_response({"error": "model and a speed required"}, status=400)
+    _store(request.app).record_speed(model, tokens_per_second=tps, seconds_per_image=spi)
+    return web.json_response({"ok": True})
 
 
 async def handle_local(request: web.Request) -> web.Response:

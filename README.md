@@ -366,8 +366,9 @@ ds_mla scale block). A mixture-of-experts nobody has launched yet is scaled by
 the median loaded/on-disk ratio of the ones that were, once there are three.
 The plan marks each of the two numbers **measured**, **MoE-calibrated** or
 **estimated**, and a refusal that rests on an estimate says so. Each
-measurement also records the vLLM version that produced it, the plan flags one
-from another build, and it shows what the engine cost beyond weights and cache
+measurement also records the vLLM version that produced it — asked of the
+engine's `/version` when the log line naming it has scrolled out of reach —
+the plan flags one from another build, and it shows what the engine cost beyond weights and cache
 next to the 2.5 GB the planner assumes. Every measurement also keeps **how
 its launch was started** — split, window, KV dtype, memory fraction,
 `--max-num-seqs`, every flag — and failed launches keep theirs in the history.
@@ -379,7 +380,12 @@ runs now and the profiles — no credentials. A distributed load is measured on
 **every node it runs on** — the peers' memory in use comes from their own
 announcements before and after — and the footprint is the fullest node's, since
 that is the one the next launch has to fit on. Footprints are decimal GB like
-the plan they sit beside; they were GiB until now, 7% low.
+the plan they sit beside; they were GiB until now, 7% low. **Speed** (tok/s,
+seconds per picture) is counted where requests arrive — the head — from the
+moment a launch is seen serving, not over the life of the AINode process, and
+sent to the node that runs the model (`POST /api/measurements/speed`, cluster
+key only); each launch keeps its own speed and version in the history, so two
+launches of one model can be compared.
 
 **`reasoning` in a client config comes from the launch, not the catalog** — the
 catalog capability says the model thinks; the client field says the thinking

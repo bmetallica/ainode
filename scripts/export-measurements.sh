@@ -31,8 +31,11 @@ import json, sys
 
 data = json.load(open(sys.argv[1]))
 nodes = data.get("nodes", [])
-print(f"    {len(nodes)} node(s), vLLM {data.get('engine_build', {}).get('ENGINE_VLLM_VERSION', '?')}")
-print(f"    {'model':<52} {'node':<10} {'launches':>8} {'GB':>7} {'tok/s':>7}  launch")
+# The engine build of the node images; each model's own vLLM is per row —
+# a recipe can pin another engine image.
+print(f"    {len(nodes)} node(s), engine build vLLM "
+      f"{data.get('engine_build', {}).get('ENGINE_VLLM_VERSION', '?')}")
+print(f"    {'model':<52} {'node':<10} {'launches':>8} {'GB':>7} {'tok/s':>7}  {'vLLM':<14} launch")
 for model in data.get("models", []):
     for row in model.get("measurements", []):
         launch = row.get("launch") or {}
@@ -41,6 +44,7 @@ for model in data.get("models", []):
         window = launch.get("max_model_len") or row.get("max_model_len") or ""
         print(f"    {model['model'][:52]:<52} {str(row.get('node_id', ''))[:10]:<10} "
               f"{row.get('launches', 0):>8} {row.get('memory_gb') or 0:>7} "
-              f"{row.get('tokens_per_second') or 0:>7}  {split} {window}")
+              f"{row.get('tokens_per_second') or 0:>7}  "
+              f"{(row.get('engine_version') or '?')[:14]:<14} {split} {window}")
 PY
 fi

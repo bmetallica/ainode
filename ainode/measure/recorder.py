@@ -14,6 +14,7 @@ need it.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,13 @@ class Recorder:
         #: peer, from their announcements.
         self._peer_baseline: Dict[str, Dict[str, float]] = {}
         self._store = None
+        #: {model: (where it runs, requests, tokens, seconds)} when this
+        #: launch of it was first seen serving: its speed is counted from here.
+        self._speed_base: Dict[str, tuple] = {}
+        self._speed_sent: Dict[str, tuple] = {}
+        #: Filled by poll(), sent by flush(): (node_id, body) and {model: port}.
+        self._outbox: list = []
+        self._want_version: Dict[str, int] = {}
 
     @property
     def store(self):
@@ -213,6 +221,8 @@ class Recorder:
             if by_node:
                 cost = max(by_node.values())
 
+        report = (self._with_checkpoint(model, _engine_report(backend, record))
+                  if phase == "ready" else None)
         timeline = list(getattr(backend, "load_timeline", None) or [])
         seconds = sum(e.get("seconds", 0) for e in timeline) or float(
             getattr(backend, "load_seconds", 0) or 0)
@@ -235,10 +245,14 @@ class Recorder:
                 getattr(config, "gpu_memory_utilization", 0) or 0),
             max_image_size=int(getattr(config, "max_image_size", 0) or 0)
             if str(getattr(config, "engine_backend", "")) == "diffusers" else 0,
-            engine_report=self._with_checkpoint(
-                model, _engine_report(backend, record))
-            if phase == "ready" else None,
+            engine_report=report,
         )
+        if report is not None and not report.get("engine_version"):
+            # Not in the log (it prints the version once, at the start, and a
+            # long distributed log has scrolled past it): ask the engine.
+            port = int(getattr(config, "api_port", 0) or 0)
+            if port and str(getattr(config, "engine_backend", "") or "") != "diffusers":
+                self._want_version[model] = port
 
     def _with_checkpoint(self, model: str, report: dict) -> dict:
         """Add the checkpoint's on-disk size and MoE-ness to a report that
@@ -261,15 +275,21 @@ class Recorder:
         return report
 
     def _record_speeds(self) -> None:
-        """How fast each model answers, from what it has actually served.
+        """How fast each model answers, from what it has served since this
+        launch of it started.
 
-        Only for models that have done enough to have an average worth
-        keeping — a speed from three requests is noise, and writing it down
-        would make it look like a fact.
+        Requests are counted where they arrive — the head — and the counters
+        run for the life of that AINode process. So the speed is the
+        difference since the model was last seen coming up, not the lifetime
+        average (which blended every launch of it, MTP on and off alike); and
+        it goes to the node that runs the model. It used to be written into
+        the head's own entry for the model — an older launch of it, where the
+        head had taken part — while the entry of the launch that served was
+        left at 0: nvidia/Qwen3.8-Flash-Next-NVFP4 on spark-1432 and
+        spark-659b.
 
-        An image model has no tokens, so its speed is the average latency:
-        one request, one picture. The proxy times those exactly as it times a
-        completion, which is why nothing extra has to be measured for it.
+        Only with enough requests behind it — a speed from three is noise.
+        An image model has no tokens: its speed is seconds per picture.
         """
         collector = self._app.get("metrics_collector")
         if collector is None:
@@ -279,23 +299,112 @@ class Recorder:
         except Exception:
             return
         kinds = self._kinds()
+        where = self._serving_where()
+        now = time.time()
+        for model in [m for m in self._speed_base if m not in where]:
+            del self._speed_base[model]          # gone: its next launch starts afresh
         for model, entry in stats.items():
-            if not isinstance(entry, dict):
+            if not isinstance(entry, dict) or model not in where:
                 continue
-            if (entry.get("requests") or 0) < 5:
+            requests = int(entry.get("requests") or 0)
+            tokens = float(entry.get("tokens_generated") or 0)
+            seconds = float(entry.get("avg_latency_ms") or 0) * requests / 1000.0
+            base = self._speed_base.get(model)
+            if base is None or base[0] != where[model]:
+                self._speed_base[model] = (where[model], requests, tokens, seconds)
                 continue
+            d_req, d_tok, d_sec = requests - base[1], tokens - base[2], seconds - base[3]
+            if d_req < 5 or d_sec <= 0:
+                continue
+            if kinds.get(model) == "image":
+                payload = {"seconds_per_image": round(d_sec / d_req, 2)}
+            elif d_tok > 0:
+                payload = {"tokens_per_second": round(d_tok / d_sec, 1)}
+            else:
+                continue
+            node_id = where[model][0]
             try:
-                if kinds.get(model) == "image":
-                    latency = entry.get("avg_latency_ms") or 0
-                    if latency:
-                        self.store.record_speed(
-                            model, seconds_per_image=float(latency) / 1000.0)
+                if node_id == self._own_id():
+                    self.store.record_speed(model, **payload)
                     continue
-                speed = entry.get("avg_tokens_per_second")
-                if speed:
-                    self.store.record_speed(model, tokens_per_second=float(speed))
+                sent = self._speed_sent.get(model)
+                # To a peer: when it moved, and otherwise once a minute.
+                if sent and sent[1] == payload and now - sent[0] < 60:
+                    continue
+                self._outbox.append((node_id, {"model": model, **payload}))
+                self._speed_sent[model] = (now, payload)
             except Exception:
-                logger.debug("could not record speed for %s", model,
+                logger.debug("could not record speed for %s", model, exc_info=True)
+
+    def _own_id(self) -> str:
+        return str(getattr(self._app.get("config"), "node_id", "") or "")
+
+    def _serving_where(self) -> Dict[str, tuple]:
+        """{model: (node that runs it, launch identity)} for every model that
+        serves now — here, or on the node that leads it."""
+        out: Dict[str, tuple] = {}
+        own = self._own_id()
+        cluster = self._app.get("cluster_state")
+        try:
+            for node in (cluster.members() if cluster is not None else []):
+                if node.node_id == own:
+                    continue
+                for inst in (getattr(node, "instances", None) or []):
+                    if not isinstance(inst, dict) or not inst.get("model"):
+                        continue
+                    if str(inst.get("status") or "") != "serving":
+                        continue
+                    leader = str(inst.get("head_node_id") or "") or node.node_id
+                    if leader != node.node_id:
+                        continue                 # announced by a member, led elsewhere
+                    out[inst["model"]] = (node.node_id, str(inst.get("instance_id") or ""),
+                                          round(float(inst.get("load_seconds") or 0), 1))
+        except Exception:
+            logger.debug("could not read the cluster's instances", exc_info=True)
+        for model, instance in self._instances():
+            backend = instance.backend
+            if str(getattr(backend, "load_phase", "") or "") != "ready":
+                continue
+            record = getattr(instance, "record", None)
+            out[model] = (own, str(getattr(record, "instance_id", "") or ""),
+                          round(float(getattr(backend, "load_seconds", 0) or 0), 1))
+        return out
+
+    async def flush(self) -> None:
+        """The network half of a poll: speeds to the nodes that run the
+        models, and each new launch's engine version from the engine."""
+        session = self._app.get("client_session")
+        outbox, self._outbox = self._outbox, []
+        wanted, self._want_version = self._want_version, {}
+        if session is None:
+            return
+        import aiohttp
+
+        timeout = aiohttp.ClientTimeout(total=5)
+        cluster = self._app.get("cluster_state")
+        nodes = {n.node_id: n for n in (cluster.members() if cluster is not None else [])}
+        for node_id, body in outbox:
+            node = nodes.get(node_id)
+            host = str(getattr(node, "fabric_ip", "") or "").strip()
+            if not host:
+                continue
+            url = f"http://{host}:{getattr(node, 'web_port', 3000)}/api/measurements/speed"
+            try:
+                async with session.post(url, json=body, timeout=timeout) as resp:
+                    await resp.read()
+            except Exception:
+                logger.debug("could not send %s's speed to %s", body.get("model"),
+                             node_id, exc_info=True)
+        for model, port in wanted.items():
+            try:
+                async with session.get(f"http://127.0.0.1:{port}/version",
+                                       timeout=timeout) as resp:
+                    data = await resp.json(content_type=None) if resp.status == 200 else {}
+                version = str((data or {}).get("version") or "")
+                if version:
+                    self.store.record_engine_version(model, version)
+            except Exception:
+                logger.debug("could not ask %s's engine for its version", model,
                              exc_info=True)
 
     def _kinds(self) -> Dict[str, str]:

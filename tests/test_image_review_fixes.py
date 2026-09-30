@@ -115,8 +115,16 @@ class TestAnImageModelsSpeedIsActuallyMeasured:
         store.record_launch("org/img", ok=True, kind="image", memory_gb=20.0)
 
         class _Collector:
+            # Counted since this AINode started: 5 pictures before the
+            # launch was seen, 20 after, 41.3 s each since.
+            calls = 0
+
             def model_stats(self):
-                return {"org/img": {"requests": 20, "avg_latency_ms": 41300.0}}
+                self.calls += 1
+                if self.calls == 1:
+                    return {"org/img": {"requests": 5, "avg_latency_ms": 10000.0}}
+                return {"org/img": {"requests": 25,
+                                    "avg_latency_ms": (5 * 10000.0 + 20 * 41300.0) / 25}}
 
         class _Record:
             model = "org/img"
@@ -132,7 +140,9 @@ class TestAnImageModelsSpeedIsActuallyMeasured:
 
         app = {"measurement_store": store, "metrics_collector": _Collector(),
                "instances": _Manager()}
-        Recorder(app)._record_speeds()
+        recorder = Recorder(app)
+        recorder._record_speeds()
+        recorder._record_speeds()
         assert store.get("org/img").seconds_per_image == 41.3
         # And it is not reported as a token rate, which it is not.
         assert store.get("org/img").tokens_per_second == 0.0
@@ -145,8 +155,14 @@ class TestAnImageModelsSpeedIsActuallyMeasured:
         store.record_launch("org/llm", ok=True, kind="llm", memory_gb=40.0)
 
         class _Collector:
+            calls = 0
+
             def model_stats(self):
-                return {"org/llm": {"requests": 40, "avg_tokens_per_second": 98.5,
+                self.calls += 1
+                if self.calls == 1:
+                    return {"org/llm": {"requests": 0}}
+                # 40 requests of 2 s, 197 tokens each: 98.5 tok/s.
+                return {"org/llm": {"requests": 40, "tokens_generated": 40 * 197,
                                     "avg_latency_ms": 2000.0}}
 
         class _Record:
@@ -163,7 +179,9 @@ class TestAnImageModelsSpeedIsActuallyMeasured:
 
         app = {"measurement_store": store, "metrics_collector": _Collector(),
                "instances": _Manager()}
-        Recorder(app)._record_speeds()
+        recorder = Recorder(app)
+        recorder._record_speeds()
+        recorder._record_speeds()
         entry = store.get("org/llm")
         assert entry.tokens_per_second == 98.5
         assert entry.seconds_per_image == 0.0
