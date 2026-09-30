@@ -54,9 +54,20 @@ class TestItPointsAtTheOneThatFits:
 
 
 class TestWhatItClaims:
-    def test_it_has_not_been_served_here(self, entry):
+    def test_it_has_been_served_here_but_is_not_badged(self, entry):
+        # Served across spark-1432 and spark-659b; the badge waits for a
+        # judgement of its answers, not only a launch.
         assert entry.verified is False
-        assert "NOT YET SERVED HERE" in entry.description
+        assert "NOT YET SERVED HERE" not in entry.description
+
+    def test_it_drafts_with_its_own_mtp_layer(self, entry):
+        args = entry.extra_vllm_args
+        assert args[args.index("--speculative_config.method") + 1] == "qwen4_exp_mtp"
+        assert args[args.index("--speculative_config.num_speculative_tokens") + 1] == "2"
+
+    def test_it_does_not_use_instanttensor(self, entry):
+        # Its 1.27 GB embedding is above the driver's ~1.2 GB budget.
+        assert "instanttensor" not in " ".join(entry.extra_vllm_args)
 
     def test_it_is_a_vision_model(self, entry):
         assert "vision" in entry.capabilities

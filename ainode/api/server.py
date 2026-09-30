@@ -1120,7 +1120,7 @@ async def handle_status(request: web.Request) -> web.Response:
         "gpu": gpu_info,
         "engine_ready": engine_ready,
         # Coarse engine load phase for the UI launching card (3c):
-        # idle | starting | loading_weights | distributed_init | profiling | ready
+        # idle | starting | distributing | distributed_init | loading_weights | profiling | ready
         # Truthful phase: the live /v1/models probe above is the reliable
         # readiness signal — the engine's _ready latch can miss the vLLM startup
         # log marker and stay False on a model that is actually serving. Report

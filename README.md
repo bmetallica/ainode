@@ -153,6 +153,19 @@ applied by the eugr backend as well as the NVIDIA and diffusers ones. It was
 not, so Qwen3.8-27B-NVFP4 got the `--load-format instanttensor` its recipe
 chooses and not the `INSTANTTENSOR_BUFFER_SIZE` cap beside it, and failed
 every launch on a staging buffer it had been configured not to ask for.
+With both in place the loader reads a 22 GB checkpoint in about 3 s here. It
+cannot be capped below the largest single tensor, though, and the driver on
+GB10 grants it about 1.2 GB: Qwen3.8-Flash-Next's 1.27 GB embedding is over
+that, so its recipe keeps the ordinary loader.
+
+**Qwen3.8-Flash-Next drafts with its own MTP layer** — the recipe carries
+`--speculative_config.method qwen4_exp_mtp` with two tokens. Measured across
+two nodes: 2.0–2.1 tokens accepted per step, at the cost of a second pass over
+the shards when loading (about a minute). And the load's time now shows as
+**loading weights**: the phases of a distributed launch are connect, then
+read — the other order kept six minutes of reading under "connecting nodes".
+The engine's log of a distributed launch is `~/.ainode/logs/distributed.log`
+on the node that leads it (`vllm.log` is the solo one).
 
 **Reading the checkpoint before the engine does** — tensor parallelism
 splits attention and the dense layers and *replicates every expert on every

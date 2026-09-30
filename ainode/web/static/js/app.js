@@ -7,8 +7,8 @@
 const INSTANCE_PHASE_INFO = {
   idle: ['starting', 8], starting: ['starting', 12],
   distributing: ['copying weights to peers', 26],
-  loading_weights: ['loading weights', 40],
-  distributed_init: ['connecting nodes', 62],
+  distributed_init: ['connecting nodes', 34],
+  loading_weights: ['loading weights', 50],
   profiling: ['profiling', 84], ready: ['ready', 100],
   failed: ['failed', 100],
 };

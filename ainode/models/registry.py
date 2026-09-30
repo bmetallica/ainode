@@ -763,7 +763,9 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "(preserve_thinking), so budget output tokens generously — and a "
             "client that wants the reasoning separated needs a reasoning "
             "parser set under Advanced, which this recipe deliberately does "
-            "not guess at. NOT YET SERVED HERE."
+            "not guess at. Served here across two nodes with its own MTP "
+            "layer drafting two tokens: about 2.1 accepted per step, and one "
+            "more minute of load time to read the drafter."
         ),
         quantization="NVFP4", family="qwen", params_b=180.0,
         proven_tp=2, verified=False, curated=True,
@@ -776,7 +778,25 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # 132.7 GB needs 132.7 GB per node rather than 66.4.
             "--enable-expert-parallel",
             "--max-model-len", "262144",
+            # The checkpoint's own MTP layer (mtp.layers.0, model_type
+            # qwen4_exp -> qwen4_exp_mtp in this engine's speculative.py).
+            # Measured on spark-1432/spark-659b at TP=2: mean acceptance
+            # length 1.99-2.12, per-position 0.60-0.68 and 0.38-0.46, about
+            # 20 steps a second. Two tokens, not more: the one MTP layer is
+            # run again for each, and the engine warns the second is already
+            # accepted less often. The drafter reads every shard a second
+            # time — 67 s on top of the load. Dotted form, as the Nemotron
+            # entry: no JSON to survive the shell.
+            "--speculative_config.method", "qwen4_exp_mtp",
+            "--speculative_config.num_speculative_tokens", "2",
             # NOT set here, on purpose, one each:
+            #
+            # --load-format instanttensor: its staging buffer cannot be smaller
+            #   than the largest tensor, and embed_tokens and lm_head are
+            #   1,271,398,400 bytes each (bf16, 248320 x 2560) — above the
+            #   ~1.2 GB "device memory budget" the driver reports on GB10.
+            #   Measured: "buffer_size (1271398400 B) exceeds device memory
+            #   budget (1172015104 B)", with BUFFERED and a 64 MiB cap set.
             #
             # --trust-remote-code: the config has no auto_map and
             #   Qwen4ExpForConditionalGeneration is in vLLM's own registry.
