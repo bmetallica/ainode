@@ -483,7 +483,8 @@ const AINode = {
     var title = (job.restore_of ? 'Restoring what ran before “' + job.restore_of + '”'
                                 : (running ? 'Applying' : 'Applied') + ' “' + job.profile + '”');
     var labels = {
-      pending: 'waiting', starting: 'starting', loading: 'loading', ready: 'ready',
+      pending: 'waiting', stopping: 'stopping the old launch', starting: 'starting',
+      loading: 'loading', ready: 'ready',
       unchanged: 'already running', slow: 'still loading', failed: 'failed', skipped: 'skipped',
     };
     var h = '<section class="server-section profile-job profile-job-' + job.state + '">';

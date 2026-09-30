@@ -153,7 +153,11 @@ def create_app(
                                      or 1) if _distributed else 1,
             pipeline_parallel_size=int(getattr(config, "pipeline_parallel_size",
                                                1) or 1) if _distributed else 1,
-            status="starting"), engine)
+            status="starting",
+            # Without it the primary came back from every restart as an LLM:
+            # Qwen-Image-2.1 on the head was recorded, captured and reported
+            # as "llm" after the update restarted AINode.
+            kind=_primary_kind(config)), engine)
         app["instances"] = _seed
     else:
         # Always there, and before the app starts: adopting engines that
@@ -407,7 +411,14 @@ def _head_instances(config) -> list:
         pipeline_parallel_size=plan.pipeline_parallel_size,
         data_parallel_size=plan.data_parallel_size,
         status="serving",
+        kind=_primary_kind(config),
     ).to_dict()]
+
+
+def _primary_kind(config) -> str:
+    """"image" for a diffusers primary, else "llm" — what the load route
+    writes on the records it creates."""
+    return "image" if str(getattr(config, "engine_backend", "") or "") == "diffusers" else "llm"
 
 
 def _build_announcement(config: NodeConfig, engine=None) -> NodeAnnouncement:

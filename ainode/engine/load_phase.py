@@ -650,6 +650,20 @@ class LoadPhaseTracker:
         #: hang looks like.
         self.detail = ''
 
+    #: Set by the operator's stop: the launch ends because it was told to,
+    #: and the dying launcher's exit is not a failure to explain. Cleared by
+    #: arm() when the next launch begins — deliberately not by reset(), which
+    #: the stop itself calls and the log thread calls again at every start.
+    halted: bool = False
+
+    def halt(self) -> None:
+        """The operator stopped this launch: whatever exit follows is theirs."""
+        self.halted = True
+
+    def arm(self) -> None:
+        """A new launch begins: an exit from here on is the launch's own."""
+        self.halted = False
+
     def reset(self) -> None:
         """A fresh log stream means a fresh launch — start the clock over."""
         self.started = time.monotonic()
@@ -690,6 +704,11 @@ class LoadPhaseTracker:
         The exit is the consequence; the reason recorded before it is the
         cause.
         """
+        if self.halted:
+            # Unloaded or cancelled while starting. The launcher's SIGKILL
+            # read as "almost always the kernel's OOM killer", and three
+            # cancelled Flash-Next launches went into its history as failures.
+            return
         if self.ready:
             return
         if self.phase == PHASE_FAILED and self.error:

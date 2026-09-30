@@ -259,6 +259,7 @@ class EugrBackend(EngineBackend):
         """
         if self.is_running():
             return True
+        self._phase.arm()
         if not EUGR_LAUNCHER.exists():
             raise EugrBackendError(
                 f"eugr launcher missing at {EUGR_LAUNCHER}. Is this running "
@@ -317,6 +318,7 @@ class EugrBackend(EngineBackend):
                 f"eugr launcher missing at {EUGR_LAUNCHER}. Is this running inside the ainode image?"
             )
 
+        self._phase.arm()
         # Reset here, not in the log-stream thread: the two distribution steps
         # below run BEFORE the launcher exists, and they are the slowest part
         # of a first launch. Leaving the phase on its previous value made them
@@ -402,6 +404,7 @@ class EugrBackend(EngineBackend):
         already dismissed. An engine that outlived an orchestrator restart came
         from the same place.
         """
+        self._phase.halt()
         if self._process and self._process.poll() is None:
             self._process.send_signal(signal.SIGTERM)
             try:

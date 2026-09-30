@@ -106,6 +106,7 @@ class DiffusersBackend(EngineBackend):
     def start(self) -> bool:
         if self.is_running():
             return True
+        self._phase.arm()
         image = self.engine_image
         if not _image_present(image):
             # It is built locally by scripts/build-diffusers-image.sh and is
@@ -161,6 +162,7 @@ class DiffusersBackend(EngineBackend):
         return self._process.poll() is None
 
     def stop(self) -> None:
+        self._phase.halt()
         self._remove_container(graceful=True)
         if self._process and self._process.poll() is None:
             try:

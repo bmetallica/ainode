@@ -1268,7 +1268,11 @@ uses** onto it: first each of those nodes stops what the profile does not ask
 it to run (the head directly, every peer through `POST /api/profiles/converge`,
 cluster key only), then the head starts its own and the distributed entries,
 then each peer starts its own — one at a time per node, and a model already
-running as the profile describes is left running. Nodes the profile does not
+running as the profile describes is left running. "As described" means every
+setting and every flag the entry names — not flag-for-flag list equality, since
+a running model also carries its recipe's flags and the parsers its launch
+added. One running with other settings is stopped **before** it is relaunched;
+launched beside itself, the admission check counted its own memory against it. Nodes the profile does not
 name are left alone; a peer on an older build is started through the old load
 routes but not cleared. The same model may appear once per node — replicas.
 The proxy then spreads requests over them: a conversation goes back to the
