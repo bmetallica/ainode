@@ -261,6 +261,13 @@ launch log; here it lands on the instance before the weights are touched.
 libraries that keep no registry, and calling those unknown would be a false
 alarm on every interesting launch.
 
+**A model split across nodes is never replayed on one** — the startup replay
+starts the node's own models solo; a distributed one it finds in the manifest
+is adopted if its engine still runs and otherwise left to the default profile,
+which starts every rank. It used to be replayed solo: Qwen3.8-Flash-Next came
+back after an update as world_size=1 on spark-1432, 132 GB on one node, and was
+OOM-killed twice (the replay retries once).
+
 **A restart does not lose what is running** — engine containers are separate
 from the orchestrator on purpose, so updating AINode does not take a
 fifteen-hour-old image server down with it. On startup the running ones are
