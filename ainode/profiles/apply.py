@@ -115,12 +115,11 @@ def _entry_matches(entry: ProfileEntry, instance, config) -> bool:
         elif str(current or "") != str(wanted):
             return False
 
-    for name in ("served_model_name", "extra_vllm_args"):
-        wanted_list = getattr(entry, name, None) or []
-        if not wanted_list:
-            continue
-        if list(getattr(inst_config, name, []) or []) != list(wanted_list):
-            return False
+    wanted_names = list(getattr(entry, "served_model_name", None) or [])
+    if wanted_names and list(getattr(inst_config, "served_model_name", []) or []) != wanted_names:
+        return False
+    if not _flags_present(entry.extra_vllm_args, getattr(inst_config, "extra_vllm_args", None)):
+        return False
 
     if entry.extra_env and dict(getattr(inst_config, "extra_env", {}) or {}) != entry.extra_env:
         return False
@@ -128,6 +127,32 @@ def _entry_matches(entry: ProfileEntry, instance, config) -> bool:
         getattr(inst_config, "trust_remote_code", False)
     ) != bool(entry.trust_remote_code):
         return False
+    return True
+
+
+def _flags_present(wanted, running) -> bool:
+    """Every flag the entry states is on the running instance, with the same
+    values. Not list equality: the running instance also carries its recipe's
+    flags and the ones the launch adds (tool and reasoning parsers), so an
+    entry naming only ``--max-num-seqs 11`` never equalled the instance it
+    had started, and every apply relaunched it."""
+    from ainode.engine.serve_args import split_vllm_args
+
+    def _groups(args):
+        out = {}
+        for group in split_vllm_args([str(a) for a in (args or [])]):
+            flag, _, inline = group[0].partition("=")
+            out[flag.replace("_", "-")] = ([inline] if inline else []) + group[1:]
+        return out
+
+    have = _groups(running)
+    for flag, values in _groups(wanted).items():
+        if flag.startswith("drop:"):
+            if flag[len("drop:"):] in have:
+                return False
+            continue
+        if have.get(flag) != values:
+            return False
     return True
 
 
@@ -487,6 +512,11 @@ async def _start_wanted(app, entries: List[ProfileEntry], *, wait: bool = True,
         if instance is not None:
             logger.info("profile: %s is running with a different "
                         "configuration — relaunching", entry.model)
+            # Down first. Launched beside itself, the admission check counted
+            # the old instance's memory against the new one ("cost 80 GB …
+            # 20 GB free") and the entry failed while the old one ran on.
+            progress.entry(entry, "stopping")
+            await asyncio.get_event_loop().run_in_executor(None, _stop_llm, app, instance)
         progress.entry(entry, "starting")
         result = await _start_llm_entry(app, entry)
         results.append(result)
