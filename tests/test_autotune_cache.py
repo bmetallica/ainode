@@ -1,10 +1,9 @@
-"""Every rank of a distributed launch starts with the same FlashInfer tuning
+"""No rank of a distributed launch starts with stored FlashInfer tuning
 results (engine/autotune_cache.py).
 
-The Qwen3.8-Flash-Next launch that hung: only the leading node kept
-autotune_configs.json from the first launch, the second launch found it on
-rank 0 and not on rank 1, and rank 1 waited thirty minutes in the tuner's
-all_reduce.
+The Qwen3.8-Flash-Next launch that hung: only rank 0 stores results, keyed by
+its ep_rank, so rank 0 hit and rank 1 missed on every launch after the first,
+and rank 1 waited thirty minutes in the tuner's all_reduce.
 """
 
 from __future__ import annotations
@@ -106,11 +105,23 @@ class TestTheLaunch:
         monkeypatch.setattr("urllib.request.urlopen", _urlopen)
         assert autotune_cache.push_to_peers(["10.0.0.9"], files={}) == ["10.0.0.9"]
 
-    def test_the_distributed_launch_aligns_before_it_starts(self):
+    def test_the_distributed_launch_empties_it_before_it_starts(self):
         import inspect
 
         from ainode.engine.backends.eugr import EugrBackend
 
         source = inspect.getsource(EugrBackend.start_distributed)
         assert source.index("_distribute_model_to_peers()") < source.index(
-            "_align_autotune_cache()") < source.index("preparing the cluster launch")
+            "_clear_autotune_cache()") < source.index("preparing the cluster launch")
+
+    def test_it_is_emptied_here_and_on_every_peer(self, tmp_path, monkeypatch):
+        (tmp_path / "at" / "h").mkdir(parents=True)
+        (tmp_path / "at" / "h" / "autotune_configs.json").write_text("{}")
+        monkeypatch.setattr(autotune_cache, "autotune_dir", lambda: tmp_path / "at")
+        sent = []
+        monkeypatch.setattr(autotune_cache, "push_to_peers",
+                            lambda peers, port=3000, files=None, **kw: sent.append(
+                                (list(peers), files)) or [])
+        assert autotune_cache.clear_for_distributed_launch(["10.0.0.2"]) == []
+        assert not any(p.is_file() for p in (tmp_path / "at").rglob("*"))
+        assert sent == [(["10.0.0.2"], {})]

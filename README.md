@@ -168,15 +168,31 @@ The engine's log of a distributed launch is `~/.ainode/logs/distributed.log`
 on the node that leads it (`vllm.log` is the solo one); what the other ranks
 say is in `docker logs vllm_node` on their own nodes.
 
-**Every rank starts with the same kernel tuning results** — vLLM keeps what
+**No rank starts with stored kernel tuning results** — vLLM keeps what
 FlashInfer's autotuner measured in `~/.ainode/cache/vllm/flashinfer_autotune_cache`,
-and a rank that finds a stored result skips the tuning the ranks do together.
-Only the leading node had kept the file from Qwen3.8-Flash-Next's first launch,
-so on the second one rank 0 skipped ahead and rank 1 waited in the tuner's
-`all_reduce` until gloo gave up after thirty minutes. Before a distributed
-launch the leader now makes each peer's directory identical to its own
-(`PUT /api/engine/autotune-cache`, cluster key only; an empty one lets every
-rank tune afresh, together).
+a rank that finds a result skips the tuning, and the tuning is collective (an
+`all_reduce` across the ranks). Only rank 0 writes the file, and its keys carry
+the rank (`…, top_k, tp_size, tp_rank, ep_size, ep_rank, …`). So from the second
+launch of Qwen3.8-Flash-Next on, rank 0 found its results and ran ahead, rank 1
+found none for `ep_rank=1`, tuned, and waited; rank 0 then blocked loading its
+next Triton kernel behind NCCL work that waited for rank 1, and gloo gave up
+after thirty minutes. Copying rank 0's file to the peers changed nothing. Before
+a distributed launch AINode now empties the directory on every node the launch
+uses (`PUT /api/engine/autotune-cache` with `{}` on the peers, cluster key
+only), so every rank tunes, together, as on a first launch — about a minute,
+with the autotuner left on.
+
+**All nodes on the same GPU kernel module** — found while chasing the slow
+loads: spark-1432 ran the *open* NVIDIA kernel module (`nvidia-driver-580-open`),
+the other two the proprietary one (`nvidia-dkms-580`), same version 580.173.02.
+With the open module the driver's resource management runs on the GPU's GSP
+(`nvidia-smi -q` shows a *GSP Firmware Version*), and every small driver call
+is a message to it: loading 300 Triton kernel modules took 2.4 ms each there
+against 0.1 ms on the proprietary module, and rank 0 read Qwen3.8-Flash-Next's
+weights in 341–358 s against 79 s after the switch (`apt-get install
+nvidia-dkms-580 nvidia-kernel-source-580`, which removes the `-open` packages,
+then a reboot). A DGX OS update may bring the open module back: check with
+`nvidia-smi -q | grep "GSP Firmware"` — *N/A* on every node.
 
 **Reading the checkpoint before the engine does** — tensor parallelism
 splits attention and the dense layers and *replicates every expert on every

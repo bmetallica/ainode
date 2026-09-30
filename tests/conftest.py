@@ -13,7 +13,7 @@ def _no_engine_image_probe(monkeypatch):
     from ainode.engine.backends.eugr import EugrBackend
 
     monkeypatch.setattr(EugrBackend, "_engine_probe", lambda self: {})
-    # Nor may a distributed launch in a test reach out to its "peers" to align
+    # Nor may a distributed launch in a test reach out to its "peers" to empty
     # their tuning cache (engine/autotune_cache.py) — those are test addresses.
-    monkeypatch.setattr(EugrBackend, "_align_autotune_cache", lambda self: None)
+    monkeypatch.setattr(EugrBackend, "_clear_autotune_cache", lambda self: None)
     yield
