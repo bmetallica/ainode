@@ -845,6 +845,7 @@ async def _cluster_sync_once(app: web.Application) -> None:
             recorder = Recorder(app)
             app["measurement_recorder"] = recorder
         recorder.poll()
+        await recorder.flush()
     except Exception:
         logger.debug("measurement poll failed", exc_info=True)
 

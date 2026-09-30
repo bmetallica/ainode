@@ -204,6 +204,13 @@ class MeasurementStore:
         if ok:
             entry.launches += 1
             entry.last_ok = time.time()
+            # A new launch answers at its own speed and may run another
+            # engine: the figures of the last one do not describe it. The
+            # recorder fills them in again (speed from the requests served
+            # since, the version from the engine).
+            entry.tokens_per_second = 0.0
+            entry.seconds_per_image = 0.0
+            entry.engine_version = ""
             # Only from a successful load: the time a failed one took is the
             # time it took to fail, which is not how long this model needs.
             if load_seconds:
@@ -323,6 +330,26 @@ class MeasurementStore:
             entry.tokens_per_second = round(float(tokens_per_second), 1)
         if seconds_per_image > 0:
             entry.seconds_per_image = round(float(seconds_per_image), 2)
+        # Beside the launch it belongs to, so two launches of one model — MTP
+        # on and off, another engine — can be compared afterwards.
+        last = entry.history[-1] if entry.history else None
+        if isinstance(last, dict) and last.get("ok"):
+            if tokens_per_second > 0:
+                last["tokens_per_second"] = entry.tokens_per_second
+            if seconds_per_image > 0:
+                last["seconds_per_image"] = entry.seconds_per_image
+        self._write(current)
+
+    def record_engine_version(self, model: str, version: str) -> None:
+        """The engine's version, as the engine itself reports it."""
+        current = self.load()
+        entry = current.get(model)
+        if entry is None or not version:
+            return
+        entry.engine_version = str(version)[:80]
+        last = entry.history[-1] if entry.history else None
+        if isinstance(last, dict) and last.get("ok"):
+            last["engine_version"] = entry.engine_version
         self._write(current)
 
     def forget(self, model: str) -> bool:
