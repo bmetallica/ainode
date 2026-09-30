@@ -160,8 +160,9 @@ that, so its recipe keeps the ordinary loader.
 
 **Qwen3.8-Flash-Next drafts with its own MTP layer** — the recipe carries
 `--speculative_config.method qwen4_exp_mtp` with two tokens. Measured across
-two nodes: 2.0–2.1 tokens accepted per step, at the cost of a second pass over
-the shards when loading (about a minute). And the load's time now shows as
+two nodes: 2.0–2.1 tokens accepted per step and **35.5 tok/s** single-stream
+(1000 tokens in 28 s) against 20–21 without it, at the cost of a second pass
+over the shards when loading (under a minute). And the load's time now shows as
 **loading weights**: the phases of a distributed launch are connect, then
 read — the other order kept six minutes of reading under "connecting nodes".
 The engine's log of a distributed launch is `~/.ainode/logs/distributed.log`
