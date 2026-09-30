@@ -85,20 +85,27 @@ def _node_set_of(instance, config) -> set:
 
 
 def _entry_matches(entry: ProfileEntry, instance, config) -> bool:
-    """True when the running instance already is what the entry describes.
+    """True when the running instance already is what the entry describes."""
+    return not _entry_mismatch(entry, instance, config)
+
+
+def _entry_mismatch(entry: ProfileEntry, instance, config) -> str:
+    """Why the running instance is not what the entry describes, or "".
 
     Only fields the entry actually states are compared. An entry that says
     nothing about ``kv_cache_dtype`` is happy with whatever the recipe chose,
-    so a matching instance must not be restarted over it.
+    so a matching instance must not be restarted over it. Nor is a value the
+    running instance does not know (an engine adopted after a restart of
+    AINode can come back without it) a reason to restart a serving model.
     """
     inst_config = _instance_config(instance)
     if inst_config is None:
-        return False
+        return "its configuration cannot be read"
 
     wanted_nodes = max(1, len(entry.node_ids))
     running_nodes = len(_node_set_of(instance, config))
     if wanted_nodes != running_nodes:
-        return False
+        return f"it runs on {running_nodes} node(s), the profile wants {wanted_nodes}"
 
     simple = (
         "gpu_memory_utilization", "max_model_len", "kv_cache_dtype",
@@ -109,25 +116,86 @@ def _entry_matches(entry: ProfileEntry, instance, config) -> bool:
         if wanted in (None, "", []):
             continue
         current = getattr(inst_config, name, None)
+        if current in (None, "", 0):
+            continue
         if name == "gpu_memory_utilization":
-            if current is None or abs(float(current) - float(wanted)) > 1e-6:
-                return False
-        elif str(current or "") != str(wanted):
-            return False
+            if abs(float(current) - float(wanted)) > 1e-6:
+                return f"{name} is {current}, the profile says {wanted}"
+        elif str(current) != str(wanted):
+            return f"{name} is {current}, the profile says {wanted}"
 
     wanted_names = list(getattr(entry, "served_model_name", None) or [])
-    if wanted_names and list(getattr(inst_config, "served_model_name", []) or []) != wanted_names:
-        return False
+    running_names = list(getattr(inst_config, "served_model_name", []) or [])
+    if wanted_names and running_names and running_names != wanted_names:
+        return "its API names differ"
     if not _flags_present(entry.extra_vllm_args, getattr(inst_config, "extra_vllm_args", None)):
-        return False
+        return "its vLLM flags differ from the profile's"
 
-    if entry.extra_env and dict(getattr(inst_config, "extra_env", {}) or {}) != entry.extra_env:
-        return False
+    running_env = dict(getattr(inst_config, "extra_env", {}) or {})
+    if entry.extra_env and running_env and running_env != entry.extra_env:
+        return "its environment differs"
     if entry.trust_remote_code is not None and bool(
         getattr(inst_config, "trust_remote_code", False)
     ) != bool(entry.trust_remote_code):
-        return False
-    return True
+        return "trust_remote_code differs"
+    return ""
+
+
+async def _wait_memory_released(timeout: float = 120.0, extra: float = 0.0) -> None:
+    """Wait until this node's available memory stops rising — the stopped
+    engine's pool is back — or ``timeout``. ``extra`` seconds more for the
+    peers of a distributed engine, whose memory cannot be read from here."""
+    import time as _time
+
+    from ainode.safety.memory_guard import host_available_mb
+
+    loop = asyncio.get_event_loop()
+    deadline = _time.monotonic() + timeout
+    await asyncio.sleep(3)
+    last, steady = None, 0
+    while _time.monotonic() < deadline:
+        now = await loop.run_in_executor(None, host_available_mb)
+        if now is None:
+            break
+        steady = steady + 1 if last is not None and abs(now - last) < 1024 else 0
+        if steady >= 2:
+            break
+        last = now
+        await asyncio.sleep(3)
+    if extra:
+        await asyncio.sleep(extra)
+
+
+async def _wait_serving(app, entry: ProfileEntry, port: int, timeout: float,
+                        progress=None) -> tuple:
+    """(serving, why not). Stops waiting as soon as the launch has failed, was
+    unloaded, or the apply was cancelled — rather than sitting on "starting"
+    until the timeout while the engine is long gone."""
+    import time as _time
+
+    from ainode.models import api_routes
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        # One probe (and a three-second pause when it fails), through the
+        # route module's own helper.
+        if await api_routes._wait_port_ready(port, timeout=3):
+            return True, ""
+        if progress is not None and progress.cancelled():
+            return False, "cancelled"
+        manager = app.get("instances")
+        instance = None
+        for candidate in (manager.instances() if manager is not None else []):
+            record = getattr(candidate, "record", None)
+            if getattr(record, "model", "") == entry.model and \
+                    int(getattr(record, "api_port", 0) or 0) == port:
+                instance = candidate
+        if manager is not None and instance is None:
+            return False, f"{entry.model} was unloaded while it was starting"
+        backend = getattr(instance, "backend", None)
+        if str(getattr(backend, "load_phase", "") or "") == "failed":
+            return False, str(getattr(backend, "load_error", "") or "the launch failed")
+    return False, ""
 
 
 def _flags_present(wanted, running) -> bool:
@@ -491,8 +559,6 @@ async def _start_wanted(app, entries: List[ProfileEntry], *, wait: bool = True,
                         progress: Optional[ApplyProgress] = None) -> list:
     """Start what ``entries`` ask for and is not already running as asked,
     one at a time, waiting for each to answer before the next."""
-    from ainode.models.api_routes import _wait_port_ready
-
     progress = progress or ApplyProgress()
     config = app.get("config")
     manager = app.get("instances")
@@ -504,28 +570,39 @@ async def _start_wanted(app, entries: List[ProfileEntry], *, wait: bool = True,
             results.append(ApplyResult(entry.model, "skipped", False, "cancelled"))
             continue
         instance = running.get(entry.model) if _entry_runs_here(app, entry) else None
-        if instance is not None and _entry_matches(entry, instance, config):
+        why = _entry_mismatch(entry, instance, config) if instance is not None else ""
+        if instance is not None and not why:
             progress.entry(entry, "unchanged")
             results.append(ApplyResult(entry.model, "already_running", True,
                                        api_port=instance.record.api_port))
             continue
         if instance is not None:
-            logger.info("profile: %s is running with a different "
-                        "configuration — relaunching", entry.model)
+            logger.info("profile: %s is running with a different configuration "
+                        "(%s) — relaunching", entry.model, why)
             # Down first. Launched beside itself, the admission check counted
             # the old instance's memory against the new one ("cost 80 GB …
             # 20 GB free") and the entry failed while the old one ran on.
-            progress.entry(entry, "stopping")
+            progress.entry(entry, "stopping", why)
             await asyncio.get_event_loop().run_in_executor(None, _stop_llm, app, instance)
+            # And until its memory is back. Started at once, Flash-Next's new
+            # rank 0 found 47 GiB still held by the old one: "Free memory on
+            # device … (74.2/121.69 GiB) … less than desired … (0.78, 94.92 GiB)".
+            await _wait_memory_released(extra=10.0 if entry.is_distributed else 0.0)
         progress.entry(entry, "starting")
         result = await _start_llm_entry(app, entry)
         results.append(result)
         if result.get("ok") and wait and result.get("api_port"):
             progress.entry(entry, "loading")
-            ready = await _wait_port_ready(int(result["api_port"]),
-                                           timeout=ENTRY_READY_TIMEOUT)
+            ready, why_not = await _wait_serving(app, entry, int(result["api_port"]),
+                                                 ENTRY_READY_TIMEOUT, progress)
             result["serving"] = ready
-            if not ready:
+            if why_not:
+                # Failed or unloaded while starting: said now, not after the
+                # whole readiness timeout with the entry still on "starting".
+                result["ok"] = False
+                result["action"] = "launch_failed"
+                result["error"] = why_not
+            elif not ready:
                 # Not a failure of the launch — the engine may still be reading
                 # weights. Say so plainly instead of calling it either way.
                 result["error"] = (

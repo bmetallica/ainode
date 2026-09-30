@@ -1272,8 +1272,14 @@ then each peer starts its own — one at a time per node, and a model already
 running as the profile describes is left running. "As described" means every
 setting and every flag the entry names — not flag-for-flag list equality, since
 a running model also carries its recipe's flags and the parsers its launch
-added. One running with other settings is stopped **before** it is relaunched;
-launched beside itself, the admission check counted its own memory against it. Nodes the profile does not
+added; a value the running engine does not know (one adopted after a restart
+of AINode can come back without it) is no reason to restart it. One running
+with other settings is stopped **before** it is relaunched — launched beside
+itself, the admission check counted its own memory against it — and the new
+launch waits until the node's memory has come back. The reason is in the log
+(`profile: … is running with a different configuration (…) — relaunching`) and
+on the entry. An entry whose launch fails, or that is unloaded while it starts,
+says so at once instead of staying on "starting" until the readiness timeout. Nodes the profile does not
 name are left alone; a peer on an older build is started through the old load
 routes but not cleared. The same model may appear once per node — replicas.
 The proxy then spreads requests over them: a conversation goes back to the

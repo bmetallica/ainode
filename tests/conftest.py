@@ -16,4 +16,12 @@ def _no_engine_image_probe(monkeypatch):
     # Nor may a distributed launch in a test reach out to its "peers" to empty
     # their tuning cache (engine/autotune_cache.py) — those are test addresses.
     monkeypatch.setattr(EugrBackend, "_clear_autotune_cache", lambda self: None)
+    # A relaunch in a profile waits for the stopped engine's memory to come
+    # back — on this machine's real /proc/meminfo, for seconds. Not in tests.
+    from ainode.profiles import apply
+
+    async def _no_wait(timeout=120.0, extra=0.0):
+        return None
+
+    monkeypatch.setattr(apply, "_wait_memory_released", _no_wait)
     yield
