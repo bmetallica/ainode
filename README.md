@@ -201,6 +201,14 @@ with an **Unlock** button each — and a blocked model is badged as such on its
 card rather than reading "On disk" while every launch of it is refused. A launch that ends on a signal is
 translated too: `code -9` is SIGKILL, which no process can catch, so the
 engine's own log is a healthy startup right up to the last line.
+The same page sets the **planning headroom** for the whole cluster: what the
+planner and the profile wizard keep free above the guard's warning line on
+every node (empty: automatic, 6% of the node, 1–8 GB — 7.8 GB on a Spark). It
+is not a brake: a model that has already run is checked, with its measured
+footprint moved to the launch's memory fraction, against the room above the
+guard's line alone. Held to the headroom as well, Qwen3.8-Flash-Next could not
+be started again ("cost 112 GB … 111 GB free") after running for hours with
+11 GB free.
 
 **A knob the engine ignores is named before the launch, not after** — vLLM
 registers every environment variable it reads, so AINode asks the engine image
@@ -748,7 +756,7 @@ set the read token with `ainode config --hf-token hf_xxx`.
 | Launch planner — reads the checkpoint's `config.json` and each node's free memory; answers fit, axis, `max-model-len`, KV, concurrency, and shows its arithmetic | ✅ |
 | Host memory guard — own thread, `/proc/meminfo`, refuses launches below a reserve and stops an engine when memory drops below the line or falls towards it too fast; kills the engine container on a member node, which has no instance record; per-node settings with a DGX Spark preset | ✅ |
 | Utilization cap — `gpu_memory_utilization` lowered to what is free on the tightest participating node, because on unified memory it is a share of *total* memory and the guard cannot outrun a KV allocation | ✅ |
-| Planning headroom — the plan stops short of the guard's line instead of filling up to it, so a launch that goes exactly to plan is not one fluctuation from being killed | ✅ |
+| Planning headroom — the plan stops short of the guard's line instead of filling up to it, so a launch that goes exactly to plan is not one fluctuation from being killed; set for the cluster under Settings → Memory Guard | ✅ |
 | Admission gate in front of **both** launch paths, scoped to the node the instance will run on | ✅ |
 | Launches run off the event loop — a loading node no longer drops out of the cluster | ✅ |
 | Per-phase load timings — where a five-minute launch actually went | ✅ |

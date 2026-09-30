@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Optional
 from pathlib import Path
 
 from aiohttp import web
@@ -184,7 +185,16 @@ def held_back_gb(app, total_gb: float) -> float:
     # the line puts a launch that went exactly to plan one page-cache
     # fluctuation away from being killed — which is how two idle nodes filled
     # up on a model that fitted on paper.
-    return extra + plan_headroom_gb(total_gb)
+    return extra + plan_headroom_gb(total_gb, configured_headroom(app))
+
+
+def configured_headroom(app) -> Optional[float]:
+    """The operator's planning headroom, or None for the automatic one."""
+    try:
+        value = float(getattr(app.get("config"), "plan_headroom_gb", -1.0))
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
 
 
 def _own_memory(app):

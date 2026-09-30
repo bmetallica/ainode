@@ -366,14 +366,24 @@ def _measured_says(app, model: str, measured: dict, max_model_len: int,
         (b.total_gb for b in budgets), default=0.0)
     if was and gpu_memory_utilization and total:
         need = max(0.0, need + (float(gpu_memory_utilization) - was) * total)
-    roomiest = max(b.usable_gb for b in budgets)
+    # Against the room above the memory guard's line, not above the planning
+    # headroom as well. The headroom is what a plan keeps back so a launch
+    # that went to plan has slack; a launch that has already run at this
+    # size, measured, needs the guard's line and no more. Held to the
+    # headroom too, Qwen3.8-Flash-Next could not be started again at all
+    # ("cost 112 GB … 111 GB free") after running for hours with 11 GB free.
+    from ainode.planner.api_routes import configured_headroom
+    from ainode.planner.compute import plan_headroom_gb
+
+    headroom = configured_headroom(app)
+    roomiest = max(b.usable_gb + plan_headroom_gb(b.total_gb, headroom) for b in budgets)
     if roomiest >= need:
         return ""
     return (
         f"{model} cost {need:.0f} GB the last time it ran here, and the "
-        f"roomiest node has {roomiest:.0f} GB free. That is a measurement, "
-        f"not an estimate. Free memory, or launch anyway with "
-        f"\"force\": true."
+        f"roomiest node has {roomiest:.0f} GB free above the memory guard's "
+        f"line. That is a measurement, not an estimate. Free memory, or "
+        f"launch anyway with \"force\": true."
     )
 
 

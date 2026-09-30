@@ -36,8 +36,22 @@ async def handle_get(request: web.Request) -> web.Response:
         "warn_gb": round(guard.warn_mb / 1024, 1),
         "critical_gb": round(guard.critical_mb / 1024, 1),
         "presets": PRESETS,
+        **_headroom(request.app, payload.get("total_mb")),
     })
     return web.json_response(payload)
+
+
+def _headroom(app, total_mb) -> dict:
+    """The planning headroom: configured (None = automatic) and what it is
+    on this node."""
+    from ainode.core.units import gb_from_mib
+    from ainode.planner.api_routes import configured_headroom
+    from ainode.planner.compute import plan_headroom_gb
+
+    configured = configured_headroom(app)
+    total = gb_from_mib(float(total_mb or 0)) if total_mb else 0.0
+    return {"plan_headroom_gb": configured,
+            "plan_headroom_effective_gb": plan_headroom_gb(total, configured)}
 
 
 async def handle_put(request: web.Request) -> web.Response:
@@ -72,6 +86,22 @@ async def handle_put(request: web.Request) -> web.Response:
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
 
+    # The planning headroom: null or "" for automatic, else 0-30 GB.
+    headroom = ...
+    if "plan_headroom_gb" in body:
+        raw = body.get("plan_headroom_gb")
+        if raw is None or str(raw).strip() == "":
+            headroom = -1.0
+        else:
+            try:
+                headroom = float(raw)
+            except (TypeError, ValueError):
+                return web.json_response(
+                    {"error": "plan_headroom_gb must be a number or empty"}, status=400)
+            if not 0 <= headroom <= 30:
+                return web.json_response(
+                    {"error": "plan_headroom_gb must be between 0 and 30"}, status=400)
+
     enabled = body.get("enabled")
     guard.configure(warn_gb=warn_gb, critical_gb=critical_gb,
                     enabled=None if enabled is None else bool(enabled))
@@ -83,6 +113,8 @@ async def handle_put(request: web.Request) -> web.Response:
         config.host_memory_warn_gb = round(guard.warn_mb / 1024, 2)
         config.host_memory_critical_gb = round(guard.critical_mb / 1024, 2)
         config.host_memory_guard = guard.enabled
+        if headroom is not ...:
+            config.plan_headroom_gb = headroom
         try:
             config.save()
         except Exception:
