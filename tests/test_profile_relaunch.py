@@ -70,3 +70,56 @@ class TestARelaunchStopsTheOldOneFirst:
         asyncio.run(apply._start_wanted(app, [ProfileEntry(model="m", node_ids=["h"])],
                                         wait=False))
         assert calls == ["stop", "start"]
+
+
+class TestItSaysWhyAndWaits:
+    def test_the_reason_is_named(self):
+        from ainode.core.config import NodeConfig
+        from ainode.profiles.store import ProfileEntry
+
+        instance = type("I", (), {})()
+        instance.record = type("R", (), {"peer_ips": []})()
+        instance.backend = type("B", (), {"config": NodeConfig(gpu_memory_utilization=0.6)})()
+        why = apply._entry_mismatch(ProfileEntry(model="m", node_ids=["h"],
+                                                 gpu_memory_utilization=0.78),
+                                    instance, NodeConfig(node_id="h"))
+        assert "gpu_memory_utilization is 0.6" in why
+
+    def test_a_value_the_running_instance_does_not_know_is_no_reason(self):
+        from ainode.core.config import NodeConfig
+        from ainode.profiles.store import ProfileEntry
+
+        instance = type("I", (), {})()
+        instance.record = type("R", (), {"peer_ips": []})()
+        instance.backend = type("B", (), {"config": NodeConfig(max_model_len=0)})()
+        assert apply._entry_mismatch(ProfileEntry(model="m", node_ids=["h"], max_model_len=262144),
+                                     instance, NodeConfig(node_id="h")) == ""
+
+    def test_waiting_ends_when_the_launch_failed(self, monkeypatch):
+        from ainode.models import api_routes
+        from ainode.profiles.store import ProfileEntry
+
+        async def _not_yet(port, timeout=0):
+            return False
+
+        monkeypatch.setattr(api_routes, "_wait_port_ready", _not_yet)
+        record = type("R", (), {"model": "m", "api_port": 8000})()
+        backend = type("B", (), {"load_phase": "failed", "load_error": "Free memory … less than desired"})()
+        instance = type("I", (), {"record": record, "backend": backend})()
+        manager = type("M", (), {"instances": lambda self: [instance]})()
+        ok, why = asyncio.run(apply._wait_serving({"instances": manager}, ProfileEntry(model="m"),
+                                                  8000, 600))
+        assert (ok, why) == (False, "Free memory … less than desired")
+
+    def test_and_when_it_was_unloaded(self, monkeypatch):
+        from ainode.models import api_routes
+        from ainode.profiles.store import ProfileEntry
+
+        async def _not_yet(port, timeout=0):
+            return False
+
+        monkeypatch.setattr(api_routes, "_wait_port_ready", _not_yet)
+        manager = type("M", (), {"instances": lambda self: []})()
+        ok, why = asyncio.run(apply._wait_serving({"instances": manager}, ProfileEntry(model="m"),
+                                                  8000, 600))
+        assert not ok and "unloaded" in why
