@@ -82,15 +82,33 @@ class TestAPeerLedModel:
         assert len(recorder._outbox) == 1
 
     def test_a_new_launch_counts_from_zero(self, tmp_path):
-        peer = _Peer("p1", [_flash(load_seconds=623.1)])
+        peer = _Peer("p1", [_flash()])
         app = _app(tmp_path, peer)
         recorder = Recorder(app)
         app["metrics_collector"].stats = {"q/flash": {"requests": 100, "tokens_generated": 50000,
                                                       "avg_latency_ms": 5000.0}}
         recorder._record_speeds()
-        peer.instances = [_flash(load_seconds=518.0)]            # relaunched
+        peer.instances = [_flash(status="starting")]             # relaunched…
         recorder._record_speeds()
-        assert recorder._outbox == []                             # base reset, nothing new yet
+        peer.instances = [_flash()]                               # …and serving again
+        app["metrics_collector"].stats = {"q/flash": {"requests": 104, "tokens_generated": 52000,
+                                                      "avg_latency_ms": 5000.0}}
+        recorder._record_speeds()
+        assert recorder._outbox == []            # counted from the relaunch: 4 < 5
+
+    def test_the_time_since_start_growing_does_not_restart_the_count(self, tmp_path):
+        # The bug: the identity carried load_seconds, which on a serving
+        # instance grows with every announcement.
+        peer = _Peer("p1", [_flash(load_seconds=100.0)])
+        app = _app(tmp_path, peer)
+        recorder = Recorder(app)
+        app["metrics_collector"].stats = {"q/flash": {"requests": 0}}
+        recorder._record_speeds()
+        peer.instances = [_flash(load_seconds=160.0)]
+        app["metrics_collector"].stats = {"q/flash": {"requests": 5, "tokens_generated": 5000,
+                                                      "avg_latency_ms": 28000.0}}
+        recorder._record_speeds()
+        assert recorder._outbox == [("p1", {"model": "q/flash", "tokens_per_second": 35.7})]
 
     def test_a_member_that_does_not_lead_is_not_the_target(self, tmp_path):
         app = _app(tmp_path, _Peer("p2", [_flash(head="p1")]))

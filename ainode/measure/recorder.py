@@ -357,8 +357,12 @@ class Recorder:
                     leader = str(inst.get("head_node_id") or "") or node.node_id
                     if leader != node.node_id:
                         continue                 # announced by a member, led elsewhere
-                    out[inst["model"]] = (node.node_id, str(inst.get("instance_id") or ""),
-                                          round(float(inst.get("load_seconds") or 0), 1))
+                    # Not load_seconds: on a serving instance that is the time
+                    # since it started, so it changed every poll and every
+                    # poll began the count again — no speed was ever written.
+                    # A relaunch shows as the model leaving "serving" in
+                    # between, which drops its base (_record_speeds).
+                    out[inst["model"]] = (node.node_id, str(inst.get("instance_id") or ""))
         except Exception:
             logger.debug("could not read the cluster's instances", exc_info=True)
         for model, instance in self._instances():
@@ -366,8 +370,7 @@ class Recorder:
             if str(getattr(backend, "load_phase", "") or "") != "ready":
                 continue
             record = getattr(instance, "record", None)
-            out[model] = (own, str(getattr(record, "instance_id", "") or ""),
-                          round(float(getattr(backend, "load_seconds", 0) or 0), 1))
+            out[model] = (own, str(getattr(record, "instance_id", "") or ""))
         return out
 
     async def flush(self) -> None:
