@@ -1,0 +1,161 @@
+"""The same FlashInfer tuning results on every rank of a distributed launch.
+
+vLLM keeps what FlashInfer's autotuner measured in its own cache directory
+(``~/.ainode/cache/vllm/flashinfer_autotune_cache/<version>/<arch>/<hash>/
+autotune_configs.json``), and on the next launch a rank that finds a result
+there skips the measurement. The measurement is not local, though: tuning a
+kernel synchronises the ranks (``_sync_oom_across_tune_group`` does an
+``all_reduce`` over the tune group). So a rank WITH a stored result and a rank
+WITHOUT one part ways — one skips ahead, the other waits for it — and both
+hang until gloo gives up after thirty minutes:
+
+    Worker_TP1_EP1 … flashinfer/autotuner/autotuner.py … all_reduce …
+    RuntimeError: … Timed out waiting 1800000ms for send operation to complete
+
+Seen on nvidia/Qwen3.8-Flash-Next-NVFP4 with MTP across spark-1432 and
+spark-659b: the first launch tuned on both ranks in lock-step and worked; only
+the node that led it kept the file; the second launch found it on one rank.
+
+So before a distributed launch the node that leads it makes every peer's
+directory identical to its own — including empty, which lets every rank tune
+afresh together, as the first launch did. The files are small (kilobytes) and
+go over the AINode API rather than rsync, because they belong to root on the
+peer (the engine container wrote them) and ssh reaches the peer as the
+install user.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import logging
+import shutil
+import urllib.request
+from pathlib import Path, PurePosixPath
+from typing import Dict, Iterable, List, Optional
+
+logger = logging.getLogger(__name__)
+
+__all__ = ["autotune_dir", "snapshot", "replace", "push_to_peers",
+           "register_autotune_routes"]
+
+#: Bounds for what is sent: tuning results are JSON of a few kilobytes each.
+MAX_FILES = 500
+MAX_FILE_BYTES = 4 * 1024 * 1024
+MAX_TOTAL_BYTES = 32 * 1024 * 1024
+
+
+def autotune_dir() -> Path:
+    from ainode.core.config import ENGINE_CACHE_DIR
+
+    return Path(ENGINE_CACHE_DIR) / "vllm" / "flashinfer_autotune_cache"
+
+
+def _safe(rel: str) -> Optional[PurePosixPath]:
+    path = PurePosixPath(str(rel))
+    if path.is_absolute() or not path.parts or any(p in ("", ".", "..") for p in path.parts):
+        return None
+    return path
+
+
+def snapshot(root: Optional[Path] = None) -> Dict[str, str]:
+    """{relative path: base64 content} of every file under ``root``."""
+    root = Path(root or autotune_dir())
+    out: Dict[str, str] = {}
+    total = 0
+    if not root.is_dir():
+        return out
+    for file in sorted(p for p in root.rglob("*") if p.is_file()):
+        rel = file.relative_to(root).as_posix()
+        if _safe(rel) is None:
+            continue
+        try:
+            data = file.read_bytes()
+        except OSError:
+            continue
+        if len(data) > MAX_FILE_BYTES or len(out) >= MAX_FILES \
+                or total + len(data) > MAX_TOTAL_BYTES:
+            logger.warning("autotune cache: leaving %s out (limits)", rel)
+            continue
+        total += len(data)
+        out[rel] = base64.b64encode(data).decode("ascii")
+    return out
+
+
+def replace(files: Dict[str, str], root: Optional[Path] = None) -> int:
+    """Make ``root`` hold exactly ``files``. Returns how many were written.
+    Raises ValueError on a path that would leave the directory."""
+    root = Path(root or autotune_dir())
+    decoded = []
+    total = 0
+    if len(files) > MAX_FILES:
+        raise ValueError("too many files")
+    for rel, b64 in files.items():
+        path = _safe(rel)
+        if path is None:
+            raise ValueError(f"unsafe path {rel!r}")
+        data = base64.b64decode(str(b64), validate=True)
+        total += len(data)
+        if len(data) > MAX_FILE_BYTES or total > MAX_TOTAL_BYTES:
+            raise ValueError("too large")
+        decoded.append((path, data))
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True, exist_ok=True)
+    for path, data in decoded:
+        target = root.joinpath(*path.parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    return len(decoded)
+
+
+def push_to_peers(peers: Iterable[str], port: int = 3000, *,
+                  files: Optional[Dict[str, str]] = None,
+                  timeout: float = 15.0) -> List[str]:
+    """Send this node's tuning results to every peer. Returns the peers that
+    could not be brought in line (the launch goes on; the log says so)."""
+    from ainode.auth.cluster_key import cluster_headers
+
+    body = json.dumps({"files": snapshot() if files is None else files}).encode()
+    failed = []
+    for host in peers:
+        host = str(host or "").strip()
+        if not host:
+            continue
+        request = urllib.request.Request(
+            f"http://{host}:{int(port)}/api/engine/autotune-cache", data=body,
+            method="PUT", headers={"Content-Type": "application/json",
+                                   **cluster_headers()})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as resp:
+                if resp.status != 200:
+                    failed.append(host)
+        except Exception as exc:
+            logger.warning("could not align the tuning cache on %s: %s", host, exc)
+            failed.append(host)
+    return failed
+
+
+async def handle_put(request):
+    """PUT /api/engine/autotune-cache {"files": {path: base64}} — replace this
+    node's FlashInfer tuning results with the leading node's. Cluster key only."""
+    import asyncio
+
+    from aiohttp import web
+
+    from ainode.auth.cluster_key import is_cluster_request
+
+    if not is_cluster_request(request.headers):
+        return web.json_response({"error": "cluster key required"}, status=403)
+    try:
+        files = (await request.json()).get("files") or {}
+        if not isinstance(files, dict):
+            raise ValueError("files must be an object")
+        written = await asyncio.get_event_loop().run_in_executor(None, replace, files)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    return web.json_response({"ok": True, "files": written})
+
+
+def register_autotune_routes(app) -> None:
+    app.router.add_put("/api/engine/autotune-cache", handle_put)

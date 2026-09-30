@@ -213,6 +213,11 @@ def create_app(
     # node whose launch failed.
     app.router.add_post("/api/engine/compile-cache", _clear_compile_cache)
     app.router.add_post("/api/cluster/compile-cache", handle_cluster_compile_cache)
+    # The FlashInfer tuning results a distributed launch's leader pushes to its
+    # peers, so every rank has the same (engine/autotune_cache.py).
+    from ainode.engine.autotune_cache import register_autotune_routes
+
+    register_autotune_routes(app)
     app.router.add_get("/api/instances/launch-config", handle_launch_config)
     app.router.add_get("/api/cluster/models", handle_cluster_models)
     app.router.add_post("/api/cluster/delete-repo", handle_cluster_delete_repo)

@@ -328,6 +328,7 @@ class EugrBackend(EngineBackend):
         launch_script = self._write_distributed_launch_script()
         self._distribute_engine_image_to_peers()
         self._distribute_model_to_peers()
+        self._align_autotune_cache()
         self._progress("distributing", "preparing the cluster launch",
                        self._distributed_log)
 
@@ -1299,6 +1300,31 @@ class EugrBackend(EngineBackend):
                     f"fetch it, which is slow and fails for a model served "
                     f"from a path", self._distributed_log)
                 return
+
+    def _align_autotune_cache(self) -> None:
+        """Give every peer exactly this node's FlashInfer tuning results.
+
+        A rank that finds a stored result skips the tuning its peers do
+        together, and the launch hangs for thirty minutes in the tuner's
+        all_reduce (engine/autotune_cache.py). Best effort: a peer that cannot
+        be reached is logged, and the launch proceeds.
+        """
+        try:
+            from ainode.engine.autotune_cache import push_to_peers
+
+            failed = push_to_peers(list(self.config.peer_ips or []),
+                                   int(getattr(self.config, "web_port", 3000) or 3000))
+        except Exception:
+            logger.exception("could not align the FlashInfer tuning cache on the peers")
+            return
+        if failed:
+            logger.warning(
+                "FlashInfer tuning cache not aligned on %s: if a rank there has "
+                "results this node does not, the launch can hang in the tuner",
+                ", ".join(failed))
+            self._progress("distributing",
+                           f"could not align the kernel tuning cache on "
+                           f"{', '.join(failed)}", self._distributed_log)
 
     def _parallel_plan(self) -> ParallelPlan:
         """How this instance splits across head + peers, one GPU per node.

@@ -165,7 +165,18 @@ the shards when loading (about a minute). And the load's time now shows as
 **loading weights**: the phases of a distributed launch are connect, then
 read — the other order kept six minutes of reading under "connecting nodes".
 The engine's log of a distributed launch is `~/.ainode/logs/distributed.log`
-on the node that leads it (`vllm.log` is the solo one).
+on the node that leads it (`vllm.log` is the solo one); what the other ranks
+say is in `docker logs vllm_node` on their own nodes.
+
+**Every rank starts with the same kernel tuning results** — vLLM keeps what
+FlashInfer's autotuner measured in `~/.ainode/cache/vllm/flashinfer_autotune_cache`,
+and a rank that finds a stored result skips the tuning the ranks do together.
+Only the leading node had kept the file from Qwen3.8-Flash-Next's first launch,
+so on the second one rank 0 skipped ahead and rank 1 waited in the tuner's
+`all_reduce` until gloo gave up after thirty minutes. Before a distributed
+launch the leader now makes each peer's directory identical to its own
+(`PUT /api/engine/autotune-cache`, cluster key only; an empty one lets every
+rank tune afresh, together).
 
 **Reading the checkpoint before the engine does** — tensor parallelism
 splits attention and the dense layers and *replicates every expert on every
