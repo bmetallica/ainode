@@ -1148,6 +1148,17 @@ async def replay_instances_on_startup(app) -> None:
         m = e.get("model")
         if not m or m in have:
             continue
+        if e.get("distributed"):
+            # Written to the manifest so a container that outlived AINode can
+            # be ADOPTED — never to be relaunched from here: this loop starts
+            # solo, and a model split across nodes started solo is 132 GB on
+            # one node. That is what happened to Qwen3.8-Flash-Next on
+            # spark-1432 after an update (world_size=1, OOM-killed after 75 s,
+            # then the retry below did it again). Bringing a distributed model
+            # back is the default profile's job, which starts every rank.
+            logger.info("replay: %s ran across nodes; left to the profile "
+                        "rather than relaunched here on one node", m)
+            continue
         try:
             # backend.start() shells out to docker — run off the event loop.
             res = await loop.run_in_executor(
