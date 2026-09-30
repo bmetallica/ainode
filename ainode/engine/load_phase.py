@@ -76,9 +76,14 @@ _WRAPPER_RE = re.compile(
 )
 
 # Monotonic: a phase only ever moves forward within one launch.
+# distributed_init before loading_weights: the ranks connect (NCCL, the
+# launcher's cluster checks) and only then read the weights. The other way
+# round, the weight reading of every distributed launch was stuck under
+# "connecting nodes" — Qwen3.8-Flash-Next showed 62% for six minutes while
+# rank 0 read 11 shards.
 LOAD_PHASE_ORDER = [
-    "idle", "starting", "distributing", "loading_weights",
-    "distributed_init", "profiling", "ready",
+    "idle", "starting", "distributing", "distributed_init",
+    "loading_weights", "profiling", "ready",
 ]
 
 # Terminal, and outside the ordering: a launch that died did not reach a later
@@ -331,7 +336,11 @@ _INSTANTTENSOR_BUDGET_HINT = (
     "GLM recipe uses — INSTANTTENSOR_BACKEND=BUFFERED together with "
     "INSTANTTENSOR_BUFFER_SIZE=67108864. Both: the size alone is a number "
     "the default backend never reads, which is why a capped launch could "
-    "still ask for gigabytes. "
+    "still ask for gigabytes. No cap goes below the largest single tensor, "
+    "though: if the buffer in the message is exactly one tensor's size "
+    "(Qwen3.8-Flash-Next asks for 1,271,398,400 B — its embedding), this "
+    "model cannot use the loader on this hardware and drop:--load-format is "
+    "the only answer. "
     "Read the budget in the message twice, because two different numbers "
     "wear that name. It can be gpu-memory-utilization x the node's total "
     "memory minus the weights — 0.15 of 128 GB leaves 19 GB, and a 16 GB "

@@ -242,10 +242,12 @@ class TestLoadPhaseIsReportedByBothBackends:
     def test_phases_advance_in_order(self):
         t = self._tracker()
         assert t.phase == "starting"
-        t.observe("Loading model weights took 12.3 GiB")
-        assert t.phase == "loading_weights"
         t.observe("NCCL INFO Bootstrap : Using enP7s7")
         assert t.phase == "distributed_init"
+        # The weights are read after the ranks have connected, and that is
+        # what the card should say while it happens.
+        t.observe("Loading model weights took 12.3 GiB")
+        assert t.phase == "loading_weights"
         t.observe("Memory profiling results: total_gpu_memory=...")
         assert t.phase == "profiling"
 
