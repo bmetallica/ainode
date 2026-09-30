@@ -216,22 +216,22 @@ class TestThePage:
         assert "power-cycled" in block
 
     def test_both_lines_are_editable_per_node(self):
-        block = APP_JS.split("async renderConfigMemory() {")[1][:6000]
+        block = APP_JS.split("async renderConfigMemory() {")[1][:9000]
         assert "mem-warn-" in block and "mem-crit-" in block
         assert "data-mem-save=" in block
 
     def test_the_presets_are_offered(self):
-        block = APP_JS.split("async renderConfigMemory() {")[1][:6000]
+        block = APP_JS.split("async renderConfigMemory() {")[1][:9000]
         assert 'data-mem-preset="dgx-spark"' in block
         assert 'data-mem-preset="generic"' in block
 
     def test_the_enforced_value_is_shown_next_to_the_configured_one(self):
         # They differ only on a machine too small to hold the reserve back,
         # and a difference the page hides is a difference that surprises.
-        block = APP_JS.split("async renderConfigMemory() {")[1][:6000]
+        block = APP_JS.split("async renderConfigMemory() {")[1][:9000]
         assert "enforcing <strong>" in block
         assert "capped to the enforced values" in block
 
     def test_a_node_can_be_switched_off_individually(self):
-        block = APP_JS.split("async renderConfigMemory() {")[1][:6000]
+        block = APP_JS.split("async renderConfigMemory() {")[1][:9000]
         assert "mem-on-" in block

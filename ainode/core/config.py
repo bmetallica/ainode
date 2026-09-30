@@ -136,6 +136,10 @@ class NodeConfig:
     host_memory_guard: bool = True
     host_memory_warn_gb: float = 8.0
     host_memory_critical_gb: float = 4.0
+    #: What a plan leaves free above the guard's warning line, per node, in
+    #: GB. Negative: automatic (6% of the node, 1-8 GB). Set for the whole
+    #: cluster from the Memory Guard page; the guard itself is unaffected.
+    plan_headroom_gb: float = -1.0
     # KV-cache precision. fp8 is the GB10 design default — required for long
     # context (32k+) or vLLM OOMs sizing the cache at bf16 (see engine/AGENTS.md).
     # Set "" / "auto" to let vLLM choose if a model/quant ever rejects fp8.

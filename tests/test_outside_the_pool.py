@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import pytest
 
+from ainode.core.config import NodeConfig
+
 from ainode.planner.household import HouseholdNode, _outside_pool_gb
 
 _ROW = {"model": "q", "node_id": "a", "gpu_memory_utilization": 0.84, "memory_gb": 114.6,
@@ -42,30 +44,45 @@ class TestWhatTheWizardCounts:
 
 
 class TestWhatTheGateCompares:
-    def _app(self, free_gb):
+    """Against the room above the guard's line: usable (after headroom) plus
+    the headroom — 7.8 GB on a 130.7 GB node when automatic."""
+
+    def _budget(self, usable_gb):
         class _Budget:
             total_gb = 130.7
-            usable_gb = free_gb
+        _Budget.usable_gb = usable_gb
         return _Budget
 
     def test_a_smaller_fraction_needs_less(self, monkeypatch):
         from ainode.safety import admission
 
-        budget = self._app(111.0)
+        budget = self._budget(105.0)            # 112.8 above the guard's line
         monkeypatch.setattr(admission, "_budgets_with_reserve", lambda app, ids=None: [budget])
         measured = {"memory_gb": 114.6, "gpu_memory_utilization": 0.84,
                     "node_total_gb": 130.7, "max_model_len": 262144}
-        # At its old fraction it does not fit; at 0.80 it does.
         assert admission._measured_says({}, "q", measured, 262144, None, 0.84)
-        assert admission._measured_says({}, "q", measured, 262144, None, 0.80) == ""
+        assert admission._measured_says({}, "q", measured, 262144, None, 0.81) == ""
 
     def test_without_a_fraction_the_measurement_stands(self, monkeypatch):
         from ainode.safety import admission
 
-        budget = self._app(111.0)
+        budget = self._budget(105.0)
         monkeypatch.setattr(admission, "_budgets_with_reserve", lambda app, ids=None: [budget])
         measured = {"memory_gb": 114.6, "gpu_memory_utilization": 0.84}
         assert admission._measured_says({}, "q", measured, 0, None, None)
+
+    def test_what_ran_is_not_held_to_the_planning_headroom(self, monkeypatch):
+        # The report: 112 GB measured, 111 GB usable after the headroom — and
+        # the model could not be started again at all.
+        from ainode.safety import admission
+
+        budget = self._budget(111.0)
+        monkeypatch.setattr(admission, "_budgets_with_reserve", lambda app, ids=None: [budget])
+        measured = {"memory_gb": 112.0, "gpu_memory_utilization": 0.81, "node_total_gb": 130.7}
+        assert admission._measured_says({}, "q", measured, 0, None, 0.81) == ""
+        # With the headroom set to nothing, 111 is all there is.
+        app = {"config": NodeConfig(plan_headroom_gb=0.0)}
+        assert admission._measured_says(app, "q", measured, 0, None, 0.81)
 
 
 class TestTheDistributedGateKnowsTheFraction:

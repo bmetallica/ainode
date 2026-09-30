@@ -716,6 +716,33 @@ Object.assign(AINode, {
     html += '<span class="config-field-hint" style="align-self:center">applies to every node</span>';
     html += '</div></div>';
 
+    // The planning headroom: one figure for the cluster, because every node
+    // that leads a launch checks it with its own copy.
+    var local = rows.find(function (r) { return r.reachable && r.available; }) || {};
+    var configured = local.plan_headroom_gb;
+    html += '<div class="config-card">';
+    html += '<h3 class="config-card-title">Planning headroom</h3>';
+    html += '<p class="config-card-desc">What the planner and the profile wizard keep ' +
+      'free above the <strong>warning</strong> line on every node, so a launch that ' +
+      'went exactly to plan still has slack. Not a brake: the guard lines above are ' +
+      'the brake, and a model that has already run at its size is checked against ' +
+      'them alone. Less headroom is more KV cache — about 26,000 tokens of ' +
+      'Qwen3.8-27B per GB. Empty: automatic, 6% of the node (1–8 GB).</p>';
+    html += '<div class="config-form-grid"><div><label class="config-field-label">' +
+      'Headroom (GB per node)</label><input class="form-input" type="number" min="0" ' +
+      'max="30" step="0.5" id="mem-headroom" value="' +
+      (configured === null || configured === undefined ? '' : configured) +
+      '" placeholder="automatic (' + (local.plan_headroom_effective_gb || '—') +
+      ' GB)"></div></div>';
+    html += '<p class="config-card-desc">Now: ' + rows.filter(function (r) {
+      return r.reachable && r.available;
+    }).map(function (r) {
+      return self.esc(r.node_name || r.node_id) + ' ' +
+        (r.plan_headroom_effective_gb != null ? r.plan_headroom_effective_gb + ' GB' : '—');
+    }).join(' · ') + '</p>';
+    html += '<div class="config-actions"><button class="config-btn" ' +
+      'data-mem-headroom>Save for all nodes</button></div></div>';
+
     html += this._blockedModelsCard(blocked);
 
     rows.forEach(function (row) {
@@ -778,6 +805,12 @@ Object.assign(AINode, {
           critical_gb: parseFloat(document.getElementById('mem-crit-' + id).value),
           enabled: document.getElementById('mem-on-' + id).checked,
         });
+      });
+    });
+    mount.querySelectorAll('[data-mem-headroom]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var raw = document.getElementById('mem-headroom').value.trim();
+        self._saveMemoryGuard({ all: true, plan_headroom_gb: raw === '' ? null : parseFloat(raw) });
       });
     });
     mount.querySelectorAll('[data-unlock-model]').forEach(function (btn) {

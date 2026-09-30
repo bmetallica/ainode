@@ -73,8 +73,11 @@ PLAN_HEADROOM_MIN_GB = 1.0
 PLAN_HEADROOM_MAX_GB = 8.0
 
 
-def plan_headroom_gb(total_gb: float) -> float:
-    """What a plan must leave above the guard's line on a node this size."""
+def plan_headroom_gb(total_gb: float, configured: Optional[float] = None) -> float:
+    """What a plan must leave above the guard's line on a node this size —
+    the operator's figure (``configured`` >= 0) or 6% of the node."""
+    if configured is not None and float(configured) >= 0:
+        return round(float(configured), 1)
     if total_gb <= 0:
         return PLAN_HEADROOM_MIN_GB
     return round(min(PLAN_HEADROOM_MAX_GB,
