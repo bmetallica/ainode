@@ -1044,6 +1044,11 @@ class EugrBackend(EngineBackend):
                 "-v", "/mnt/shared-models:/mnt/shared-models:ro",
                 "--entrypoint", shim_container_path,
             ])
+        # Before the recipe's own: a recipe (or the operator) can override them.
+        from ainode.engine.no_telemetry import NO_TELEMETRY_ENV
+
+        for key, value in NO_TELEMETRY_ENV.items():
+            extra_docker_args.extend(["-e", f"{key}={value}"])
         extra_docker_args.extend(self._recipe_env_args())
         env = self._build_env()
         env["VLLM_SPARK_EXTRA_DOCKER_ARGS"] = " ".join(extra_docker_args)

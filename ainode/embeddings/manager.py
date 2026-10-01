@@ -237,7 +237,16 @@ class EmbeddingManager:
         SentenceTransformer = self._resolve_SentenceTransformer()
 
         logger.info("Loading embedding model %s", model_id)
-        model = SentenceTransformer(model_id, cache_folder=self.models_dir)
+        # From the local copy first. By repo id, sentence-transformers asks the
+        # Hub for a newer revision on every load — online each time, and on a
+        # cluster without internet a timeout before it falls back to the cache.
+        # Only a model not downloaded yet goes to the Hub.
+        try:
+            model = SentenceTransformer(model_id, cache_folder=self.models_dir,
+                                        local_files_only=True)
+        except Exception:
+            logger.info("%s is not in the local cache; fetching it", model_id)
+            model = SentenceTransformer(model_id, cache_folder=self.models_dir)
 
         catalog = KNOWN_EMBEDDING_MODELS.get(model_id, {})
         dims: Optional[int] = None

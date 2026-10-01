@@ -261,6 +261,21 @@ launch log; here it lands on the instance before the weights are touched.
 libraries that keep no registry, and calling those unknown would be a false
 alarm on every interesting launch.
 
+**Nothing is fetched or reported on its own** — once the images are built and
+the models downloaded, the cluster needs no internet. The dashboard's fonts
+(Inter, JetBrains Mono; SIL OFL, licences beside them) are served from
+`ainode/web/static/fonts` instead of Google Fonts. Every engine container
+(eugr, NVIDIA, diffusers) and AINode itself run with `VLLM_NO_USAGE_STATS=1`,
+`DO_NOT_TRACK=1` and `HF_HUB_DISABLE_TELEMETRY=1` — vLLM otherwise reports usage
+to its developers from a thread in every worker; a recipe's or the operator's
+`extra_env` can still override them. The embedding model loads from its local
+copy and only goes to the Hub when it is not there yet. What still goes out is
+what you ask for: model search and downloads (Hugging Face), the OpenRouter and
+Ollama lists on the Downloads page, the update check (GitHub / ghcr.io), a
+recipe's engine image when no node has it (Docker Hub), and MQTT or W&B when
+configured. A drafter named by repo id in a recipe (Nemotron's DSpark) is a
+download on its first launch, like the model itself.
+
 **A model split across nodes is never replayed on one** — the startup replay
 starts the node's own models solo; a distributed one it finds in the manifest
 is adopted if its engine still runs and otherwise left to the default profile,
