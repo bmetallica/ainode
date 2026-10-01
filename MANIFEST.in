@@ -1,4 +1,4 @@
-recursive-include ainode/web/static *.css *.js *.png *.ico *.svg
+recursive-include ainode/web/static *.css *.js *.png *.ico *.svg *.woff2 *.txt
 recursive-include ainode/web/templates *.html
 include README.md
 include LICENSE

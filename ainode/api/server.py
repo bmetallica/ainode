@@ -325,6 +325,11 @@ def create_app(
     register_bench_routes(app)
 
     if getattr(config, "web_ui_enabled", True):
+        # The dashboard's fonts are served from here (static/fonts) rather than
+        # from Google; a slim image has no /etc/mime.types to name them.
+        import mimetypes
+
+        mimetypes.add_type("font/woff2", ".woff2")
         app.router.add_static("/static", get_static_path(), name="static")
         # Belt to the version query string's braces. aiohttp's static handler
         # sends Last-Modified and answers a conditional request, but a browser

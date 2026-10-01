@@ -134,7 +134,9 @@ class DiffusersBackend(EngineBackend):
             "-v", f"{host_path(str(self.config.models_dir))}:{ENGINE_MODELS_DIR}",
             "-v", f"{host_path(str(script))}:{SERVER_CONTAINER_PATH}:ro",
         ]
-        for key, value in (getattr(self.config, "extra_env", None) or {}).items():
+        from ainode.engine.no_telemetry import with_no_telemetry
+
+        for key, value in with_no_telemetry(getattr(self.config, "extra_env", None) or {}).items():
             cmd += ["-e", f"{key}={value}"]
         # python3: the engine image has python3/python3-pip and no
         # unversioned alias, so `python` is not on PATH in it.

@@ -162,7 +162,10 @@ def setup_logging() -> None:
 def cmd_start(args):
     """Start AINode."""
     from ainode.core.gpu import detect_gpu
+    from ainode.engine.no_telemetry import apply_to_process
+
     setup_logging()
+    apply_to_process()
     console.print(_banner())
     ensure_dirs()
 

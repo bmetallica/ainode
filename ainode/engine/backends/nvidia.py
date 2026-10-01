@@ -744,10 +744,12 @@ class NvidiaBackend(EngineBackend):
         this they can only be reached by hand-rolling a container — which is
         exactly what the launch path exists to avoid.
         """
+        from ainode.engine.no_telemetry import with_no_telemetry
+
         env = dict(nccl_env or {})
         for key, value in (getattr(self.config, "extra_env", None) or {}).items():
             env[str(key)] = str(value)
-        return env
+        return with_no_telemetry(env)
 
     def _engine_image(self) -> str:
         """Container image for THIS instance — per-load override, else the
