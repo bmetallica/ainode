@@ -1712,12 +1712,17 @@ class EugrBackend(EngineBackend):
                 "A launch reaches here with a model or it does not reach here "
                 "at all — if this came from a profile, the entry it was "
                 "restored from is the thing to look at.")
-        names = [str(n) for n in (getattr(self.config, "served_model_name", None) or [])
-                 if str(n).strip()]
-        if not names and implied_name:
-            # Serving from a path would otherwise publish the path as the
-            # model id, and every client addressing the repo id would 404.
-            names = [implied_name]
+        aliases = [str(n) for n in (getattr(self.config, "served_model_name", None) or [])
+                   if str(n).strip()]
+        # The repo id first, always, then the aliases: serving from a path
+        # would otherwise publish the path as the model id, an alias alone
+        # would make every client addressing the repo id 404, and the first
+        # name is the one /v1/models reports (and adoption reads back).
+        repo = implied_name or (str(self.config.model or "") if aliases else "")
+        names = []
+        for name in ([repo] if repo else []) + aliases:
+            if name not in names:
+                names.append(name)
         if names and wanted("--served-model-name"):
             extra += ("    --served-model-name "
                       + " ".join(shlex.quote(n) for n in names) + " \\\n")

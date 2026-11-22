@@ -46,7 +46,8 @@ def test_served_name_defaults_to_model():
 def test_served_name_aliases_emitted():
     # custom aliases -> client can address the model by a short name; multiple supported
     args = _name_args(served_model_name=["Aegis-14B", "Aegis-7B"])
-    assert args == ["--served-model-name", "Aegis-14B", "Aegis-7B"]
+    # the repo id stays first, so a client addressing it keeps working
+    assert args == ["--served-model-name", "some-org/not-on-disk", "Aegis-14B", "Aegis-7B"]
 
 
 if __name__ == "__main__":

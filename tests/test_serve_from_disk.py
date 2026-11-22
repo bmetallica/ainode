@@ -63,11 +63,12 @@ class TestServingFromDisk:
         (tmp_path / SLUG).mkdir()
         assert f"vllm serve {MODEL}" in _script(tmp_path)
 
-    def test_an_explicit_alias_wins_over_the_repo_id(self, tmp_path):
+    def test_an_explicit_alias_is_served_beside_the_repo_id(self, tmp_path):
+        # Both answer: clients addressing the repo id keep working, and the
+        # repo id stays the first name, the one /v1/models reports.
         _downloaded(tmp_path)
         script = _script(tmp_path, served_model_name=["chat"])
-        assert "--served-model-name chat" in script
-        assert f"--served-model-name {MODEL}" not in script
+        assert f"--served-model-name {MODEL} chat" in script
 
 
 def _env_of(config) -> dict:

@@ -278,7 +278,12 @@ def build_opencode_config(app, base_url: str, served=None,
                 f"that; relaunch with fewer concurrent requests for more.")
             window = share
 
-        models[model_id] = {
+        # The name clients should use: the first API name the launch gave it,
+        # so a model served under its predecessor's name keeps every client's
+        # opencode.json as it was.
+        api_id = next((str(n) for n in (getattr(entry, "served_model_name", None) or [])
+                       if str(n).strip()), model_id)
+        models[api_id] = {
             "name": str(getattr(info, "name", "") or model_id.split("/")[-1]),
             "tool_call": tool_call,
             "reasoning": reasoning,

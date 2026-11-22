@@ -298,6 +298,7 @@ class Recorder:
             stats = collector.model_stats() or {}
         except Exception:
             return
+        stats = self._fold_aliases(stats)
         kinds = self._kinds()
         where = self._serving_where()
         now = time.time()
@@ -335,6 +336,42 @@ class Recorder:
                 self._speed_sent[model] = (now, payload)
             except Exception:
                 logger.debug("could not record speed for %s", model, exc_info=True)
+
+    def _fold_aliases(self, stats: dict) -> dict:
+        """Requests are counted under the name they arrived with; one sent to
+        an API alias belongs to the model behind it."""
+        aliases: Dict[str, str] = {}
+        cluster = self._app.get("cluster_state")
+        try:
+            for node in (cluster.members() if cluster is not None else []):
+                for inst in (getattr(node, "instances", None) or []):
+                    if isinstance(inst, dict) and inst.get("model"):
+                        for name in inst.get("served_names") or []:
+                            aliases.setdefault(str(name), inst["model"])
+        except Exception:
+            logger.debug("could not read the cluster's API names", exc_info=True)
+        for _model, instance in self._instances():
+            record = getattr(instance, "record", None)
+            for name in getattr(record, "served_names", None) or []:
+                aliases.setdefault(str(name), _model)
+        if not aliases:
+            return stats
+        out: dict = {}
+        for name, entry in stats.items():
+            model = aliases.get(name, name)
+            if not isinstance(entry, dict):
+                continue
+            merged = out.setdefault(model, {"requests": 0, "tokens_generated": 0,
+                                            "_latency_sum": 0.0})
+            requests = int(entry.get("requests") or 0)
+            merged["requests"] += requests
+            merged["tokens_generated"] += float(entry.get("tokens_generated") or 0)
+            merged["_latency_sum"] += float(entry.get("avg_latency_ms") or 0) * requests
+        for merged in out.values():
+            latency = merged.pop("_latency_sum")
+            if merged["requests"]:
+                merged["avg_latency_ms"] = latency / merged["requests"]
+        return out
 
     def _own_id(self) -> str:
         return str(getattr(self._app.get("config"), "node_id", "") or "")

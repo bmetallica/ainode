@@ -726,6 +726,12 @@ def _stamp_load_state(inst) -> None:
             setattr(record, field, str(getattr(backend, field, "") or ""))
         except Exception:
             logger.debug("could not stamp %s", field, exc_info=True)
+    try:
+        model = str(getattr(record, "model", "") or "")
+        names = getattr(getattr(backend, "config", None), "served_model_name", None) or []
+        record.served_names = [str(n) for n in names if str(n).strip() and str(n) != model]
+    except Exception:
+        logger.debug("could not stamp the served names", exc_info=True)
     # Not a string: a list of phases and their durations.
     try:
         record.load_timeline = list(getattr(backend, "load_timeline", None) or [])
@@ -1860,6 +1866,13 @@ def _instance_can_answer(inst: dict) -> bool:
     return status in ("serving", "member-ready")
 
 
+def _answers_to(inst: dict, model: str) -> bool:
+    """Does this advertised instance serve ``model`` — its repo id, or one of
+    the API names it was launched with?"""
+    return bool(model) and (inst.get("model") == model
+                            or model in (inst.get("served_names") or []))
+
+
 def _routing_candidates(cluster, model: str, local_node_id: str, local_port: int) -> list:
     """All (host, port) currently serving `model` (routing-truth).
 
@@ -1888,7 +1901,7 @@ def _routing_candidates(cluster, model: str, local_node_id: str, local_port: int
         # Each stacked instance is served on its OWN port — a co-resident 2nd
         # model on this node lives at :8001, not the node's main :8000.
         for inst in (getattr(n, "instances", []) or []):
-            if inst.get("model") != model or not _instance_can_answer(inst):
+            if not _answers_to(inst, model) or not _instance_can_answer(inst):
                 continue
             iport = inst.get("api_port") or node_port
             if iport not in seen:
@@ -1919,7 +1932,8 @@ def _routing_table(cluster, local_node_id: str, local_port: int) -> dict:
         for inst in (getattr(n, "instances", []) or []):
             m = inst.get("model")
             if m and _instance_can_answer(inst):
-                table.setdefault(m, (host, inst.get("api_port") or port))
+                for name in [m, *(inst.get("served_names") or [])]:
+                    table.setdefault(name, (host, inst.get("api_port") or port))
     return table
 
 
