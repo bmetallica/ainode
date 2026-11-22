@@ -57,6 +57,14 @@ TP=2 auf zwei Knoten, fp8-KV-Cache (NVIDIAs eigenes Rezept für diesen
 Checkpoint, Bild-Eingaben eingeschlossen), MTP mit vier Entwurfs-Tokens,
 B12X-Lader (Lesemodus `bounce`, siehe „Bekannte Hürden“) und -Kernel, FlashInfer-Autotuning aus, `--max-num-seqs 16`.
 
+**Läuft hier seit 2026-11-22** auf spark-1432 + spark-659b. Gemessen bei 0,7:
+49,5 GiB Gewichte pro Rang (die PLE-Tabellen teilen sich mit TP auf) und
+danach noch 28,7 / 31,5 GB verfügbar. Abweichend vom Rezept gilt deshalb
+0,8 als Obergrenze im Wizard: etwa 12 GB mehr KV-Cache pro Knoten, und es
+bleiben rund 16 GB frei, doppelt so viel wie die Warnlinie des Wächters.
+Abweichend vom Rezept außerdem: kein Expert Parallelism und Lesemodus `bounce`
+(beides unter „Bekannte Hürden“).
+
 **Clients unverändert lassen:** Im Wizard unter *More settings → API name(s)*
 den alten Namen eintragen, `nvidia/Qwen3.8-Flash-Next-NVFP4`. Das Modell
 antwortet dann unter beiden Namen, und die opencode-Konfigurationen der Clients

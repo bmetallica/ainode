@@ -266,7 +266,9 @@ of the same model, 102 GB instead of 133, within a point of BF16 on its card.
 It needs the November B12X engine image (`scripts/build-b12x-image.sh --nodes
 …`, now pinned to eugr 68afa9f) and runs eugr's cluster recipe: TP=2, fp8 KV
 cache, MTP with four draft tokens, B12X loader and kernels, FlashInfer
-autotuning off. How to trade speed for cache (embedding tables on the NVMe) is
+autotuning off. Served on two Sparks since 2026-11-22: 49.5 GiB of weights per
+rank, so the wizard may give it up to 0.8 of each node (the recipe says 0.7);
+it runs without expert parallelism and with the loader reading per rank. How to trade speed for cache (embedding tables on the NVMe) is
 in [docs/mesh/B12X-IMAGE.md](docs/mesh/B12X-IMAGE.md).
 
 **A model can answer to another name** — *API name(s)* in the wizard's More
