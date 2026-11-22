@@ -261,6 +261,14 @@ launch log; here it lands on the instance before the weights are touched.
 libraries that keep no registry, and calling those unknown would be a false
 alarm on every interesting launch.
 
+**Qwen3.8-Flash-Next FP4-Local in the catalog** — NVIDIA's distilled FP4 build
+of the same model, 102 GB instead of 133, within a point of BF16 on its card.
+It needs the November B12X engine image (`scripts/build-b12x-image.sh --nodes
+…`, now pinned to eugr 68afa9f) and runs eugr's cluster recipe: TP=2, fp8 KV
+cache, MTP with four draft tokens, B12X loader and kernels, FlashInfer
+autotuning off. How to trade speed for cache (embedding tables on the NVMe) is
+in [docs/mesh/B12X-IMAGE.md](docs/mesh/B12X-IMAGE.md).
+
 **Nothing is fetched or reported on its own** — once the images are built and
 the models downloaded, the cluster needs no internet. The dashboard's fonts
 (Inter, JetBrains Mono; SIL OFL, licences beside them) are served from

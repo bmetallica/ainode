@@ -1,7 +1,8 @@
 # Das B12X-Engine-Image (experimentell)
 
-Manche Modelle laufen nur auf einem eigenen Serving-Stack. Im Katalog ist das
-derzeit **GLM 5.3 Flash** (`local-inference-lab/GLM-5.3-Flash-NVFP4-Spark`):
+Manche Modelle laufen nur auf einem eigenen Serving-Stack. Im Katalog sind das
+derzeit **Qwen3.8-Flash-Next FP4-Local** (`nvidia/Qwen3.8-Flash-Next-FP4-Local`,
+siehe unten) und **GLM 5.3 Flash** (`local-inference-lab/GLM-5.3-Flash-NVFP4-Spark`):
 seine halbe Kommandozeile — `--attention-backend B12X`, `--moe-backend b12x`,
 `--linear-backend b12x`, `--load-format b12x` — existiert in keinem anderen
 Image. Gegen das Standard-Image gestartet, endet es in argparse mit Exit-Code 2.
@@ -36,6 +37,37 @@ Image-ID. Der Launcher vergleicht IDs über die Knoten hinweg, nicht Tags — zw
 unterschiedliche Builds mit gleichem Namen lehnt er ab.
 
 ---
+
+## Qwen3.8-Flash-Next FP4-Local
+
+NVIDIAs per Distillation quantisierte Fassung des Flash-Next: 102 GB statt
+133 GB, laut Modellkarte GPQA Diamond 91,5 % und ToolEvalBench 88,7 % (BF16:
+92,2 / 89,4). Ihre NVFP4-Skalen liegen in einem neuen, komprimierten Format,
+das nur das B12X-Image liest — und zwar erst das von November. Das Image dafür
+also einmal neu holen (der Standard-Commit im Skript ist 68afa9f, 2026-11-21):
+
+```bash
+ssh Spark1
+cd ~/ainode
+scripts/build-b12x-image.sh --nodes Spark2,Spark3
+```
+
+Der Katalogeintrag ist eugrs `recipes/qwen3.8-flash-next-nvfp4-cluster.yaml`:
+TP=2 auf zwei Knoten, fp8-KV-Cache (NVIDIAs eigenes Rezept für diesen
+Checkpoint, Bild-Eingaben eingeschlossen), MTP mit vier Entwurfs-Tokens,
+B12X-Lader und -Kernel, FlashInfer-Autotuning aus, `--max-num-seqs 16`.
+
+**Mehr Cache statt Tempo:** die ~51 GB n-Gramm-Embedding-Tabellen (PLE) liegen
+im Rezept im GPU-Speicher. Auf die NVMe ausgelagert, steht der Platz dem
+KV-Cache zur Verfügung — mehr Sitzungen bei langem Kontext, auf Kosten eines
+Plattenzugriffs pro Token. In den Extra-Args des Modells:
+
+```
+--additional-config {"ple_table_memory":"disk"}
+```
+
+und unter *Engine environment* `B12X_DISK_BACKEND=io_uring`. Beides ist die
+Konfiguration der Modellkarte für einen einzelnen Spark.
 
 ## Modell starten
 

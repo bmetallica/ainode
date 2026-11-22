@@ -825,6 +825,94 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         # The launch panel's occupancy bar shows the difference.
         recommended_gmu=0.85,
     ),
+    "qwen3.8-flash-next-fp4-local": ModelInfo(
+        id="qwen3.8-flash-next-fp4-local",
+        name="Qwen3.8-Flash-Next (FP4-Local, B12X) — 2 nodes",
+        hf_repo="nvidia/Qwen3.8-Flash-Next-FP4-Local",
+        # MEASURED from the Hub's file listing (2026-11-22): 102.3 GB, against
+        # 132.7 for the NVFP4 build. NVIDIA's quantization-aware distillation;
+        # the card reports GPQA Diamond 91.5 % (BF16 92.2) and ToolEvalBench
+        # 88.7 % (BF16 89.4).
+        size_gb=102.3, min_memory_gb=115,
+        description=(
+            "The same 180B MoE as the NVFP4 entry, re-quantized by NVIDIA with "
+            "distillation: 102 GB instead of 133, within a point of BF16 on "
+            "the card's benchmarks. Its NVFP4 scales are in a new compressed "
+            "format only the B12X engine image reads (vllm-node-b12x, "
+            "docs/mesh/B12X-IMAGE.md). Two nodes at TP=2 with the per-layer "
+            "embedding tables in GPU memory, fp8 KV cache (NVIDIA's own "
+            "recipe for this checkpoint), its MTP layer drafting four tokens "
+            "and the B12X loader and kernels. For more cache — more sessions "
+            "at long context — the tables can live on the NVMe instead, see "
+            "the B12X doc. NOT YET SERVED HERE."
+        ),
+        quantization="NVFP4", family="qwen", params_b=180.0,
+        proven_tp=2, verified=False, curated=True,
+        context_length=262144, license="NVIDIA Open Model Agreement",
+        recommended=False, format="nvfp4",
+        capabilities=["vision", "tool_use", "reasoning", "code", "multilingual"],
+        # eugr/spark-vllm-docker recipes/qwen3.8-flash-next-nvfp4-cluster.yaml
+        # (MIT) at 68afa9f (2026-11-21), carried over apart from the
+        # parallelism flags, which AINode derives from the node selection, and
+        # the port and host, which it sets itself.
+        engine_image_eugr="vllm-node-b12x",
+        extra_vllm_args=[
+            "--mamba-cache-mode", "align",
+            "--enable-prefix-caching",
+            "--enable-chunked-prefill",
+            "--dtype", "bfloat16",
+            # The checkpoint's own recipe, vision included — NVIDIA validated
+            # it with an fp8 cache.
+            "--kv-cache-dtype", "fp8",
+            "--quantization", "modelopt_mixed",
+            "--block-size", "16",
+            # The B12X reader decodes the compressed scales. If this image
+            # refuses it ("requires GPU host page tables", seen with GLM in
+            # September), drop:--load-format and the rest still works.
+            "--load-format", "b12x",
+            # "disk" puts the ~51 GB of n-gram embedding tables on the NVMe
+            # and leaves that memory to the KV cache (env B12X_DISK_BACKEND
+            # =io_uring with it, as on the card's single-node recipe).
+            "--additional-config", '{"ple_table_memory":"device"}',
+            "--max-model-len", "262144",
+            "--max-num-seqs", "16",
+            "--max-num-batched-tokens", "4096",
+            "--speculative_config.method", "mtp",
+            "--speculative_config.num_speculative_tokens", "4",
+            "--speculative_config.draft_tensor_parallel_size", "2",
+            "--gdn-decode-kernel", "b12x",
+            "--linear-backend", "b12x",
+            "--moe-backend", "b12x",
+            # Upstream's choice too — and the FlashInfer autotuner is what hung
+            # the NVFP4 build's distributed launches (engine/autotune_cache.py).
+            "--no-enable-flashinfer-autotune",
+            "--mm-encoder-tp-mode", "data",
+            "--reasoning-parser", "qwen3",
+            "--tool-call-parser", "qwen3_xml",
+            "--enable-auto-tool-choice",
+            "--compilation-config", '{"pass_config":{"fuse_act_quant":true}}',
+        ],
+        extra_env={
+            "VLLM_ENABLE_ROCE_ALLREDUCE": "1",
+            "VLLM_ROCE_ALLREDUCE_MAX_SIZE": "2MB",
+            "NCCL_BUFFSIZE": "1048576",
+            "NCCL_MAX_CTAS": "8",
+            "CUTE_DSL_ARCH": "sm_121a",
+            "SAFETENSORS_FAST_GPU": "1",
+            "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+            "VLLM_SSM_CONV_STATE_LAYOUT": "DS",
+            "VLLM_USE_AOT_COMPILE": "1",
+            "VLLM_USE_MEGA_AOT_ARTIFACT": "1",
+            "VLLM_USE_V2_MODEL_RUNNER": "1",
+            "B12X_POLICY_MODE": "auto",
+            "VLLM_MXFP8_LM_HEAD": "1",
+            "VLLM_B12X_MOE_FP4_LAYER_MAX_INPUT_SCALE": "w13",
+            "VLLM_B12X_MOE_FP4_FORCE_A16": "1",
+            "B12X_W4A16_A4_PREFILL": "1",
+        },
+        # Upstream's 0.7. AINode's wizard re-plans it against the node anyway.
+        recommended_gmu=0.7,
+    ),
     "smaug-flash": ModelInfo(
         id="smaug-flash",
         name="Smaug-Flash — agentic coding (2 nodes)",

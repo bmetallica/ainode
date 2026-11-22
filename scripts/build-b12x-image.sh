@@ -36,8 +36,11 @@ NODES=""
 # separately for exactly this reason: the launcher comes from our own image
 # (Dockerfile.ainode fetches it at EUGR_COMMIT) and only has to agree with the
 # engine about the .env contract, not about which kernels were compiled in.
-# Verified to carry the flag: 346dc04 (2026-09-10).
-EUGR_B12X_COMMIT="${EUGR_B12X_COMMIT:-346dc04fa11a4e1cb343153557e8b699b8488d30}"
+# Verified to carry the flag: 346dc04 (2026-09-10). Moved to 68afa9f
+# (2026-11-21) for nvidia/Qwen3.8-Flash-Next-FP4-Local, whose compressed NVFP4
+# scales the September image cannot read; the flag still pulls the prebuilt
+# eugr/spark-vllm-b12x:latest rather than compiling.
+EUGR_B12X_COMMIT="${EUGR_B12X_COMMIT:-68afa9f297a947678517faec52808566739979bc}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
