@@ -55,7 +55,7 @@ scripts/build-b12x-image.sh --nodes Spark2,Spark3
 Der Katalogeintrag ist eugrs `recipes/qwen3.8-flash-next-nvfp4-cluster.yaml`:
 TP=2 auf zwei Knoten, fp8-KV-Cache (NVIDIAs eigenes Rezept für diesen
 Checkpoint, Bild-Eingaben eingeschlossen), MTP mit vier Entwurfs-Tokens,
-B12X-Lader und -Kernel, FlashInfer-Autotuning aus, `--max-num-seqs 16`.
+B12X-Lader (Lesemodus `bounce`, siehe „Bekannte Hürden“) und -Kernel, FlashInfer-Autotuning aus, `--max-num-seqs 16`.
 
 **Clients unverändert lassen:** Im Wizard unter *More settings → API name(s)*
 den alten Namen eintragen, `nvidia/Qwen3.8-Flash-Next-NVFP4`. Das Modell
@@ -92,6 +92,32 @@ Die 16 Umgebungsvariablen (`CUTE_DSL_ARCH`, `B12X_POLICY_MODE`, die
 ---
 
 ## Bekannte Hürden
+
+**`ValueError: shared checkpoint reads require distinct CUDA devices on one host`**
+
+Der B12X-Lader wählt seinen Lesemodus selbst (`read_mode: auto`). Meldet die
+GPU keine „host page tables“, nimmt er `gds`: Ein Rang liest den Checkpoint,
+und die anderen bekommen ihn über CUDA-IPC. Das geht nur auf einem Rechner,
+über zwei Sparks bricht der Start vor dem Laden ab. Mit `bounce` liest jeder
+Rang selbst. Der Katalogeintrag des FP4-Local setzt das. Für andere Modelle
+gehört es in die Extra-vLLM-Args:
+
+```
+--model-loader-extra-config {"read_mode":"bounce"}
+```
+
+**`NotImplementedError: NVFP4-CSF supports TP without EP/DP`**
+
+AINode schaltet bei Mixture-of-Experts-Modellen über mehrere Knoten
+`--enable-expert-parallel` ein. Die MoE-Kernel des FP4-Local-Formats (CSF)
+verweigern das, sie können nur reines TP. Der Katalogeintrag schaltet es
+deshalb ab (`expert_parallel=False`). TP teilt auch ohne EP jeden Experten auf
+die Ränge auf, die Gewichte pro Knoten bleiben bei der Hälfte. Für ein
+anderes Modell mit denselben Kerneln in den Extra-vLLM-Args:
+
+```
+drop:--enable-expert-parallel
+```
 
 **`RuntimeError: the initial b12x loader requires GPU host page tables`**
 

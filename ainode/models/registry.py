@@ -186,6 +186,10 @@ class ModelInfo:
     extra_vllm_args: list = None    # verbatim `vllm serve` flags
     extra_env: dict = None          # engine-container env (e.g. b12x kernel selection)
     recommended_gmu: float = 0.0    # 0 = use node default gpu_memory_utilization
+    #: False: never add --enable-expert-parallel, even across nodes, where
+    #: AINode otherwise adds it for every mixture-of-experts
+    #: (models/architecture.py). For a kernel that refuses EP outright.
+    expert_parallel: bool = True
 
     def __post_init__(self):
         if self.capabilities is None:
@@ -856,6 +860,12 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         # parallelism flags, which AINode derives from the node selection, and
         # the port and host, which it sets itself.
         engine_image_eugr="vllm-node-b12x",
+        # Plain TP, as in the recipe. The CSF MoE method of this image refuses
+        # anything else (eugr docker/patches/qwen3.8/vllm/16-flash-next-fp4
+        # .patch): "NotImplementedError: NVFP4-CSF supports TP without EP/DP",
+        # seen on spark-1432 + spark-659b on 2026-11-22. TP still splits each
+        # expert across the ranks, so the weights per node stay at half.
+        expert_parallel=False,
         extra_vllm_args=[
             "--mamba-cache-mode", "align",
             "--enable-prefix-caching",
@@ -870,6 +880,19 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             # refuses it ("requires GPU host page tables", seen with GLM in
             # September), drop:--load-format and the rest still works.
             "--load-format", "b12x",
+            # The reader's own default, read_mode "auto", picks "gds" on a GPU
+            # that reports no host page tables
+            # (cudaDevAttrPageableMemoryAccessUsesHostPageTables) — and "gds"
+            # reads the checkpoint once for the whole TP group and hands it
+            # out over CUDA IPC, which only works within one machine. Across
+            # two Sparks it stops before loading anything (spark-1432 +
+            # spark-659b, 2026-11-22):
+            #   ValueError: shared checkpoint reads require distinct CUDA
+            #   devices on one host
+            # "bounce" reads on every rank through a pinned host ring
+            # (lukealonso/b12x, b12x/integration/vllm/loader.py and
+            # loader/_bounce.c) and needs neither.
+            "--model-loader-extra-config", '{"read_mode":"bounce"}',
             # "disk" puts the ~51 GB of n-gram embedding tables on the NVMe
             # and leaves that memory to the KV cache (env B12X_DISK_BACKEND
             # =io_uring with it, as on the card's single-node recipe).

@@ -7,7 +7,6 @@ import functools
 import aiohttp
 import json
 import logging
-import shlex
 import re
 import shutil
 import time
@@ -1227,7 +1226,9 @@ def parse_load_overrides(body: dict):
         raw = body["extra_vllm_args"]
         if isinstance(raw, str):
             try:
-                raw = shlex.split(raw)
+                from ainode.engine.serve_args import split_command_line
+
+                raw = split_command_line(raw)
             except ValueError as exc:
                 # An unbalanced quote. The UI sends this field verbatim so a
                 # JSON argument can keep its quotes, which means a typo in one
@@ -1421,7 +1422,10 @@ async def handle_model_load(request: web.Request) -> web.Response:
     from ainode.engine.serve_args import merge_vllm_args
     from ainode.models.architecture import architecture_args
 
-    needed = architecture_args(request.app, model, len(wanted_nodes or []) or 1)
+    from ainode.engine.serve_args import body_dropped_flags
+
+    needed = architecture_args(request.app, model, len(wanted_nodes or []) or 1,
+                               dropped=body_dropped_flags(body))
     if needed:
         overrides["extra_vllm_args"] = merge_vllm_args(
             needed, overrides.get("extra_vllm_args"))

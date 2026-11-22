@@ -485,10 +485,10 @@ def _args(raw) -> List[str]:
     """Extra flags as a list, from a list or the command line the wizard's
     text field holds (quotes kept, so a JSON argument survives)."""
     if isinstance(raw, str):
-        import shlex
+        from ainode.engine.serve_args import split_command_line
 
         try:
-            return shlex.split(raw)
+            return split_command_line(raw)
         except ValueError:
             return raw.split()
     return [str(a) for a in (raw or [])]
