@@ -135,6 +135,28 @@ def dropped_flags(caller_args: Optional[Iterable]) -> Set[str]:
     return dropped
 
 
+def split_command_line(raw: str) -> List[str]:
+    """Flags typed as one line, split the way an operator means them.
+
+    ``shlex.split`` follows the shell, and the shell eats the double quotes
+    of a JSON value nobody wrapped in single quotes:
+    ``--model-loader-extra-config {"read_mode":"bounce"}`` became
+    ``{read_mode:bounce}``, which vLLM refuses ("cannot be converted to
+    <function loads>"). A word that starts with ``{`` or ``[`` is therefore
+    kept as typed; everything else — single-quoted JSON included — is
+    unquoted as before. Raises ValueError on an unbalanced quote.
+    """
+    import shlex
+
+    out: List[str] = []
+    for word in shlex.split(raw, posix=False):
+        if word[:1] in "{[":
+            out.append(word)
+        else:
+            out.extend(shlex.split(word))
+    return out
+
+
 def merge_vllm_args(recipe_args: Optional[Iterable],
                     caller_args: Optional[Iterable]) -> List[str]:
     """Caller arguments, plus the recipe flags the caller did not mention.
