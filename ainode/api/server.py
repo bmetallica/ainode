@@ -2059,6 +2059,61 @@ def _completion_tokens(body: bytes) -> int:
         return 0
 
 
+def _ask_for_usage(path: str, body_bytes):
+    """A streaming completion with the usage block switched on.
+
+    Counting SSE events counted tokens only while every event carried one.
+    With speculative decoding an event carries what one step produced —
+    2.8 tokens on Qwen3.8-Flash-Next FP4-Local with MTP (vLLM's own counters:
+    195,405 tokens in 68,927 steps) — so the measured speed came out at a
+    third of the real one: 20.1 tok/s in the export, 62 by vLLM's decode
+    time. vLLM states the exact count in a final usage event when asked.
+
+    Returns ``(body, injected)``. ``injected`` means the client did not ask
+    for that event itself, so the proxy removes it again before the client
+    sees it — a client that indexes ``choices[0]`` of every chunk would
+    stumble over its empty ``choices``.
+    """
+    if body_bytes is None or not path.endswith(("/chat/completions", "/completions")):
+        return body_bytes, False
+    import json as _json
+
+    try:
+        body = _json.loads(body_bytes)
+    except Exception:
+        return body_bytes, False
+    if not isinstance(body, dict) or body.get("stream") is not True:
+        return body_bytes, False
+    options = body.get("stream_options")
+    if isinstance(options, dict) and options.get("include_usage"):
+        return body_bytes, False
+    if options is not None and not isinstance(options, dict):
+        return body_bytes, False
+    body["stream_options"] = {**(options or {}), "include_usage": True}
+    return _json.dumps(body).encode(), True
+
+
+def _usage_event_tokens(event: bytes):
+    """completion_tokens of a usage-only SSE event, or None for any other."""
+    if b'"usage"' not in event or b'"choices":[]' not in event.replace(b" ", b""):
+        return None
+    import json as _json
+
+    for line in event.split(b"\n"):
+        if line.startswith(b"data:"):
+            try:
+                data = _json.loads(line[5:].strip())
+            except Exception:
+                return None
+            usage = data.get("usage") if isinstance(data, dict) else None
+            if isinstance(usage, dict) and not data.get("choices"):
+                try:
+                    return max(0, int(usage.get("completion_tokens") or 0))
+                except (TypeError, ValueError):
+                    return None
+    return None
+
+
 async def proxy_to_vllm(request: web.Request) -> web.StreamResponse:
     """Forward the request to the node serving the requested model (F1 federation)."""
     config: NodeConfig = request.app["config"]
@@ -2119,6 +2174,7 @@ async def proxy_to_vllm(request: web.Request) -> web.StreamResponse:
         # node's slow cold-start generation (35s+) can still stream to completion.
         "timeout": aiohttp.ClientTimeout(total=None, sock_connect=5),
     }
+    body_bytes, usage_injected = _ask_for_usage(request.path, body_bytes)
     if body_bytes is not None:
         kwargs["data"] = body_bytes
 
@@ -2140,19 +2196,44 @@ async def proxy_to_vllm(request: web.Request) -> web.StreamResponse:
                         },
                     )
                     await resp.prepare(request)
-                    streamed_tokens = 0
+                    # Events, as a fallback count: one per step, which is
+                    # one token only without speculative decoding. The usage
+                    # event, when there is one, gives the real number.
+                    streamed_events = 0
+                    usage_tokens = None
+                    pending = b""
                     async for chunk in upstream.content.iter_any():
-                        # vLLM emits one SSE event per token, so counting the
-                        # event markers counts tokens without parsing JSON in
-                        # the streaming hot path. A chunk boundary landing
-                        # inside a marker can miscount by one; this feeds an
-                        # average speed gauge, not a bill.
-                        streamed_tokens += chunk.count(b"data: ")
-                        await resp.write(chunk)
+                        streamed_events += chunk.count(b"data: ")
+                        pending += chunk
+                        *events, pending = pending.split(b"\n\n")
+                        if not usage_injected:
+                            # The client asked for the usage event itself:
+                            # pass everything through as it arrives, and
+                            # only read the count on the way.
+                            for event in events:
+                                found = _usage_event_tokens(event)
+                                if found is not None:
+                                    usage_tokens = found
+                            await resp.write(chunk)
+                            continue
+                        # Whole events only, so the injected usage event can
+                        # be held back; the rest goes out as it completes.
+                        out = []
+                        for event in events:
+                            found = _usage_event_tokens(event)
+                            if found is not None:
+                                usage_tokens = found
+                                continue
+                            out.append(event + b"\n\n")
+                        if out:
+                            await resp.write(b"".join(out))
+                    if usage_injected and pending:
+                        await resp.write(pending)
                     await resp.write_eof()
                     collector.record_request(
                         model, (time.time() - start_time) * 1000,
-                        tokens_generated=streamed_tokens, error=False)
+                        tokens_generated=(usage_tokens if usage_tokens is not None
+                                          else streamed_events), error=False)
                     return resp
                 body = await upstream.read()
                 collector.record_request(
