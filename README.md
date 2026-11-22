@@ -269,6 +269,16 @@ cache, MTP with four draft tokens, B12X loader and kernels, FlashInfer
 autotuning off. How to trade speed for cache (embedding tables on the NVMe) is
 in [docs/mesh/B12X-IMAGE.md](docs/mesh/B12X-IMAGE.md).
 
+**A model can answer to another name** — *API name(s)* in the wizard's More
+settings (or the launch dialog's Advanced section) adds names the model answers
+to; its repo id keeps working beside them. The proxy routes every name,
+`/v1/models` lists them, the opencode export uses the first one, and requests to
+an alias count towards the model's measured speed. So a successor can take over
+its predecessor's name — Qwen3.8-Flash-Next FP4-Local served as
+`nvidia/Qwen3.8-Flash-Next-NVFP4` — and no client's configuration changes. (The
+field existed before, but the alias replaced the repo id and the proxy did not
+know it: a request for either name failed.)
+
 **Nothing is fetched or reported on its own** — once the images are built and
 the models downloaded, the cluster needs no internet. The dashboard's fonts
 (Inter, JetBrains Mono; SIL OFL, licences beside them) are served from

@@ -890,7 +890,11 @@ class NvidiaBackend(EngineBackend):
         # API id(s) clients address the model by. Custom aliases (e.g. "Aegis-14B")
         # win; otherwise pin the repo-id so /v1/models is stable even when serving
         # from a local mount path. A list emits multiple --served-model-name values.
-        names = self.config.served_model_name or [self.config.model]
+        # The repo id first, then any aliases — both answer.
+        names = []
+        for name in [self.config.model, *(self.config.served_model_name or [])]:
+            if name and name not in names:
+                names.append(name)
         name_args: List[str] = ["--served-model-name", *names]
         in_container = os.environ.get("AINODE_IN_CONTAINER")
         mount_trustworthy = (not in_container) or bool(os.environ.get("AINODE_HOST_HOME"))

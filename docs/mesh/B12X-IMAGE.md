@@ -57,6 +57,11 @@ TP=2 auf zwei Knoten, fp8-KV-Cache (NVIDIAs eigenes Rezept für diesen
 Checkpoint, Bild-Eingaben eingeschlossen), MTP mit vier Entwurfs-Tokens,
 B12X-Lader und -Kernel, FlashInfer-Autotuning aus, `--max-num-seqs 16`.
 
+**Clients unverändert lassen:** Im Wizard unter *More settings → API name(s)*
+den alten Namen eintragen, `nvidia/Qwen3.8-Flash-Next-NVFP4`. Das Modell
+antwortet dann unter beiden Namen, und die opencode-Konfigurationen der Clients
+bleiben, wie sie sind.
+
 **Mehr Cache statt Tempo:** die ~51 GB n-Gramm-Embedding-Tabellen (PLE) liegen
 im Rezept im GPU-Speicher. Auf die NVMe ausgelagert, steht der Platz dem
 KV-Cache zur Verfügung — mehr Sitzungen bei langem Kontext, auf Kosten eines

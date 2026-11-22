@@ -49,6 +49,10 @@ class InstanceRecord:
     #: What this instance serves: "llm" or "image". Empty from an older peer,
     #: which is read as "llm" — everything that existed before was one.
     kind: str = ""
+    #: The API names the engine answers to besides ``model`` (the launch's
+    #: served_model_name). The proxy routes these too, so a model served
+    #: under an old name keeps every client's configuration working.
+    served_names: List[str] = field(default_factory=list)
 
     @property
     def world_size(self) -> int:

@@ -101,11 +101,12 @@ def _script(**config_kwargs) -> str:
 
 class TestEugrLaunchScript:
     def test_served_model_name_reaches_vllm(self):
-        assert "--served-model-name chat" in _flat(_script(served_model_name=["chat"]))
+        # The repo id stays first: an alias adds a name, it does not take one away.
+        assert "--served-model-name org/name chat" in _flat(_script(served_model_name=["chat"]))
 
     def test_several_aliases_are_all_emitted(self):
         script = _flat(_script(served_model_name=["chat", "gpt-4"]))
-        assert "--served-model-name chat gpt-4" in script
+        assert "--served-model-name org/name chat gpt-4" in script
 
     def test_kv_cache_dtype_reaches_vllm(self):
         assert "--kv-cache-dtype fp8" in _flat(_script(kv_cache_dtype="fp8"))
