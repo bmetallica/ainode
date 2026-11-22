@@ -249,6 +249,21 @@ _B12X_LOADER_HINT = (
     "way."
 )
 
+# The B12X reader in its "gds" mode, across machines. Its read_mode "auto"
+# chooses gds on a GPU that reports no host page tables, and gds shares one
+# read of the checkpoint among the TP ranks over CUDA IPC — one host only.
+# Seen launching Qwen3.8-Flash-Next-FP4-Local on two Sparks:
+#
+#   ValueError: shared checkpoint reads require distinct CUDA devices on one
+#   host
+_B12X_SHARED_READ_HINT = (
+    "the B12X loader chose its shared GDS read, which only works when every "
+    "rank is on the same machine. Make each rank read for itself: put "
+    "--model-loader-extra-config {\"read_mode\":\"bounce\"} in the model's "
+    "extra vLLM args (an up-to-date catalog entry carries it already). "
+    "drop:--load-format leaves the B12X loader out altogether."
+)
+
 # A mixed-precision AutoRound / GPTQ checkpoint. Seen on
 # aquaman164/MiniMax-M3-AutoRound-3.2bit-longctx:
 #
@@ -564,6 +579,8 @@ _FATAL_PATTERNS = [
     ("pipeline parallelism is not supported", "pipelineparallelismisnotsupported",
      _NO_PIPELINE_HINT),
     ("b12x loader requires", "b12xloaderrequires", _B12X_LOADER_HINT),
+    ("shared checkpoint reads require", "sharedcheckpointreadsrequire",
+     _B12X_SHARED_READ_HINT),
     ("unsupported weight_bits", "unsupportedweight_bits", _MIXED_BITS_HINT),
     ("couldn't instantiate the backend tokenizer",
      "couldn'tinstantiatethebackendtokenizer", _TOKENIZER_HINT),
