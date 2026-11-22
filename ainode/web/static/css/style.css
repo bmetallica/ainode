@@ -6380,9 +6380,22 @@ select {
 /* ============================================================
    PROFILE WIZARD (views/wizard.js, wizzard.md)
    ============================================================ */
-.pw-modal { width: min(1180px, 97vw); }
-.pw-modal .wizard-body { grid-template-columns: 180px 1fr; max-height: 74vh; }
-.pw-modal .wizard-panel { overflow-y: auto; }
+/* Header, body and footer share the modal's 92vh; only the panel scrolls.
+   The body is a grid, and a grid row grows to its content unless told
+   otherwise — with many models on the parameter step the panel overran the
+   body's max-height, drew over the footer (which then sat mid-screen) and
+   the outer modal scrolled instead, never reaching the end. */
+.pw-modal { width: min(1180px, 97vw); overflow: hidden; }
+.pw-modal .md-header, .pw-modal .wizard-footer { flex-shrink: 0; }
+.pw-modal .wizard-body {
+  grid-template-columns: 180px 1fr; grid-template-rows: minmax(0, 1fr);
+  flex: 1 1 auto; min-height: 0; max-height: none;
+}
+.pw-modal .wizard-steps { overflow-y: auto; min-height: 0; }
+.pw-modal .wizard-panel { overflow-y: auto; min-height: 0; }
+@media (max-width: 900px) {
+  .pw-modal .wizard-body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+}
 .pw-field { margin-bottom: 12px; max-width: 460px; }
 .pw-field .form-input { width: 100%; }
 .pw-error { color: #ff8a8a; font-size: 12px; margin-top: 8px; min-height: 1em; }
