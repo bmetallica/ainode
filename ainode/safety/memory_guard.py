@@ -293,7 +293,7 @@ class MemoryGuard:
                            self._breaches, BREACHES_BEFORE_ACTING)
             return
         self._breaches = 0
-        self.act(reading)
+        self.act(reading, falling=falling and not reading.critical)
 
     def _falling_fast(self, reading: MemoryReading) -> bool:
         """Inside the warning band and dropping faster than the reserve lasts."""
@@ -306,8 +306,15 @@ class MemoryGuard:
             return False
         return (previous[1] - reading.available_mb) / elapsed > FAST_DROP_MB_PER_SECOND
 
-    def act(self, reading: MemoryReading) -> Optional[str]:
-        """Stop the newest engine. Returns the model stopped, or None."""
+    def act(self, reading: MemoryReading, *, falling: bool = False) -> Optional[str]:
+        """Stop the newest engine. Returns the model stopped, or None.
+
+        ``falling``: it acted inside the warning band because memory was
+        dropping faster than the rest would last, not because the limit was
+        crossed. The message has to say so — "only 8049 MB were left (limit
+        4096 MB)" read as the guard contradicting itself.
+        """
+        why = _why(reading, falling)
         instance = self._newest_instance()
         if instance is None:
             # A MEMBER node has no instance record for a distributed launch:
@@ -318,9 +325,7 @@ class MemoryGuard:
             stopped = self._kill_engine_containers()
             if stopped:
                 self._record(reading, ", ".join(stopped), (
-                    f"Stopped by the host memory guard: only "
-                    f"{reading.available_mb:.0f} MB of host memory were left "
-                    f"(limit {reading.critical_mb:.0f} MB). No instance is "
+                    f"Stopped by the host memory guard: {why}. No instance is "
                     f"recorded here — this node is a member of a launch the "
                     f"head started — so the engine container(s) were killed "
                     f"directly: {', '.join(stopped)}."))
@@ -330,9 +335,7 @@ class MemoryGuard:
             return None
         model = str(getattr(getattr(instance, "record", None), "model", "") or "")
         reason = (
-            f"Stopped by the host memory guard: only "
-            f"{reading.available_mb:.0f} MB of host memory were left "
-            f"(limit {reading.critical_mb:.0f} MB). This was the most recently "
+            f"Stopped by the host memory guard: {why}. This was the most recently "
             f"started engine on this node. Nothing else was touched."
         )
         logger.error("%s — stopping %s", reason, model or "the newest instance")
@@ -462,3 +465,13 @@ class MemoryGuard:
         except Exception:
             return None
         return instances[-1] if instances else None
+
+
+def _why(reading: MemoryReading, falling: bool) -> str:
+    if falling:
+        return (f"{reading.available_mb:.0f} MB of host memory were left and "
+                f"falling faster than {FAST_DROP_MB_PER_SECOND:.0f} MB/s — the "
+                f"{reading.critical_mb:.0f} MB limit would have been crossed "
+                f"before the next look")
+    return (f"only {reading.available_mb:.0f} MB of host memory were left "
+            f"(limit {reading.critical_mb:.0f} MB)")

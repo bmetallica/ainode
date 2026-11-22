@@ -172,6 +172,17 @@ class TestFallingFast:
         guard._tick()                                    # 53 GB gone in a second
         assert guard._app["instances"].instances()[-1].backend.killed is True
 
+    def test_the_message_says_it_was_the_slope(self, tmp_path):
+        # Seen on spark-13e1: "only 8049 MB of host memory were left (limit
+        # 4096 MB)" — the guard appearing to contradict itself.
+        guard = _guard(tmp_path, available_mb=60000, critical_gb=4, warn_gb=8,
+                       clock=self._clock([0.0, 1.0, 2.0, 3.0]))
+        guard._tick()
+        guard._meminfo = _meminfo(tmp_path, available_mb=7000)
+        guard._tick()
+        error = guard._app["instances"].instances()[-1].record.load_error
+        assert "falling faster than" in error and "only 7000" not in error
+
     def test_a_steep_drop_that_lands_safely_does_not(self, tmp_path):
         # The same slope, but still far above the warning line: a model
         # finished loading, which is what that looks like.
