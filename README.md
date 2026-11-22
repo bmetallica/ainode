@@ -476,7 +476,13 @@ seconds per picture) is counted where requests arrive — the head — from the
 moment a launch is seen serving, not over the life of the AINode process, and
 sent to the node that runs the model (`POST /api/measurements/speed`, cluster
 key only); each launch keeps its own speed and version in the history, so two
-launches of one model can be compared.
+launches of one model can be compared. It is end to end — reading the prompt
+and any wait included — so a coding agent's long prompts pull it below the pure
+decode rate. A streamed answer's tokens come from vLLM's usage event, which the
+proxy asks for and removes again unless the client asked for it too; counting
+the stream's events instead counted decoding steps, and with speculative
+decoding one step is several tokens (Flash-Next FP4-Local was reported at a
+third of its speed).
 
 **`reasoning` in a client config comes from the launch, not the catalog** — the
 catalog capability says the model thinks; the client field says the thinking
