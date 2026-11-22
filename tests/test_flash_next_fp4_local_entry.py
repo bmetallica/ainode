@@ -27,6 +27,27 @@ def test_the_checkpoints_own_choices():
     assert "ple_table_memory" in _flag("--additional-config")
 
 
+def test_every_rank_reads_its_own_part_of_the_checkpoint():
+    # read_mode "auto" turned into the one-host GDS read on spark-1432 +
+    # spark-659b: "shared checkpoint reads require distinct CUDA devices on
+    # one host".
+    import json
+
+    assert json.loads(_flag("--model-loader-extra-config")) == {"read_mode": "bounce"}
+
+
+def test_that_failure_is_named():
+    from ainode.engine.load_phase import LoadPhaseTracker
+
+    tracker = LoadPhaseTracker()
+    tracker.reset()
+    tracker.observe("(Worker_TP1) ValueError: shared checkpoint reads require "
+                    "distinct CUDA devices on one host")
+    tracker.fail("the launcher exited (code 1)")
+    reason = tracker.failure_reason()
+    assert "read_mode" in reason and "bounce" in reason
+
+
 def test_no_expert_parallelism_across_nodes(monkeypatch):
     # "NotImplementedError: NVFP4-CSF supports TP without EP/DP"
     import ainode.models.architecture as arch

@@ -1365,7 +1365,8 @@ context** for the same sessions (the default, up to what the checkpoint
 supports, then more sessions) or **more sessions** at a fixed context. Under
 *More settings*: tool calling (automatic, off, or a named parser), API names,
 quantization, trust remote code, extra vLLM flags (checked against the engine
-image at launch) and environment. Image models: largest image (which sets
+image at launch; a JSON value such as `{"read_mode":"bounce"}` can be typed
+as it is, without single quotes) and environment. Image models: largest image (which sets
 their memory), default size, default steps, default guidance and precision
 (bfloat16, FP8 weights, float16, float32).
 Image and embedding models are fixed blocks. The arithmetic is
