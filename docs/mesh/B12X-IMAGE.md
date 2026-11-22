@@ -93,6 +93,19 @@ Die 16 Umgebungsvariablen (`CUTE_DSL_ARCH`, `B12X_POLICY_MODE`, die
 
 ## Bekannte Hürden
 
+**`NotImplementedError: NVFP4-CSF supports TP without EP/DP`**
+
+AINode schaltet bei Mixture-of-Experts-Modellen über mehrere Knoten
+`--enable-expert-parallel` ein. Die MoE-Kernel des FP4-Local-Formats (CSF)
+verweigern das, sie können nur reines TP. Der Katalogeintrag schaltet es
+deshalb ab (`expert_parallel=False`). TP teilt auch ohne EP jeden Experten auf
+die Ränge auf, die Gewichte pro Knoten bleiben bei der Hälfte. Ohne dieses
+Update hilft in den Extra-vLLM-Args:
+
+```
+drop:--enable-expert-parallel
+```
+
 **`RuntimeError: the initial b12x loader requires GPU host page tables`**
 
 Der schnelle B12X-Lader verlangt eine Plattformfähigkeit, die der

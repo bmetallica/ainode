@@ -528,7 +528,10 @@ async def handle_sharding_launch(request: web.Request) -> web.Response:
     from ainode.engine.serve_args import merge_vllm_args
     from ainode.models.architecture import architecture_args
 
-    needed = architecture_args(request.app, model, 1 + len(chosen))
+    from ainode.engine.serve_args import body_dropped_flags
+
+    needed = architecture_args(request.app, model, 1 + len(chosen),
+                               dropped=body_dropped_flags(body))
     if needed:
         overrides["extra_vllm_args"] = merge_vllm_args(
             needed, overrides.get("extra_vllm_args"))

@@ -71,7 +71,7 @@ def facts_for(app, model: str):
 # ainode/models/quantization.py and repair_quant_method().
 
 
-def architecture_args(app, model: str, node_count: int) -> List[str]:
+def architecture_args(app, model: str, node_count: int, dropped=()) -> List[str]:
     """What this model needs at this split, beyond anyone's preferences.
 
     Merged the way a recipe is — the caller wins per flag, and
@@ -81,10 +81,25 @@ def architecture_args(app, model: str, node_count: int) -> List[str]:
     """
     if node_count <= 1:
         return []
+    if not _catalog_allows_ep(model) or EXPERT_PARALLEL in set(dropped or ()):
+        # The recipe merge has already consumed the caller's drop: entries by
+        # the time this is merged, so they are passed in explicitly.
+        return []
     facts: Optional[object] = facts_for(app, model)
     if facts is None or not getattr(facts, "is_moe", False):
         return []
     return [EXPERT_PARALLEL]
+
+
+def _catalog_allows_ep(model: str) -> bool:
+    """False for a curated model whose kernels refuse expert parallelism."""
+    from ainode.models.registry import CURATED_CLUSTER_MODELS
+
+    m = (model or "").strip()
+    for info in CURATED_CLUSTER_MODELS.values():
+        if m in (info.id, info.hf_repo):
+            return bool(getattr(info, "expert_parallel", True))
+    return True
 
 
 def would_add(app, model: str, node_count: int) -> List[str]:

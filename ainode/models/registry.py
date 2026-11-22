@@ -186,6 +186,10 @@ class ModelInfo:
     extra_vllm_args: list = None    # verbatim `vllm serve` flags
     extra_env: dict = None          # engine-container env (e.g. b12x kernel selection)
     recommended_gmu: float = 0.0    # 0 = use node default gpu_memory_utilization
+    #: False: never add --enable-expert-parallel, even across nodes, where
+    #: AINode otherwise adds it for every mixture-of-experts
+    #: (models/architecture.py). For a kernel that refuses EP outright.
+    expert_parallel: bool = True
 
     def __post_init__(self):
         if self.capabilities is None:
@@ -856,6 +860,12 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
         # parallelism flags, which AINode derives from the node selection, and
         # the port and host, which it sets itself.
         engine_image_eugr="vllm-node-b12x",
+        # Plain TP, as in the recipe. The CSF MoE method of this image refuses
+        # anything else (eugr docker/patches/qwen3.8/vllm/16-flash-next-fp4
+        # .patch): "NotImplementedError: NVFP4-CSF supports TP without EP/DP",
+        # seen on spark-1432 + spark-659b on 2026-11-22. TP still splits each
+        # expert across the ranks, so the weights per node stay at half.
+        expert_parallel=False,
         extra_vllm_args=[
             "--mamba-cache-mode", "align",
             "--enable-prefix-caching",

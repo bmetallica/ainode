@@ -135,6 +135,21 @@ def dropped_flags(caller_args: Optional[Iterable]) -> Set[str]:
     return dropped
 
 
+def body_dropped_flags(body) -> Set[str]:
+    """The ``drop:`` flags of a load request's extra_vllm_args, read before
+    the recipe merge consumes them — what the architecture would add later
+    (``--enable-expert-parallel``) must still honour them."""
+    raw = (body or {}).get("extra_vllm_args") if hasattr(body, "get") else None
+    if isinstance(raw, str):
+        import shlex
+
+        try:
+            raw = shlex.split(raw)
+        except ValueError:
+            return set()
+    return dropped_flags(raw if isinstance(raw, list) else [])
+
+
 def merge_vllm_args(recipe_args: Optional[Iterable],
                     caller_args: Optional[Iterable]) -> List[str]:
     """Caller arguments, plus the recipe flags the caller did not mention.
