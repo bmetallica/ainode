@@ -16,7 +16,8 @@ def _flag(name):
 
 def test_it_runs_on_the_b12x_image_across_two_nodes():
     assert E.engine_image_eugr == "vllm-node-b12x"
-    assert E.proven_tp == 2 and E.verified is False
+    assert E.proven_tp == 2 and E.verified is True
+    assert E.recommended_gmu == 0.8
 
 
 def test_the_checkpoints_own_choices():

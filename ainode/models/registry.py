@@ -848,10 +848,10 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "recipe for this checkpoint), its MTP layer drafting four tokens "
             "and the B12X loader and kernels. For more cache — more sessions "
             "at long context — the tables can live on the NVMe instead, see "
-            "the B12X doc. NOT YET SERVED HERE."
+            "the B12X doc. Served on two Sparks since 2026-11-22."
         ),
         quantization="NVFP4", family="qwen", params_b=180.0,
-        proven_tp=2, verified=False, curated=True,
+        proven_tp=2, verified=True, curated=True,
         context_length=262144, license="NVIDIA Open Model Agreement",
         recommended=False, format="nvfp4",
         capabilities=["vision", "tool_use", "reasoning", "code", "multilingual"],
@@ -933,8 +933,14 @@ CURATED_CLUSTER_MODELS: dict[str, ModelInfo] = {
             "VLLM_B12X_MOE_FP4_FORCE_A16": "1",
             "B12X_W4A16_A4_PREFILL": "1",
         },
-        # Upstream's 0.7. AINode's wizard re-plans it against the node anyway.
-        recommended_gmu=0.7,
+        # Upstream's 0.7 left room unused here. MEASURED on spark-1432 +
+        # spark-659b (2026-11-22, serving at 0.7): 49.48 GiB of weights per
+        # rank — the PLE tables split with TP, as planned — and 28.7 / 31.5 GB
+        # still available (free -m) on the two nodes. 0.8 moves about 12 GB
+        # per node into the KV cache and leaves ~16 GB available, twice the
+        # guard's 8 GB warning line. The wizard's "share what is left" stops
+        # at this value.
+        recommended_gmu=0.8,
     ),
     "smaug-flash": ModelInfo(
         id="smaug-flash",
