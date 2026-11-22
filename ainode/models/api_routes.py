@@ -7,7 +7,6 @@ import functools
 import aiohttp
 import json
 import logging
-import shlex
 import re
 import shutil
 import time
@@ -1227,7 +1226,9 @@ def parse_load_overrides(body: dict):
         raw = body["extra_vllm_args"]
         if isinstance(raw, str):
             try:
-                raw = shlex.split(raw)
+                from ainode.engine.serve_args import split_command_line
+
+                raw = split_command_line(raw)
             except ValueError as exc:
                 # An unbalanced quote. The UI sends this field verbatim so a
                 # JSON argument can keep its quotes, which means a typo in one
