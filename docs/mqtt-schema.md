@@ -356,12 +356,15 @@ Prometheus-Endpunkt, je Instanz. AINode liest den aus und destilliert ihn.
   "kv_cache_percent": 81.37,
   "requests_running": 7, "requests_waiting": 3, "requests_swapped": 0,
   "requests_total_in_flight": 10,
+  "slots_total": 16, "slots_used": 7, "slots_free": 9,
   "preemptions_total": 42,
   "prompt_tokens_total": 1000000, "generation_tokens_total": 412093,
   "time_to_first_token_s": 0.3, "time_per_output_token_s": 0.0102,
   "e2e_latency_s": 2.1, "queue_time_s": 0.04,
   "spec_accepted_tokens_total": 300, "spec_draft_tokens_total": 400,
-  "spec_acceptance_rate": 0.75
+  "spec_acceptance_rate": 0.75,
+  "prefix_cache_queries_total": 7440000, "prefix_cache_hits_total": 6810000,
+  "prefix_cache_hit_rate": 0.915
 }
 ```
 
@@ -372,6 +375,8 @@ Prometheus-Endpunkt, je Instanz. AINode liest den aus und destilliert ihn.
 | `requests_running` / `_waiting` | Warteschlangentiefe — ob `--max-num-seqs` auch nur ungefähr passt |
 | `requests_swapped` | Anfragen, die auf den Host ausgelagert wurden. Fehlt bei Builds, die nicht auslagern |
 | `requests_total_in_flight` | die Summe, als eine Zahl für „gerade über der Kapazität" |
+| `slots_total` / `_used` / `_free` | die Parallel-Slots des Modells: `--max-num-seqs`, davon gerade belegt (`requests_running`), noch frei. vLLM meldet `--max-num-seqs` nicht selbst; AINode nimmt es aus den Startargumenten, sonst aus dem Katalogrezept. Steht es in keinem von beiden, fehlen alle drei Felder — eine aus vLLMs Vorgabe geratene Zahl würde eine andere Engine beschreiben |
+| `prefix_cache_hit_rate` | Anteil der Prompt-Tokens, die im Prefix-Cache lagen und nicht neu eingelesen werden mussten, seit dem Start der Instanz. Aus `prefix_cache_hits_total` / `_queries_total`. Ein Feld `cached_tokens` gibt es in vLLMs `/metrics` nicht, das steht nur im `usage` einer Antwort und auch dort nur mit `--enable-prompt-tokens-details` |
 | `time_to_first_token_s` | Prefill-Kosten, getrennt vom Decode. Eine prefill- und eine decodegebundene Last sehen in Tokens pro Sekunde gleich aus und brauchen entgegengesetzte Maßnahmen |
 | `time_per_output_token_s` | der Kehrwert der Decode-Geschwindigkeit, wie die Engine sie misst |
 | `e2e_latency_s`, `queue_time_s` | Gesamtdauer und Wartezeit, jeweils als Mittelwert |
