@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["parse_prometheus", "distil", "WANTED"]
+__all__ = ["parse_prometheus", "distil", "with_slots", "WANTED"]
 
 #: name{labels} value
 _LINE_RE = re.compile(r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)"
@@ -62,6 +62,13 @@ WANTED = (
                            "vllm:num_preemptions",), 1.0),
     ("prompt_tokens_total", ("vllm:prompt_tokens_total",), 1.0),
     ("generation_tokens_total", ("vllm:generation_tokens_total",), 1.0),
+    # Prompt tokens looked up in the prefix cache, and how many were there.
+    # vLLM has no "cached_tokens" metric; that name exists only in a
+    # response's usage, and only with --enable-prompt-tokens-details.
+    ("prefix_cache_queries_total", ("vllm:prefix_cache_queries_total",
+                                    "vllm:gpu_prefix_cache_queries_total"), 1.0),
+    ("prefix_cache_hits_total", ("vllm:prefix_cache_hits_total",
+                                 "vllm:gpu_prefix_cache_hits_total"), 1.0),
     ("spec_accepted_tokens_total", ("vllm:spec_decode_num_accepted_tokens_total",), 1.0),
     ("spec_draft_tokens_total", ("vllm:spec_decode_num_draft_tokens_total",), 1.0),
 )
@@ -150,6 +157,13 @@ def distil(text: str) -> Dict[str, Any]:
         # without running means the queue is not moving at all.
         out["requests_total_in_flight"] = running + waiting
 
+    hits = out.get("prefix_cache_hits_total")
+    queries = out.get("prefix_cache_queries_total")
+    if hits is not None and queries:
+        # Share of prompt tokens that did not have to be prefilled again —
+        # since the engine started, not over the last interval.
+        out["prefix_cache_hit_rate"] = round(hits / queries, 3)
+
     accepted = out.get("spec_accepted_tokens_total")
     drafted = out.get("spec_draft_tokens_total")
     if accepted is not None and drafted:
@@ -157,6 +171,44 @@ def distil(text: str) -> Dict[str, Any]:
         # its keep. Below about 0.5 the drafter is costing more than it saves.
         out["spec_acceptance_rate"] = round(accepted / drafted, 3)
     return out
+
+
+def with_slots(metrics: Dict[str, Any], slots: int) -> Dict[str, Any]:
+    """Add the parallel slots: ``--max-num-seqs``, how many are taken, how many free.
+
+    vLLM does not export its --max-num-seqs, so the number comes from the
+    launch arguments. Without it (or without a running count) nothing is
+    added — a free-slot count guessed from vLLM's default would be a number
+    about a different engine.
+    """
+    running = metrics.get("requests_running")
+    if not slots or running is None or "images_generated_total" in metrics:
+        return metrics
+    out = dict(metrics)
+    out["slots_total"] = int(slots)
+    out["slots_used"] = int(running)
+    out["slots_free"] = max(0, int(slots) - int(running))
+    return out
+
+
+def _slots_for(app, model: str, args) -> int:
+    """--max-num-seqs of this instance: its launch args, then the catalog recipe."""
+    from ainode.clients.opencode import _concurrency
+
+    class _Launch:
+        extra_vllm_args = list(args or [])
+
+    info = None
+    manager = app.get("model_manager")
+    if manager is not None:
+        try:
+            info = manager._find_catalog_by_hf_repo(model)
+        except Exception:
+            info = None
+    try:
+        return _concurrency(_Launch, info)
+    except Exception:
+        return 0
 
 
 async def collect(app) -> Dict[str, Dict[str, Any]]:
@@ -179,22 +231,25 @@ async def collect(app) -> Dict[str, Dict[str, Any]]:
         model = str(getattr(record, "model", "") or "")
         port = getattr(record, "api_port", 0)
         if model and port:
-            targets.append((_slug(model), port))
+            cfg = getattr(getattr(instance, "backend", None), "config", None)
+            targets.append((_slug(model), port, _slots_for(
+                app, model, getattr(cfg, "extra_vllm_args", None))))
     if not targets:
         config = app.get("config")
         model = str(getattr(config, "model", "") or "")
         port = getattr(config, "api_port", 0)
         if model and port:
-            targets.append((_slug(model), port))
+            targets.append((_slug(model), port, _slots_for(
+                app, model, getattr(config, "extra_vllm_args", None))))
 
-    async def _one(name: str, port: int):
+    async def _one(name: str, port: int, slots: int = 0):
         try:
             async with session.get(
                     f"http://localhost:{port}/metrics",
                     timeout=aiohttp.ClientTimeout(total=2)) as resp:
                 if resp.status != 200:
                     return name, {}
-                return name, distil(await resp.text())
+                return name, with_slots(distil(await resp.text()), slots)
         except Exception:
             # An engine that is still loading has no /metrics yet, and one
             # that has died has none either. Both are reported elsewhere;
@@ -206,7 +261,7 @@ async def collect(app) -> Dict[str, Dict[str, Any]]:
     # in sequence would hold the publish loop for longer than its interval.
     import asyncio
 
-    results = await asyncio.gather(*[_one(n, p) for n, p in targets],
+    results = await asyncio.gather(*[_one(*t) for t in targets],
                                    return_exceptions=True)
     out: Dict[str, Dict[str, Any]] = {}
     for result in results:
